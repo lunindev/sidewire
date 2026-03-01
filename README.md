@@ -186,4 +186,4 @@ Video data is raw HEVC NAL units with Annex B start codes.
 
 ## License
 
-This project is provided as-is for personal use. Feel free to use, modify, and share.
+[MIT](LICENSE)
