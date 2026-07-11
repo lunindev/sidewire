@@ -152,8 +152,14 @@ final class SourceController: ObservableObject {
     func connect(host: String, port: UInt16 = ProtocolConstants.fallbackPort) {
         let iface = selectedInterface
         let psk = Pairing.credential(pin: pairingPIN)
+        // Remember the last IP dialed by hand so the field is pre-filled next launch — the
+        // Thunderbolt link-local address is stable per cable and tedious to retype.
+        UserDefaults.standard.set(host, forKey: SourceController.lastHostKey)
         startLink(peerName: host) { TCPTransport(host: host, port: port, interface: iface, psk: psk) }
     }
+
+    static let lastHostKey = "sidewire.lastHost"
+    static var lastHost: String { UserDefaults.standard.string(forKey: lastHostKey) ?? "" }
 
     func disconnect() {
         reconnector?.stop()
@@ -374,8 +380,24 @@ final class SourceController: ObservableObject {
         if encoded > 0 { encoderStallStrikes = 0; ticksSinceEncoded = 0; return }
         ticksSinceEncoded += 1
 
+        // Feed the receiver on EVERY idle tick, the instant fresh frames stop — do NOT wait
+        // for the lagging 1s capture.fps to decay first. That ~1s gap after each active→static
+        // transition is exactly what starved the receiver's no-frame watchdog and flashed
+        // "Reconnecting…" (with showsCursor=false a still screen delivers zero frames, so the
+        // keep-alive is the ONLY thing keeping the receiver fed). Resending the last keyframe
+        // holds the last image with no visible gap.
+        if let keyframe = lastKeyframe {
+            session.sendVideo(keyframe, keyframe: true)
+        } else {
+            encoder?.forceKeyframe() // cold start: nothing cached yet → generate a keyframe
+        }
+
+        // Encoder-stall detection (capture IS delivering frames but the encoder emits nothing)
+        // is a genuinely wedged encoder — meaningful only while capture actually produces
+        // frames. capture.fps is a lagging 1s average, so require it >2 AND persisting ~1s
+        // before acting, and clear strikes once the screen is truly static so intermittent
+        // activity can never accumulate a false "encoder-stall" reconnect.
         if capture.fps > 2 {
-            // Capture is delivering but the encoder produced nothing → stall (wait ~1s).
             guard ticksSinceEncoded >= 2 else { return }
             ticksSinceEncoded = 0
             encoderStallStrikes += 1
@@ -387,9 +409,8 @@ final class SourceController: ObservableObject {
                 encoder?.invalidate()
                 makeEncoder(config: config, session: session)
             }
-        } else if let keyframe = lastKeyframe {
-            // Static screen: resend the last keyframe so the receiver keeps presenting.
-            session.sendVideo(keyframe, keyframe: true)
+        } else {
+            encoderStallStrikes = 0 // truly static (capture idle) → not a stall
         }
     }
 

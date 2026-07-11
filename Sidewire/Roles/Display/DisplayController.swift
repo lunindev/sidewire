@@ -27,6 +27,9 @@ final class DisplayController: ObservableObject {
     private var hasFirstFrame = false
     private var decodeErrorStrikes = 0
     private var lastIDRRequestNanos: UInt64 = 0
+    /// Last time a heartbeat PONG landed (updated on the main actor via onRTT). PONGs flow
+    /// ~2 Hz independent of video, so this is a video-independent "is the link alive" signal.
+    private var lastHeartbeatNanos: UInt64 = 0
 
     @Published var statusText = "Idle"
     @Published var isListening = false
@@ -132,6 +135,15 @@ final class DisplayController: ObservableObject {
                 self.handleClosed(reason)
             }
         }
+        // Heartbeat liveness: a PONG round-trip means the control link is alive even when no
+        // video is flowing (static source screen). The no-frame watchdog uses this to avoid
+        // treating a legitimately still screen as a stall.
+        session.onRTT = { [weak self, weak session] _ in
+            Task { @MainActor in
+                guard let self, self.session === session else { return }
+                self.lastHeartbeatNanos = DispatchTime.now().uptimeNanoseconds
+            }
+        }
 
         session.start()
     }
@@ -160,6 +172,7 @@ final class DisplayController: ObservableObject {
         let now = DispatchTime.now().uptimeNanoseconds
         lastPresentedNanos = now
         streamStartNanos = now
+        lastHeartbeatNanos = now // assume alive at stream start; onRTT keeps it fresh
         startVideoWatchdog()
         // Ask for a fresh keyframe so we start clean.
         session?.requestIDR()
@@ -239,9 +252,12 @@ final class DisplayController: ObservableObject {
         videoWatchdog = nil
     }
 
-    /// If no decoded frame has been presented for a while (despite the source's keep-alive
-    /// keyframes on a static screen), the video pipeline is wedged: dim + show reconnecting,
-    /// then tear the session down so the Reconnector rebuilds everything.
+    /// Watches for a wedged video pipeline. A legitimately static source screen produces no
+    /// frames yet the control-plane heartbeat keeps flowing, so we distinguish the two: while
+    /// the heartbeat is alive, "no video" just means the screen is still — keep the last frame
+    /// on screen (no "Reconnecting…" flash) and nudge for a keyframe. Only a genuinely silent
+    /// link dims. The long teardown stays UNGATED as a last-resort rebuild for a rare silent
+    /// decoder wedge (frames arriving but not decoding, with the heartbeat still healthy).
     private func videoWatchdogTick() {
         guard isConnected else { return }
         let now = DispatchTime.now().uptimeNanoseconds
@@ -258,11 +274,27 @@ final class DisplayController: ObservableObject {
             return
         }
         let idleMs = Double(now &- lastPresentedNanos) / 1_000_000
+        let heartbeatMs = Double(now &- lastHeartbeatNanos) / 1_000_000
+        let linkAlive = lastHeartbeatNanos != 0 && heartbeatMs < SessionConstants.heartbeatTimeout * 1000
+
         if idleMs > SessionConstants.noFrameTeardown * 1000 {
-            Log.media.notice("no decoded frame for \(Int(idleMs))ms → tearing down for reconnect")
+            // Video wedged for a long time. If the link is alive this is a rare local decoder
+            // wedge (not a disconnect); tear down either way so the Reconnector rebuilds.
+            Log.media.notice("no decoded frame for \(Int(idleMs))ms (linkAlive=\(linkAlive)) → tearing down for reconnect")
             session?.close(reason: "no-frame")
         } else if idleMs > SessionConstants.noFrameDim * 1000 {
-            if !videoStalled { videoStalled = true }
+            if linkAlive {
+                // Healthy link, just no new video → the source screen is static. Hold the last
+                // frame (no scary overlay) and nudge for a fresh keyframe in case a keep-alive
+                // was dropped.
+                if videoStalled { videoStalled = false }
+                if Double(now &- lastIDRRequestNanos) / 1_000_000 > 1000 {
+                    lastIDRRequestNanos = now
+                    session?.requestIDR()
+                }
+            } else if !videoStalled {
+                videoStalled = true // link genuinely silent → real trouble, show reconnecting
+            }
         }
     }
 

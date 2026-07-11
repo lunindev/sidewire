@@ -6,7 +6,7 @@ struct SourceView: View {
     @ObservedObject var controller: SourceController
     @EnvironmentObject var model: AppModel
     @StateObject private var permissions = PermissionsModel()
-    @State private var manualHost = ""
+    @State private var manualHost = SourceController.lastHost
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
