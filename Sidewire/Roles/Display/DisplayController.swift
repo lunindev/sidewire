@@ -8,8 +8,9 @@ import SidewireCore
 @MainActor
 final class DisplayController: ObservableObject {
     let presenter = VideoPresenterView(frame: .zero)
-    /// The PIN a Source must enter to connect (shown on this Display).
-    let pairingPIN = Pairing.localPIN
+    /// The PIN a Source must enter to connect (shown on this Display). Persistent across
+    /// launches; rotate on demand with `rotatePIN()`.
+    @Published private(set) var pairingPIN = Pairing.localPIN
 
     private let listener = TCPListener(serviceName: DeviceIdentity.deviceName)
     private let inputCapture = InputCapture()
@@ -62,7 +63,7 @@ final class DisplayController: ObservableObject {
             Task { @MainActor in self?.accept(transport) }
         }
         inputCapture.start()
-        listener.start(psk: Pairing.credential(pin: pairingPIN))
+        startListener()
         statusText = "Listening…"
 
         // Esc exits the immersive fullscreen (the InputCapture monitor deliberately
@@ -74,6 +75,22 @@ final class DisplayController: ObservableObject {
             }
             return event
         }
+    }
+
+    /// Generate a fresh pairing PIN and re-arm the listener with the new PSK so subsequent
+    /// connections must use it. An in-progress session is left intact (it already handshook).
+    func rotatePIN() {
+        pairingPIN = Pairing.rotateLocalPIN()
+        listener.stop()
+        startListener()
+        Log.source.info("pairing PIN rotated")
+    }
+
+    /// Start (or re-arm) the listener with the current PSK, advertising this Mac's Thunderbolt
+    /// link-local IP over Bonjour TXT so a Source can offer a one-click cable connect.
+    private func startListener() {
+        let txt = InterfaceMonitor.localThunderboltIP().map { ["tb": $0] }
+        listener.start(psk: Pairing.credential(pin: pairingPIN), txt: txt)
     }
 
     func stop() {

@@ -7,6 +7,9 @@ public struct DiscoveredPeer: Identifiable, Hashable, Sendable {
     public let id: String       // Bonjour service name (stable enough for the list)
     public let name: String
     public let endpoint: NWEndpoint
+    /// The peer's Thunderbolt link-local IP if it advertised one (TXT "tb"), so the Source
+    /// can offer a one-click connect that forces the cable instead of Wi-Fi.
+    public let thunderboltIP: String?
 
     public static func == (lhs: DiscoveredPeer, rhs: DiscoveredPeer) -> Bool { lhs.id == rhs.id }
     public func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -44,7 +47,8 @@ public final class Discovery: @unchecked Sendable {
             let peers = results.compactMap { result -> DiscoveredPeer? in
                 guard case let .service(name, _, _, _) = result.endpoint,
                       seen.insert(name).inserted else { return nil }
-                return DiscoveredPeer(id: name, name: name, endpoint: result.endpoint)
+                return DiscoveredPeer(id: name, name: name, endpoint: result.endpoint,
+                                      thunderboltIP: Self.thunderboltIP(from: result.metadata))
             }
             self?.onPeersChanged?(peers)
         }
@@ -56,5 +60,13 @@ public final class Discovery: @unchecked Sendable {
     public func stop() {
         browser?.cancel()
         browser = nil
+    }
+
+    /// Pull the advertised Thunderbolt IP (TXT key "tb") out of a browse result's metadata.
+    private static func thunderboltIP(from metadata: NWBrowser.Result.Metadata) -> String? {
+        guard case let .bonjour(txt) = metadata,
+              case let .string(value) = txt.getEntry(for: "tb"),
+              !value.isEmpty else { return nil }
+        return value
     }
 }

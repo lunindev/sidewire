@@ -87,6 +87,15 @@ struct DisplayView: View {
                     .tracking(6).foregroundStyle(.white)
                 Text("Enter this on the other Mac to connect")
                     .font(.caption2).foregroundStyle(.gray)
+                Button {
+                    controller.rotatePIN()
+                } label: {
+                    Label("New PIN", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundStyle(.gray)
+                .padding(.top, 2)
             }
             .padding(.top, 4)
             Text(controller.statusText).font(.caption).foregroundStyle(.gray.opacity(0.7))

@@ -28,7 +28,8 @@ public final class TCPListener: @unchecked Sendable {
     public func start(interface: NWInterface? = nil,
                       port: UInt16 = ProtocolConstants.fallbackPort,
                       advertise: Bool = true,
-                      psk: PSKCredential? = nil) {
+                      psk: PSKCredential? = nil,
+                      txt: [String: String]? = nil) {
         let params = TCPTransport.tcpParameters(interface: interface, psk: psk)
         // Tolerate a lingering socket in TIME_WAIT / a fast restart on the same port.
         params.allowLocalEndpointReuse = true
@@ -48,8 +49,20 @@ public final class TCPListener: @unchecked Sendable {
         }
 
         if advertise {
-            listener?.service = NWListener.Service(name: serviceName,
-                                                   type: ProtocolConstants.bonjourServiceType)
+            var txtRecord: NWTXTRecord?
+            if let txt, !txt.isEmpty {
+                var record = NWTXTRecord()
+                for (k, v) in txt { record[k] = v }
+                txtRecord = record
+            }
+            if let txtRecord {
+                listener?.service = NWListener.Service(name: serviceName,
+                                                       type: ProtocolConstants.bonjourServiceType,
+                                                       txtRecord: txtRecord.data)
+            } else {
+                listener?.service = NWListener.Service(name: serviceName,
+                                                       type: ProtocolConstants.bonjourServiceType)
+            }
         }
 
         listener?.stateUpdateHandler = { [weak self] state in

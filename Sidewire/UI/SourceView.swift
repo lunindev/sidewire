@@ -57,6 +57,16 @@ struct SourceView: View {
                                 Image(systemName: "display")
                                 Text(peer.name)
                                 Spacer()
+                                if let tb = peer.thunderboltIP, !controller.isConnected {
+                                    Button {
+                                        controller.connect(host: tb)
+                                    } label: {
+                                        Label("Thunderbolt", systemImage: "cable.connector")
+                                    }
+                                    .tint(.green)
+                                    .disabled(controller.isConnecting || controller.pairingPIN.count != 6)
+                                    .help("Connect over the Thunderbolt cable (\(tb))")
+                                }
                                 Button(connectTitle) {
                                     if controller.isConnected { controller.disconnect() }
                                     else { controller.connect(to: peer) }

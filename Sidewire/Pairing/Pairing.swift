@@ -31,9 +31,19 @@ enum Pairing {
         String(format: "%06d", Int.random(in: 0...999_999))
     }
 
-    /// This Mac's own PIN (as a Display), generated once and persisted.
+    /// This Mac's own PIN (as a Display), generated once and persisted (stable across
+    /// launches so a Source pairs once). Rotate on demand with `rotateLocalPIN()`.
     static var localPIN: String {
         if let p = UserDefaults.standard.string(forKey: pinKey), p.count == 6 { return p }
+        let p = randomPIN()
+        UserDefaults.standard.set(p, forKey: pinKey)
+        return p
+    }
+
+    /// Generate a fresh local PIN and persist it, returning the new value. Any already-paired
+    /// Source must re-enter it (the derived PSK changes, so old connections can't reconnect).
+    @discardableResult
+    static func rotateLocalPIN() -> String {
         let p = randomPIN()
         UserDefaults.standard.set(p, forKey: pinKey)
         return p
