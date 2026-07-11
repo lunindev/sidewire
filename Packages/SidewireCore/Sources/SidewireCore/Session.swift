@@ -44,6 +44,10 @@ public final class Session: @unchecked Sendable {
     /// Source side: the receiver acknowledged these long-term-reference tokens.
     public var onLTRAck: (([UInt16]) -> Void)?
 
+    /// Source override for the virtual-display resolution (nil = match the Display's native).
+    /// Set before start().
+    public var preferredDimensions: (width: Int, height: Int)?
+
     private var seq: UInt32 = 0
     private var peerHello: Hello?
     private var peerDisplayInfo: DisplayInfo?
@@ -252,7 +256,7 @@ public final class Session: @unchecked Sendable {
         guard role == .source, !configSent, let peer = peerHello else { return }
         // We need the display info to size the virtual display exactly.
         guard let info = peerDisplayInfo else { return }
-        let cfg = Self.negotiate(local: localHello, peer: peer, displayInfo: info)
+        let cfg = Self.negotiate(local: localHello, peer: peer, displayInfo: info, override: preferredDimensions)
         configSent = true
         coreLog.info("session[source] sending CONFIG codec=\(cfg.codec, privacy: .public) \(cfg.width)x\(cfg.height)@\(cfg.fps)")
         transport.send(type: .config, seq: nextSeq(), payload: JSONWire.encode(cfg))
@@ -270,10 +274,11 @@ public final class Session: @unchecked Sendable {
 
     // MARK: - Helpers
 
-    static func negotiate(local: Hello, peer: Hello, displayInfo: DisplayInfo?) -> Config {
+    static func negotiate(local: Hello, peer: Hello, displayInfo: DisplayInfo?,
+                          override: (width: Int, height: Int)? = nil) -> Config {
         let codec = local.capabilities.videoCodecs.first { peer.capabilities.videoCodecs.contains($0) } ?? "h264"
-        let width = displayInfo?.width ?? min(local.capabilities.maxWidth, peer.capabilities.maxWidth)
-        let height = displayInfo?.height ?? min(local.capabilities.maxHeight, peer.capabilities.maxHeight)
+        let width = override?.width ?? displayInfo?.width ?? min(local.capabilities.maxWidth, peer.capabilities.maxWidth)
+        let height = override?.height ?? displayInfo?.height ?? min(local.capabilities.maxHeight, peer.capabilities.maxHeight)
         let fps = min(local.capabilities.maxFps, peer.capabilities.maxFps)
         let ltr = local.capabilities.ltr && peer.capabilities.ltr
         return Config(codec: codec, width: width, height: height, fps: fps, ltr: ltr,

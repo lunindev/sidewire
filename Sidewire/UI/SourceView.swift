@@ -5,11 +5,14 @@ import SidewireCore
 struct SourceView: View {
     @ObservedObject var controller: SourceController
     @EnvironmentObject var model: AppModel
+    @StateObject private var permissions = PermissionsModel()
     @State private var manualHost = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
+
+            PermissionsView(model: permissions)
 
             GroupBox("Pairing PIN (shown on the Display)") {
                 HStack {
@@ -87,11 +90,23 @@ struct SourceView: View {
                 }
             }
 
+            GroupBox("Resolution") {
+                HStack {
+                    Picker("Resolution", selection: $controller.resolutionPreset) {
+                        ForEach(ResolutionPreset.allCases) { preset in
+                            Text(preset.label).tag(preset)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 260)
+                    .disabled(controller.isConnected || controller.isConnecting)
+                    Spacer()
+                }
+            }
+
             VirtualDisplayStatusView(vd: controller.virtualDisplay,
                                      capture: controller.capture,
                                      isStreaming: controller.isStreaming)
-
-            PermissionsRow()
 
             Spacer()
         }
@@ -165,18 +180,3 @@ private struct InterfacePicker: View {
     }
 }
 
-private struct PermissionsRow: View {
-    var body: some View {
-        HStack(spacing: 12) {
-            Button("Grant Screen Recording") {
-                _ = Permissions.requestScreenRecording()   // prompts the first time / registers the app
-                Permissions.openScreenRecordingSettings()  // and open the pane (reliable if the prompt won't show)
-            }
-            Button("Grant Input Control") {
-                _ = Permissions.requestAccessibility()
-                Permissions.openAccessibilitySettings()
-            }
-        }
-        .font(.caption)
-    }
-}

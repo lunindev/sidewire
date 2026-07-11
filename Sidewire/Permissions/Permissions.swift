@@ -34,4 +34,16 @@ enum Permissions {
             NSWorkspace.shared.open(url)
         }
     }
+
+    /// Relaunch the app. Screen Recording / Accessibility grants only take effect after a
+    /// restart, so onboarding drives this once the user has toggled them on.
+    static func relaunch() {
+        let path = Bundle.main.bundlePath
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // Wait for this instance to quit, then reopen the app.
+        task.arguments = ["-c", "sleep 0.4; open \"\(path)\""]
+        try? task.run()
+        NSApp.terminate(nil)
+    }
 }

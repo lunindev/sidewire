@@ -25,7 +25,6 @@ final class DisplayController: ObservableObject {
     private var lastPresentedNanos: UInt64 = 0
     private var streamStartNanos: UInt64 = 0
     private var hasFirstFrame = false
-    private var cursorHidden = false
     private var decodeErrorStrikes = 0
     private var lastIDRRequestNanos: UInt64 = 0
 
@@ -296,12 +295,10 @@ final class DisplayController: ObservableObject {
         if !window.styleMask.contains(.fullScreen) {
             window.toggleFullScreen(nil)
         }
-        // Hide the local cursor so only the source's cursor (baked into the video) shows.
-        if !cursorHidden { NSCursor.hide(); cursorHidden = true }
+        // Cursor visibility is managed by DisplayView (tied to the auto-hiding control bar).
     }
 
     private func exitImmersive() {
-        if cursorHidden { NSCursor.unhide(); cursorHidden = false }
         guard let window = presenter.window, window.styleMask.contains(.fullScreen) else { return }
         window.toggleFullScreen(nil)
     }

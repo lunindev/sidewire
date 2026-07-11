@@ -6,6 +6,32 @@ import Network
 import SidewireProtocol
 import SidewireCore
 
+/// Virtual-display resolution options (pixel dimensions; the display is created HiDPI so
+/// the logical size is half). "Match Display" uses the receiver's native panel.
+enum ResolutionPreset: String, CaseIterable, Identifiable {
+    case matchDisplay, r3456x2234, r2880x1800, r2560x1600, r1920x1200
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .matchDisplay: return "Match Display"
+        case .r3456x2234: return "3456×2234 (16\" Retina)"
+        case .r2880x1800: return "2880×1800"
+        case .r2560x1600: return "2560×1600"
+        case .r1920x1200: return "1920×1200"
+        }
+    }
+    var dimensions: (width: Int, height: Int)? {
+        switch self {
+        case .matchDisplay: return nil
+        case .r3456x2234: return (3456, 2234)
+        case .r2880x1800: return (2880, 1800)
+        case .r2560x1600: return (2560, 1600)
+        case .r1920x1200: return (1920, 1200)
+        }
+    }
+}
+
 /// Source role: discovers Displays, connects (via the self-healing Reconnector), and
 /// drives virtual-display → capture → encode → session, plus injects incoming input.
 /// @MainActor for SwiftUI observation. Session callbacks self-hop to main.
@@ -52,6 +78,10 @@ final class SourceController: ObservableObject {
     /// it's entered once.
     @Published var pairingPIN: String = UserDefaults.standard.string(forKey: "sidewire.enteredPIN") ?? "" {
         didSet { UserDefaults.standard.set(pairingPIN, forKey: "sidewire.enteredPIN") }
+    }
+    @Published var resolutionPreset: ResolutionPreset =
+        ResolutionPreset(rawValue: UserDefaults.standard.string(forKey: "sidewire.resolution") ?? "") ?? .matchDisplay {
+        didSet { UserDefaults.standard.set(resolutionPreset.rawValue, forKey: "sidewire.resolution") }
     }
     @Published var peers: [DiscoveredPeer] = []
     @Published var statusText = "Idle"
@@ -150,9 +180,12 @@ final class SourceController: ObservableObject {
         // One stable HELLO (and sessionId) reused across reconnect attempts — idempotent
         // resume. Built here on the main actor (capabilities read NSScreen).
         let hello = DeviceIdentity.makeHello(role: .source, sessionId: UUID().uuidString)
+        let dims = resolutionPreset.dimensions
 
         let reconnector = Reconnector(makeSession: {
-            Session(transport: makeTransport(), role: .source, localHello: hello)
+            let s = Session(transport: makeTransport(), role: .source, localHello: hello)
+            s.preferredDimensions = dims
+            return s
         })
         self.reconnector = reconnector
 

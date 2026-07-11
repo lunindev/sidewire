@@ -1,81 +1,136 @@
 import SwiftUI
 import AppKit
 
-/// Display role main window: hosts the decoded video and a waiting/overlay state.
-/// Phase 0 shows the stream in a window; the immersive fullscreen experience with an
-/// auto-hiding control bar is Phase 4 (see docs/06).
+/// Display role: the immersive fullscreen video with an auto-hiding control bar. The local
+/// cursor is hidden during viewing (only the source's baked-in cursor shows) and revealed
+/// with the control bar on mouse movement. Esc always exits.
 struct DisplayView: View {
     @ObservedObject var controller: DisplayController
     @EnvironmentObject var model: AppModel
 
+    @State private var controlsVisible = true
+    @State private var cursorHidden = false
+    @State private var showExitToast = false
+    @State private var hideWork: DispatchWorkItem?
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-
             PresenterRepresentable(view: controller.presenter)
 
             if !controller.isConnected {
-                VStack(spacing: 14) {
-                    Image(systemName: "display.trianglebadge.exclamationmark")
-                        .font(.system(size: 44))
-                        .foregroundStyle(.gray)
-                    Text(controller.isListening ? "Waiting for a Source…" : "Not listening")
-                        .font(.title3)
-                        .foregroundStyle(.gray)
-                    VStack(spacing: 4) {
-                        Text("PAIRING PIN")
-                            .font(.caption).tracking(2).foregroundStyle(.gray)
-                        Text(controller.pairingPIN)
-                            .font(.system(size: 44, weight: .semibold, design: .monospaced))
-                            .tracking(6)
-                            .foregroundStyle(.white)
-                        Text("Enter this on the other Mac to connect")
-                            .font(.caption2).foregroundStyle(.gray)
-                    }
-                    .padding(.top, 4)
-                    Text(controller.statusText)
-                        .font(.caption)
-                        .foregroundStyle(.gray.opacity(0.7))
-                }
+                waitingOverlay
             } else if controller.videoStalled {
-                // Connected but no frames — dim the last frame and say so, never a bare freeze.
                 Color.black.opacity(0.55).ignoresSafeArea()
                 VStack(spacing: 10) {
                     ProgressView().controlSize(.large).tint(.white)
-                    Text("Reconnecting…")
-                        .font(.title3)
-                        .foregroundStyle(.white)
+                    Text("Reconnecting…").font(.title3).foregroundStyle(.white)
                 }
             }
 
             VStack {
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(controller.isConnected ? .green : (controller.isListening ? .orange : .red))
-                        .frame(width: 8, height: 8)
-                    Text(controller.sourceName ?? controller.statusText)
-                        .font(.caption)
-                    if controller.isConnected {
-                        Text("· \(Int(controller.presentedFps)) fps")
-                            .font(.caption).foregroundStyle(.secondary)
-                        if !controller.streamResolution.isEmpty {
-                            Text("· \(controller.streamResolution)")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    Button("Fullscreen") { toggleFullscreen() }
-                    Button("Switch role") { model.switchRole() }
+                if controlsVisible {
+                    controlBar.transition(.move(edge: .top).combined(with: .opacity))
                 }
-                .padding(8)
-                .background(.black.opacity(0.55))
-                .foregroundStyle(.white)
                 Spacer()
+                if controller.isConnected, showExitToast {
+                    Text("Press Esc to exit")
+                        .font(.callout)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(.black.opacity(0.6), in: Capsule())
+                        .foregroundStyle(.white)
+                        .padding(.bottom, 24)
+                        .transition(.opacity)
+                }
             }
+        }
+        .onContinuousHover { phase in
+            if case .active = phase { revealControls() }
+        }
+        .onChange(of: controller.isConnected) { _, connected in
+            if connected { enterImmersiveUI() } else { exitImmersiveUI() }
+        }
+        .onDisappear {
+            hideWork?.cancel()
+            setCursor(hidden: false) // never leave the cursor hidden if the view goes away
         }
     }
 
-    private func toggleFullscreen() {
+    private var controlBar: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(controller.isConnected ? .green : (controller.isListening ? .orange : .red))
+                .frame(width: 8, height: 8)
+            Text(controller.sourceName ?? controller.statusText).font(.caption)
+            if controller.isConnected {
+                Text("· \(Int(controller.presentedFps)) fps").font(.caption).foregroundStyle(.secondary)
+                if !controller.streamResolution.isEmpty {
+                    Text("· \(controller.streamResolution)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Button("Exit") { exitFullscreen() }
+            Button("Switch role") { model.switchRole() }
+        }
+        .padding(8)
+        .background(.black.opacity(0.6))
+        .foregroundStyle(.white)
+    }
+
+    private var waitingOverlay: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "display.trianglebadge.exclamationmark")
+                .font(.system(size: 44)).foregroundStyle(.gray)
+            Text(controller.isListening ? "Waiting for a Source…" : "Not listening")
+                .font(.title3).foregroundStyle(.gray)
+            VStack(spacing: 4) {
+                Text("PAIRING PIN").font(.caption).tracking(2).foregroundStyle(.gray)
+                Text(controller.pairingPIN)
+                    .font(.system(size: 44, weight: .semibold, design: .monospaced))
+                    .tracking(6).foregroundStyle(.white)
+                Text("Enter this on the other Mac to connect")
+                    .font(.caption2).foregroundStyle(.gray)
+            }
+            .padding(.top, 4)
+            Text(controller.statusText).font(.caption).foregroundStyle(.gray.opacity(0.7))
+        }
+    }
+
+    // MARK: - Immersive UI behavior
+
+    private func enterImmersiveUI() {
+        showExitToast = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { showExitToast = false }
+        revealControls() // shows the bar, then auto-hides after a few seconds
+    }
+
+    private func exitImmersiveUI() {
+        hideWork?.cancel()
+        withAnimation { controlsVisible = true }
+        setCursor(hidden: false)
+        showExitToast = false
+    }
+
+    /// Reveal the control bar (and cursor) on activity, then auto-hide while connected.
+    private func revealControls() {
+        hideWork?.cancel()
+        withAnimation { controlsVisible = true }
+        setCursor(hidden: false)
+        guard controller.isConnected else { return }
+        let work = DispatchWorkItem {
+            withAnimation { controlsVisible = false }
+            setCursor(hidden: true)
+        }
+        hideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    }
+
+    private func setCursor(hidden: Bool) {
+        if hidden, !cursorHidden { NSCursor.hide(); cursorHidden = true }
+        else if !hidden, cursorHidden { NSCursor.unhide(); cursorHidden = false }
+    }
+
+    private func exitFullscreen() {
         (NSApp.keyWindow ?? NSApp.windows.first)?.toggleFullScreen(nil)
     }
 }
