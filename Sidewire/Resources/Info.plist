@@ -8,6 +8,12 @@
 	<string>Sidewire</string>
 	<key>CFBundleDisplayName</key>
 	<string>Sidewire</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Sidewire captures the virtual display it creates so it can stream it to your other Mac.</string>
 	<key>NSLocalNetworkUsageDescription</key>

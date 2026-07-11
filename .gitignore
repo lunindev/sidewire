@@ -17,3 +17,6 @@ xcuserdata/
 # IDEs
 .idea/
 .vscode/
+
+# Release artifacts (Developer ID DMG, notarization staging)
+dist/
