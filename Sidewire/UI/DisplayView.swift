@@ -2,14 +2,14 @@ import SwiftUI
 import AppKit
 
 /// Display role: the immersive fullscreen video with an auto-hiding control bar. The local
-/// cursor is hidden during viewing (only the source's baked-in cursor shows) and revealed
-/// with the control bar on mouse movement. Esc always exits.
+/// cursor stays visible — it is the instant remote pointer, since the source no longer bakes
+/// a cursor into the video (that round-trip is what made the pointer feel laggy). The control
+/// bar reveals on mouse movement and auto-hides; Esc always exits.
 struct DisplayView: View {
     @ObservedObject var controller: DisplayController
     @EnvironmentObject var model: AppModel
 
     @State private var controlsVisible = true
-    @State private var cursorHidden = false
     @State private var showExitToast = false
     @State private var hideWork: DispatchWorkItem?
 
@@ -50,10 +50,7 @@ struct DisplayView: View {
         .onChange(of: controller.isConnected) { _, connected in
             if connected { enterImmersiveUI() } else { exitImmersiveUI() }
         }
-        .onDisappear {
-            hideWork?.cancel()
-            setCursor(hidden: false) // never leave the cursor hidden if the view goes away
-        }
+        .onDisappear { hideWork?.cancel() }
     }
 
     private var controlBar: some View {
@@ -107,27 +104,19 @@ struct DisplayView: View {
     private func exitImmersiveUI() {
         hideWork?.cancel()
         withAnimation { controlsVisible = true }
-        setCursor(hidden: false)
         showExitToast = false
     }
 
-    /// Reveal the control bar (and cursor) on activity, then auto-hide while connected.
+    /// Reveal the control bar on activity, then auto-hide while connected. The local cursor
+    /// stays visible throughout — it is the instant remote pointer (the source no longer
+    /// bakes a cursor into the video).
     private func revealControls() {
         hideWork?.cancel()
         withAnimation { controlsVisible = true }
-        setCursor(hidden: false)
         guard controller.isConnected else { return }
-        let work = DispatchWorkItem {
-            withAnimation { controlsVisible = false }
-            setCursor(hidden: true)
-        }
+        let work = DispatchWorkItem { withAnimation { controlsVisible = false } }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
-    }
-
-    private func setCursor(hidden: Bool) {
-        if hidden, !cursorHidden { NSCursor.hide(); cursorHidden = true }
-        else if !hidden, cursorHidden { NSCursor.unhide(); cursorHidden = false }
     }
 
     private func exitFullscreen() {

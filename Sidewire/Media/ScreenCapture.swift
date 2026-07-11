@@ -69,7 +69,10 @@ final class ScreenCapture: NSObject, ObservableObject, SCStreamOutput, SCStreamD
             config.colorSpaceName = CGColorSpace.sRGB
             config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
             config.queueDepth = 5
-            config.showsCursor = true
+            // Do NOT bake the cursor into the video. The receiver shows its own local
+            // cursor (zero latency) instead of waiting for the cursor to round-trip through
+            // capture→encode→network→decode. This is what makes the pointer feel instant.
+            config.showsCursor = false
 
             let stream = SCStream(filter: filter, configuration: config, delegate: self)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: captureQueue)
