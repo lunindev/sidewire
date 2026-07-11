@@ -58,7 +58,9 @@ struct SourceView: View {
                                 Image(systemName: "display")
                                 Text(peer.name)
                                 Spacer()
-                                if let tb = peer.thunderboltIP, !controller.isConnected {
+                                if let tb = peer.thunderboltIP,
+                                   controller.localThunderboltIP != nil, // this Mac has a TB bridge to route to it
+                                   !controller.isConnected {
                                     Button {
                                         controller.connect(host: tb)
                                     } label: {

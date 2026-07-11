@@ -92,6 +92,11 @@ public final class TCPListener: @unchecked Sendable {
     }
 
     public func stop() {
+        // Detach handlers BEFORE cancelling so a re-arm (stop→start, e.g. PIN rotation) never
+        // lets the old listener's late `.cancelled` deliver a stray "stopped" that clobbers
+        // state after the new listener has already reported "listening".
+        listener?.stateUpdateHandler = nil
+        listener?.newConnectionHandler = nil
         listener?.cancel()
         listener = nil
         boundPort = nil

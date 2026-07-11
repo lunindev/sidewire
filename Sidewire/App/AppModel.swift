@@ -13,6 +13,9 @@ final class AppModel: ObservableObject {
 
     init() {
         if let raw = UserDefaults.standard.string(forKey: roleKey), let r = Role(rawValue: raw) {
+            // A returning user (already picked a role before this build) is not first-run —
+            // skip the Welcome so it can't sit on top of a live, already-started controller.
+            if !AppSettings.shared.hasSeenWelcome { AppSettings.shared.hasSeenWelcome = true }
             activate(r)
         }
     }
