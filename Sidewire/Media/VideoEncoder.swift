@@ -15,10 +15,13 @@ enum VideoCodec: String {
 final class VideoEncoder {
     private var session: VTCompressionSession?
     private var forceNextKeyframe = false
+    private var forceNextLTRRefresh = false
+    private var pendingAckedLTRTokens: [UInt16]?
     let codec: VideoCodec
 
-    /// (nalData, isKeyframe)
-    var onEncodedFrame: ((Data, Bool) -> Void)?
+    /// (nalData, isKeyframe, ltrToken) — ltrToken is 0 unless this frame is a long-term
+    /// reference the receiver must acknowledge.
+    var onEncodedFrame: ((Data, Bool, UInt16) -> Void)?
 
     init(width: Int32, height: Int32, codec: VideoCodec = .hevc, fps: Int = 60, bitrate: Int = 30_000_000) {
         self.codec = codec
@@ -55,23 +58,44 @@ final class VideoEncoder {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFNumber)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (fps * 5) as CFNumber)
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        // Long-term references: on loss, refresh from a receiver-acknowledged frame (a small
+        // LTR-P) instead of a full IDR. Recovery matters most on the future lossy transport.
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_EnableLTR, value: kCFBooleanTrue)
         VTCompressionSessionPrepareToEncodeFrames(session)
     }
 
     func encode(pixelBuffer: CVPixelBuffer, presentationTime: CMTime) {
         guard let session else { return }
-        var properties: [CFString: Any]?
+        var properties: [CFString: Any] = [:]
         if forceNextKeyframe {
-            properties = [kVTEncodeFrameOptionKey_ForceKeyFrame: true]
+            properties[kVTEncodeFrameOptionKey_ForceKeyFrame] = true
             forceNextKeyframe = false
+        }
+        if let acked = pendingAckedLTRTokens {
+            properties[kVTEncodeFrameOptionKey_AcknowledgedLTRTokens] = acked.map { NSNumber(value: $0) } as CFArray
+            pendingAckedLTRTokens = nil
+        }
+        if forceNextLTRRefresh {
+            properties[kVTEncodeFrameOptionKey_ForceLTRRefresh] = true
+            forceNextLTRRefresh = false
         }
         VTCompressionSessionEncodeFrame(session, imageBuffer: pixelBuffer,
                                         presentationTimeStamp: presentationTime, duration: .invalid,
-                                        frameProperties: properties as CFDictionary?,
+                                        frameProperties: properties.isEmpty ? nil : properties as CFDictionary,
                                         sourceFrameRefcon: nil, infoFlagsOut: nil)
     }
 
     func forceKeyframe() { forceNextKeyframe = true }
+
+    /// Record LTR tokens the receiver has acknowledged (applied on the next encode).
+    func acknowledgeLTR(tokens: [UInt16]) {
+        guard !tokens.isEmpty else { return }
+        pendingAckedLTRTokens = tokens
+    }
+
+    /// Request the next frame to refresh from an acknowledged LTR (small P-frame) instead
+    /// of a full keyframe. Falls back to a keyframe if no acknowledged LTR exists yet.
+    func requestLTRRefresh() { forceNextLTRRefresh = true }
 
     func updateBitrate(_ newBitrate: Int) {
         guard let session else { return }
@@ -93,9 +117,13 @@ final class VideoEncoder {
         guard status == noErr, let sampleBuffer else { return }
 
         let isKeyframe: Bool
+        var ltrToken: UInt16 = 0
         if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[CFString: Any]],
            let first = attachments.first {
             isKeyframe = !(first[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
+            if let token = first[kVTSampleAttachmentKey_RequireLTRAcknowledgementToken] as? Int {
+                ltrToken = UInt16(truncatingIfNeeded: token)
+            }
         } else {
             isKeyframe = true
         }
@@ -123,7 +151,7 @@ final class VideoEncoder {
             nalData.append(Data(bytes: dataPointer.advanced(by: offset), count: Int(naluLength)))
             offset += Int(naluLength)
         }
-        onEncodedFrame?(nalData, isKeyframe)
+        onEncodedFrame?(nalData, isKeyframe, ltrToken)
     }
 
     private func extractParameterSets(from formatDescription: CMFormatDescription) -> Data {

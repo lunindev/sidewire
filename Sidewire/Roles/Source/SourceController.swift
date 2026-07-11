@@ -37,6 +37,7 @@ final class SourceController: ObservableObject {
     private var ticksSinceEncoded = 0
     private var lastKeyframe: Data?
     private var encoderStallStrikes = 0
+    private var ackedLTRTokens: Set<UInt16> = []
 
     // Adaptive bitrate (RTT-driven congestion control).
     private var currentBitrate = 30_000_000
@@ -164,7 +165,20 @@ final class SourceController: ObservableObject {
                 self?.injector.inject(event: rec) // CGEvent post is fine off-main
             }
             session.onRequestIDR = { [weak self] in
-                Task { @MainActor in self?.encoder?.forceKeyframe() }
+                Task { @MainActor in
+                    guard let self else { return }
+                    // Prefer a small LTR-P refresh from an acknowledged frame; fall back to
+                    // a full keyframe if the receiver hasn't acknowledged any LTR yet.
+                    if !self.ackedLTRTokens.isEmpty { self.encoder?.requestLTRRefresh() }
+                    else { self.encoder?.forceKeyframe() }
+                }
+            }
+            session.onLTRAck = { [weak self] tokens in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.ackedLTRTokens.formUnion(tokens)
+                    self.encoder?.acknowledgeLTR(tokens: Array(self.ackedLTRTokens))
+                }
             }
             session.onRTT = { [weak self] rtt in
                 Task { @MainActor in self?.rttMs = rtt }
@@ -283,8 +297,9 @@ final class SourceController: ObservableObject {
         currentBitrateMbps = Double(currentBitrate) / 1_000_000
         rttBaseline = 0
         rampClearTicks = 0
+        ackedLTRTokens.removeAll()
         enc.forceKeyframe()
-        enc.onEncodedFrame = { [weak self, weak session] data, isKey in
+        enc.onEncodedFrame = { [weak self, weak session] data, isKey, ltrToken in
             Task { @MainActor in
                 guard let self else { return }
                 self.encodedSinceCheck += 1
@@ -294,7 +309,7 @@ final class SourceController: ObservableObject {
                     Log.media.info("first frame ENCODED (\(data.count) bytes, key=\(isKey)) → sending")
                 }
             }
-            session?.sendVideo(data, keyframe: isKey)
+            session?.sendVideo(data, keyframe: isKey, ltrToken: ltrToken)
         }
         capture.setSampleHandler { [weak enc] sampleBuffer in
             guard let pb = sampleBuffer.imageBuffer else { return }

@@ -32,6 +32,11 @@ final class DisplayController: ObservableObject {
     @Published var isConnected = false
     @Published var videoStalled = false
     @Published var sourceName: String?
+    @Published var presentedFps: Double = 0
+    @Published var streamResolution = ""
+
+    private var presentedFrameCount = 0
+    private var fpsTimer: Timer?
 
     init() {
         // NSEvent local monitors deliver on the main thread, so we're already on the
@@ -73,6 +78,7 @@ final class DisplayController: ObservableObject {
         listener.stop()
         inputCapture.isEnabled = false
         stopVideoWatchdog()
+        stopFpsCounter()
         exitImmersive()
         isConnected = false
         isListening = false
@@ -108,7 +114,7 @@ final class DisplayController: ObservableObject {
                 self.startPresenting(config: config)
             }
         }
-        session.onVideoFrame = { [weak self, weak session] nal, isKey, _ in
+        session.onVideoFrame = { [weak self, weak session] nal, isKey, ltrToken in
             Task { @MainActor in
                 guard let self, self.session === session else { return }
                 if !self.firstVideoLogged {
@@ -116,6 +122,9 @@ final class DisplayController: ObservableObject {
                     Log.media.info("first VIDEO frame received (\(nal.count) bytes, key=\(isKey))")
                 }
                 self.decoder?.decode(nalData: nal, isKeyframe: isKey)
+                // Acknowledge long-term references so the source can recover via a small
+                // LTR-P instead of a full keyframe.
+                if ltrToken != 0 { self.session?.sendLTRAck([ltrToken]) }
             }
         }
         session.onClosed = { [weak self, weak session] reason in
@@ -144,8 +153,10 @@ final class DisplayController: ObservableObject {
         videoStalled = false
         sourceName = session?.peerName
         statusText = "Connected"
+        streamResolution = "\(config.width)×\(config.height) @\(config.fps) · \(config.codec.uppercased())"
         inputCapture.isEnabled = true
         enterImmersive()
+        startFpsCounter()
         hasFirstFrame = false
         let now = DispatchTime.now().uptimeNanoseconds
         lastPresentedNanos = now
@@ -164,6 +175,7 @@ final class DisplayController: ObservableObject {
                 guard let self else { return }
                 self.lastPresentedNanos = DispatchTime.now().uptimeNanoseconds
                 self.hasFirstFrame = true
+                self.presentedFrameCount += 1
                 self.decodeErrorStrikes = 0
                 if self.videoStalled { self.videoStalled = false }
                 if !self.firstDecodedLogged {
@@ -197,6 +209,23 @@ final class DisplayController: ObservableObject {
             makeDecoder()
             session?.requestIDR()
         }
+    }
+
+    private func startFpsCounter() {
+        presentedFrameCount = 0
+        fpsTimer?.invalidate()
+        fpsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.presentedFps = Double(self.presentedFrameCount)
+                self.presentedFrameCount = 0
+            }
+        }
+    }
+
+    private func stopFpsCounter() {
+        fpsTimer?.invalidate(); fpsTimer = nil
+        presentedFps = 0
     }
 
     private func startVideoWatchdog() {
@@ -244,6 +273,7 @@ final class DisplayController: ObservableObject {
         sourceName = nil
         inputCapture.isEnabled = false
         stopVideoWatchdog()
+        stopFpsCounter()
         decoder?.invalidate()
         decoder = nil
         presenter.flush()

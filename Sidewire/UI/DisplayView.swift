@@ -38,12 +38,20 @@ struct DisplayView: View {
             }
 
             VStack {
-                HStack {
+                HStack(spacing: 10) {
                     Circle()
                         .fill(controller.isConnected ? .green : (controller.isListening ? .orange : .red))
                         .frame(width: 8, height: 8)
                     Text(controller.sourceName ?? controller.statusText)
                         .font(.caption)
+                    if controller.isConnected {
+                        Text("· \(Int(controller.presentedFps)) fps")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if !controller.streamResolution.isEmpty {
+                            Text("· \(controller.streamResolution)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer()
                     Button("Fullscreen") { toggleFullscreen() }
                     Button("Switch role") { model.switchRole() }

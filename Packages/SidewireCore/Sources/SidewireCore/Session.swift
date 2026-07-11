@@ -41,6 +41,8 @@ public final class Session: @unchecked Sendable {
     public var onRTT: ((Double) -> Void)?
     /// Fired once the transport is ready, with the network interface in use.
     public var onInterface: ((String) -> Void)?
+    /// Source side: the receiver acknowledged these long-term-reference tokens.
+    public var onLTRAck: (([UInt16]) -> Void)?
 
     private var seq: UInt32 = 0
     private var peerHello: Hello?
@@ -128,6 +130,15 @@ public final class Session: @unchecked Sendable {
         }
     }
 
+    /// Display side: acknowledge received long-term-reference tokens.
+    public func sendLTRAck(_ tokens: [UInt16]) {
+        guard !tokens.isEmpty else { return }
+        queue.async {
+            guard self.ready, !self.closed else { return }
+            self.transport.send(type: .ltrAck, seq: self.nextSeq(), payload: LTRAckPayload.encode(tokens))
+        }
+    }
+
     public func close(reason: String) {
         queue.async {
             guard !self.closed else { return }
@@ -207,6 +218,8 @@ public final class Session: @unchecked Sendable {
             }
         case .requestIDR:
             if role == .source { onRequestIDR?() }
+        case .ltrAck:
+            if role == .source { onLTRAck?(LTRAckPayload.decode(frame.payload)) }
         case .bye:
             let reason = JSONWire.decode(ReasonMessage.self, from: frame.payload)?.reason
             finishClose(reason)
