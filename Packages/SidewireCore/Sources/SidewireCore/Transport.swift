@@ -19,6 +19,9 @@ public enum TransportState: Sendable, Equatable {
 public protocol Transport: AnyObject {
     var onFrame: ((Frame) -> Void)? { get set }
     var onState: ((TransportState) -> Void)? { get set }
+    /// Reports a human-readable description of the network interface in use (e.g.
+    /// "Thunderbolt (bridge0)", "Wi-Fi") once the connection is established.
+    var onInterface: ((String) -> Void)? { get set }
 
     func start()
     /// Encode and send one frame. `seq` is chosen by the caller (`Session`).

@@ -39,6 +39,8 @@ public final class Session: @unchecked Sendable {
     public var onClosed: ((String?) -> Void)?
     /// Fired (~2 Hz) with the round-trip time in ms, measured on a single clock.
     public var onRTT: ((Double) -> Void)?
+    /// Fired once the transport is ready, with the network interface in use.
+    public var onInterface: ((String) -> Void)?
 
     private var seq: UInt32 = 0
     private var peerHello: Hello?
@@ -70,6 +72,9 @@ public final class Session: @unchecked Sendable {
         }
         transport.onFrame = { [weak self] frame in
             self?.queue.async { self?.handle(frame) }
+        }
+        transport.onInterface = { [weak self] label in
+            self?.queue.async { self?.onInterface?(label) }
         }
         setPhase(.connecting)
         armConnectTimeout()

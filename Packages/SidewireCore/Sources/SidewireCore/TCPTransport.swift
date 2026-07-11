@@ -15,6 +15,7 @@ let coreLog = Logger(subsystem: "com.kinocoder.sidewire", category: "net")
 public final class TCPTransport: Transport, @unchecked Sendable {
     public var onFrame: ((Frame) -> Void)?
     public var onState: ((TransportState) -> Void)?
+    public var onInterface: ((String) -> Void)?
 
     private let connection: NWConnection
     private let queue: DispatchQueue
@@ -67,7 +68,9 @@ public final class TCPTransport: Transport, @unchecked Sendable {
             case .setup, .preparing:
                 self.onState?(.setup)
             case .ready:
-                coreLog.info("transport READY")
+                let iface = self.describeInterface()
+                coreLog.info("transport READY via \(iface, privacy: .public)")
+                self.onInterface?(iface)
                 self.onState?(.ready)
                 self.receiveLoop()
             case .waiting(let error):
@@ -93,6 +96,22 @@ public final class TCPTransport: Transport, @unchecked Sendable {
 
     public func cancel() {
         connection.cancel()
+    }
+
+    /// Best-effort description of the interface carrying this connection.
+    private func describeInterface() -> String {
+        guard let path = connection.currentPath else { return "unknown" }
+        for iface in path.availableInterfaces where path.usesInterfaceType(iface.type) {
+            switch iface.type {
+            case .wifi: return "Wi-Fi"
+            case .wiredEthernet:
+                return iface.name.hasPrefix("bridge") ? "Thunderbolt (\(iface.name))" : "Ethernet (\(iface.name))"
+            case .loopback: return "loopback"
+            case .cellular: return "Cellular"
+            default: return iface.name
+            }
+        }
+        return "unknown"
     }
 
     private func receiveLoop() {

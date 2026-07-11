@@ -71,6 +71,16 @@ struct SourceView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Source").font(.headline)
                 Text(controller.statusText).font(.caption).foregroundStyle(.secondary)
+                if controller.isConnected, !controller.connectionInterface.isEmpty {
+                    Label {
+                        Text("via \(controller.connectionInterface)" +
+                             (controller.rttMs > 0 ? " · \(Int(controller.rttMs)) ms RTT" : ""))
+                    } icon: {
+                        Image(systemName: controller.connectionInterface.hasPrefix("Thunderbolt") ? "cable.connector" : "wifi")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(controller.connectionInterface.hasPrefix("Thunderbolt") ? .green : .secondary)
+                }
             }
             Spacer()
             Button("Switch role") { model.switchRole() }
@@ -101,8 +111,14 @@ private struct VirtualDisplayStatusView: View {
 private struct PermissionsRow: View {
     var body: some View {
         HStack(spacing: 12) {
-            Button("Grant Screen Recording") { Permissions.requestScreenRecording() }
-            Button("Grant Input Control") { Permissions.requestAccessibility() }
+            Button("Grant Screen Recording") {
+                _ = Permissions.requestScreenRecording()   // prompts the first time / registers the app
+                Permissions.openScreenRecordingSettings()  // and open the pane (reliable if the prompt won't show)
+            }
+            Button("Grant Input Control") {
+                _ = Permissions.requestAccessibility()
+                Permissions.openAccessibilitySettings()
+            }
         }
         .font(.caption)
     }

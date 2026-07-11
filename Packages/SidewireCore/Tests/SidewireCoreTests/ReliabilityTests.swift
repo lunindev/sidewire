@@ -7,6 +7,7 @@ import SidewireProtocol
 private final class SilentTransport: Transport, @unchecked Sendable {
     var onFrame: ((Frame) -> Void)?
     var onState: ((TransportState) -> Void)?
+    var onInterface: ((String) -> Void)?
     func start() { onState?(.ready) }
     func cancel() { onState?(.cancelled) }
     func send(rawType: UInt8, flags: UInt8, seq: UInt32, payload: Data) { /* swallowed */ }

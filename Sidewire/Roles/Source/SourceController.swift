@@ -36,6 +36,7 @@ final class SourceController: ObservableObject {
     @Published var isConnecting = false
     @Published var peerName: String?
     @Published var rttMs: Double = 0
+    @Published var connectionInterface = ""
 
     private var wakeObserver: Any?
 
@@ -97,6 +98,7 @@ final class SourceController: ObservableObject {
         statusText = "Disconnected"
         peerName = nil
         rttMs = 0
+        connectionInterface = ""
     }
 
     // MARK: - Connection
@@ -133,6 +135,9 @@ final class SourceController: ObservableObject {
             }
             session.onRTT = { [weak self] rtt in
                 Task { @MainActor in self?.rttMs = rtt }
+            }
+            session.onInterface = { [weak self] label in
+                Task { @MainActor in self?.connectionInterface = label }
             }
         }
         reconnector.onState = { [weak self] state in

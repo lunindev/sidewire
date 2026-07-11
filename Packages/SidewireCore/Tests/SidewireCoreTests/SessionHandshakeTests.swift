@@ -7,6 +7,7 @@ import SidewireProtocol
 private final class FakeTransport: Transport, @unchecked Sendable {
     var onFrame: ((Frame) -> Void)?
     var onState: ((TransportState) -> Void)?
+    var onInterface: ((String) -> Void)?
     weak var peer: FakeTransport?
 
     func start() { onState?(.ready) }
