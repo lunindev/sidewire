@@ -2,6 +2,8 @@
 
 Implemented in Phase 5, but the identity decisions (bundle id, no sandbox) are set in Phase 0 and must not change later. The owner already has an Apple Developer ID, so signing/notarization is straightforward. Read [00 D1/D8](00-review-and-decisions.md).
 
+> **Implemented.** The whole distribution flow is scripted in [`scripts/release.sh`](../scripts/release.sh): it builds Release with **Developer ID Application: <Your Name> (<YOUR_TEAM_ID>)** signing + **hardened runtime** + a secure timestamp (an override that never touches the dev Apple Development signing), verifies the signature, builds a drag-install DMG (app + `/Applications` symlink), then notarizes + staples both the app and the DMG. Notarization needs a one-time `xcrun notarytool store-credentials sidewire-notary …` (app-specific password) that the owner runs — the script uses the resulting keychain profile and never sees the password. Bundle id is `com.kinocoder.sidewire`; version keys live in `Info.plist` as `$(MARKETING_VERSION)`/`$(CURRENT_PROJECT_VERSION)`. Verified locally: signs cleanly with the runtime flag set and launches (hardened runtime does not break the private `CGVirtualDisplay` API or the helper re-exec); Gatekeeper reports "Unnotarized Developer ID" until the notarize step runs. See the top-level [README § Distribution & notarization](../README.md#distribution--notarization) for the exact commands.
+
 ## The hard facts
 
 - **Mac App Store is impossible** — App Review rejects the private `CGVirtualDisplay` API and `CGEvent` input injection. This is permanent and not worth revisiting.

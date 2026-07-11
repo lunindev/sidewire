@@ -4,7 +4,7 @@
 
 This directory is the implementation specification. It is the source of truth for the rebuild of the app previously called *MacDisplay*. It was produced from a research pass (competitive landscape, macOS capture/virtual-display tech, transport & reconnection, video pipeline, reliability, distribution, UX) plus a 2026 verification pass, then an independent critical review that made the final decisions recorded here.
 
-> **Status:** design complete, implementation not started. Target reader: the engineer (human or model) implementing each phase.
+> **Status:** implemented. Phases 0–5 are all built (Developer ID signing + hardened runtime + a scripted notarized-DMG pipeline; notarization itself is a one-time credential step the owner runs). These documents remain the design source of truth / rationale; for the current shipped state, the build & run instructions, and the notarization steps, see the top-level [README](../README.md).
 
 ## How to read this
 
