@@ -26,6 +26,12 @@ final class VirtualDisplayManager: ObservableObject {
     /// and go straight to in-process creation — so only the first attempt ever pays a delay.
     private var helperUsable = true
 
+    /// Helper subprocess is DISABLED by default: its ~3s activation timeout was eating the
+    /// receiver's no-frame budget and creating reconnect loops, and it isn't validated yet.
+    /// In-process creation is instant and is the known-working path. Flip on later once the
+    /// helper is proven to register when GUI-spawned.
+    private let preferHelper = false
+
     private let helperTimeout: TimeInterval = 3.0
 
     func create() { recreate(width: width, height: height) }
@@ -34,7 +40,7 @@ final class VirtualDisplayManager: ObservableObject {
         self.width = width
         self.height = height
         destroy()
-        if helperUsable {
+        if preferHelper && helperUsable {
             spawnHelper(width: width, height: height)
         } else {
             fallbackInProcess(width: width, height: height)

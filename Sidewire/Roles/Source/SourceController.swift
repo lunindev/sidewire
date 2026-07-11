@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CoreGraphics
 import CoreMedia
 import SidewireProtocol
 import SidewireCore
@@ -27,6 +28,7 @@ final class SourceController: ObservableObject {
     private var lastKeyframe: Data?
     private var encoderStallStrikes = 0
 
+    @Published var needsScreenRecording = false
     @Published var peers: [DiscoveredPeer] = []
     @Published var statusText = "Idle"
     @Published var isConnected = false
@@ -190,6 +192,20 @@ final class SourceController: ObservableObject {
 
     private func beginStreaming(displayID: CGDirectDisplayID) {
         guard reconnector != nil, let config = pendingConfig, let session = activeSession else { return }
+
+        // Gate on Screen Recording: without it ScreenCaptureKit produces no frames, the
+        // receiver tears down, and we'd loop forever re-triggering the TCC prompt. Stop
+        // the loop and tell the user instead.
+        guard CGPreflightScreenCaptureAccess() else {
+            Log.media.error("Screen Recording NOT granted for this build → cannot capture; stopping (grant it + relaunch)")
+            needsScreenRecording = true
+            _ = CGRequestScreenCaptureAccess() // register the app / prompt once
+            disconnect()
+            statusText = "Grant Screen Recording, then reconnect"
+            return
+        }
+        needsScreenRecording = false
+
         // Clear any wiring bound to a previous session, but do NOT stop capture here —
         // the ordered stop→start below owns that so the two never race.
         stopMonitor()

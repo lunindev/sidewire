@@ -21,6 +21,8 @@ final class DisplayController: ObservableObject {
     // Receiver no-frame watchdog + decoder recovery ladder.
     private var videoWatchdog: Timer?
     private var lastPresentedNanos: UInt64 = 0
+    private var streamStartNanos: UInt64 = 0
+    private var hasFirstFrame = false
     private var decodeErrorStrikes = 0
     private var lastIDRRequestNanos: UInt64 = 0
 
@@ -143,7 +145,10 @@ final class DisplayController: ObservableObject {
         statusText = "Connected"
         inputCapture.isEnabled = true
         enterImmersive()
-        lastPresentedNanos = DispatchTime.now().uptimeNanoseconds
+        hasFirstFrame = false
+        let now = DispatchTime.now().uptimeNanoseconds
+        lastPresentedNanos = now
+        streamStartNanos = now
         startVideoWatchdog()
         // Ask for a fresh keyframe so we start clean.
         session?.requestIDR()
@@ -157,6 +162,7 @@ final class DisplayController: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.lastPresentedNanos = DispatchTime.now().uptimeNanoseconds
+                self.hasFirstFrame = true
                 self.decodeErrorStrikes = 0
                 if self.videoStalled { self.videoStalled = false }
                 if !self.firstDecodedLogged {
@@ -209,7 +215,20 @@ final class DisplayController: ObservableObject {
     /// then tear the session down so the Reconnector rebuilds everything.
     private func videoWatchdogTick() {
         guard isConnected else { return }
-        let idleMs = Double(DispatchTime.now().uptimeNanoseconds &- lastPresentedNanos) / 1_000_000
+        let now = DispatchTime.now().uptimeNanoseconds
+        // Before the first frame ever arrives, don't dim/teardown on the normal budget —
+        // display creation + capture start + first keyframe legitimately takes a few
+        // seconds. Only give up after a generous grace (the source's own gates/heartbeat
+        // handle a truly broken source).
+        guard hasFirstFrame else {
+            let sinceStartMs = Double(now &- streamStartNanos) / 1_000_000
+            if sinceStartMs > 12_000 {
+                Log.media.notice("no first frame in \(Int(sinceStartMs))ms → tearing down for reconnect")
+                session?.close(reason: "no-video")
+            }
+            return
+        }
+        let idleMs = Double(now &- lastPresentedNanos) / 1_000_000
         if idleMs > SessionConstants.noFrameTeardown * 1000 {
             Log.media.notice("no decoded frame for \(Int(idleMs))ms → tearing down for reconnect")
             session?.close(reason: "no-frame")

@@ -1,5 +1,6 @@
 import Foundation
 import ScreenCaptureKit
+import CoreGraphics
 import CoreMedia
 
 /// Captures a display via ScreenCaptureKit (420v so the IOSurface feeds the HEVC encoder
@@ -41,9 +42,11 @@ final class ScreenCapture: NSObject, ObservableObject, SCStreamOutput, SCStreamD
     }
 
     func startCapture(displayID: CGDirectDisplayID?, fps: Int, pixelWidth: Int?, pixelHeight: Int?) async {
-        guard !isRunning else { return }
+        guard !isRunning else { Log.media.notice("startCapture ignored: already running"); return }
+        Log.media.info("startCapture: screenRecordingGranted=\(CGPreflightScreenCaptureAccess()), target displayID=\(displayID.map(String.init) ?? "nil")")
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            Log.media.info("SCShareableContent: \(content.displays.count) display(s): \(content.displays.map { $0.displayID })")
 
             let display: SCDisplay
             if let displayID, let match = content.displays.first(where: { $0.displayID == displayID }) {
