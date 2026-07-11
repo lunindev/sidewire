@@ -15,13 +15,24 @@ struct DisplayView: View {
             PresenterRepresentable(view: controller.presenter)
 
             if !controller.isConnected {
-                VStack(spacing: 12) {
+                VStack(spacing: 14) {
                     Image(systemName: "display.trianglebadge.exclamationmark")
                         .font(.system(size: 44))
                         .foregroundStyle(.gray)
                     Text(controller.isListening ? "Waiting for a Source…" : "Not listening")
                         .font(.title3)
                         .foregroundStyle(.gray)
+                    VStack(spacing: 4) {
+                        Text("PAIRING PIN")
+                            .font(.caption).tracking(2).foregroundStyle(.gray)
+                        Text(controller.pairingPIN)
+                            .font(.system(size: 44, weight: .semibold, design: .monospaced))
+                            .tracking(6)
+                            .foregroundStyle(.white)
+                        Text("Enter this on the other Mac to connect")
+                            .font(.caption2).foregroundStyle(.gray)
+                    }
+                    .padding(.top, 4)
                     Text(controller.statusText)
                         .font(.caption)
                         .foregroundStyle(.gray.opacity(0.7))

@@ -48,6 +48,11 @@ final class SourceController: ObservableObject {
 
     @Published var needsScreenRecording = false
     @Published var localThunderboltIP: String?
+    /// The PIN shown on the Display, entered here to derive the TLS-PSK key. Persisted so
+    /// it's entered once.
+    @Published var pairingPIN: String = UserDefaults.standard.string(forKey: "sidewire.enteredPIN") ?? "" {
+        didSet { UserDefaults.standard.set(pairingPIN, forKey: "sidewire.enteredPIN") }
+    }
     @Published var peers: [DiscoveredPeer] = []
     @Published var statusText = "Idle"
     @Published var isConnected = false
@@ -110,12 +115,14 @@ final class SourceController: ObservableObject {
 
     func connect(to peer: DiscoveredPeer) {
         let iface = selectedInterface
-        startLink(peerName: peer.name) { TCPTransport(endpoint: peer.endpoint, interface: iface) }
+        let psk = Pairing.credential(pin: pairingPIN)
+        startLink(peerName: peer.name) { TCPTransport(endpoint: peer.endpoint, interface: iface, psk: psk) }
     }
 
     func connect(host: String, port: UInt16 = ProtocolConstants.fallbackPort) {
         let iface = selectedInterface
-        startLink(peerName: host) { TCPTransport(host: host, port: port, interface: iface) }
+        let psk = Pairing.credential(pin: pairingPIN)
+        startLink(peerName: host) { TCPTransport(host: host, port: port, interface: iface, psk: psk) }
     }
 
     func disconnect() {

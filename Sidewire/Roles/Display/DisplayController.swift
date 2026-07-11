@@ -8,6 +8,8 @@ import SidewireCore
 @MainActor
 final class DisplayController: ObservableObject {
     let presenter = VideoPresenterView(frame: .zero)
+    /// The PIN a Source must enter to connect (shown on this Display).
+    let pairingPIN = Pairing.localPIN
 
     private let listener = TCPListener(serviceName: DeviceIdentity.deviceName)
     private let inputCapture = InputCapture()
@@ -58,7 +60,7 @@ final class DisplayController: ObservableObject {
             Task { @MainActor in self?.accept(transport) }
         }
         inputCapture.start()
-        listener.start()
+        listener.start(psk: Pairing.credential(pin: pairingPIN))
         statusText = "Listening…"
 
         // Esc exits the immersive fullscreen (the InputCapture monitor deliberately

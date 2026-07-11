@@ -27,8 +27,8 @@ public final class TCPTransport: Transport, @unchecked Sendable {
     }
 
     /// Dial a peer by host/port (manual-IP fallback path).
-    public convenience init(host: String, port: UInt16, interface: NWInterface? = nil) {
-        let params = Self.tcpParameters(interface: interface)
+    public convenience init(host: String, port: UInt16, interface: NWInterface? = nil, psk: PSKCredential? = nil) {
+        let params = Self.tcpParameters(interface: interface, psk: psk)
         let conn = NWConnection(host: NWEndpoint.Host(host),
                                 port: NWEndpoint.Port(rawValue: port) ?? .init(integerLiteral: 5005),
                                 using: params)
@@ -36,12 +36,12 @@ public final class TCPTransport: Transport, @unchecked Sendable {
     }
 
     /// Dial a peer by discovered Bonjour endpoint (normal path).
-    public convenience init(endpoint: NWEndpoint, interface: NWInterface? = nil) {
-        let params = Self.tcpParameters(interface: interface)
+    public convenience init(endpoint: NWEndpoint, interface: NWInterface? = nil, psk: PSKCredential? = nil) {
+        let params = Self.tcpParameters(interface: interface, psk: psk)
         self.init(connection: NWConnection(to: endpoint, using: params))
     }
 
-    public static func tcpParameters(interface: NWInterface?) -> NWParameters {
+    public static func tcpParameters(interface: NWInterface?, psk: PSKCredential? = nil) -> NWParameters {
         let tcp = NWProtocolTCP.Options()
         tcp.noDelay = true
         // Backstop liveness (the app heartbeat is primary). connectionDropTime is the
@@ -52,7 +52,7 @@ public final class TCPTransport: Transport, @unchecked Sendable {
         tcp.keepaliveInterval = SessionConstants.tcpKeepaliveInterval
         tcp.keepaliveCount = SessionConstants.tcpKeepaliveCount
         tcp.connectionDropTime = SessionConstants.connectionDropTime
-        let params = NWParameters(tls: nil, tcp: tcp)
+        let params = NWParameters(tls: psk.map { TLSPSK.options($0) }, tcp: tcp)
         // NOTE: do NOT set includePeerToPeer here. On an outbound connection it makes
         // Network.framework attempt an AWDL peer-to-peer path, which stalls in .waiting
         // and drops on a normal Wi-Fi/Ethernet LAN. Peer-to-peer stays on the browser

@@ -27,8 +27,9 @@ public final class TCPListener: @unchecked Sendable {
     /// controls Bonjour service advertisement (off for loopback tests).
     public func start(interface: NWInterface? = nil,
                       port: UInt16 = ProtocolConstants.fallbackPort,
-                      advertise: Bool = true) {
-        let params = TCPTransport.tcpParameters(interface: interface)
+                      advertise: Bool = true,
+                      psk: PSKCredential? = nil) {
+        let params = TCPTransport.tcpParameters(interface: interface, psk: psk)
         // Tolerate a lingering socket in TIME_WAIT / a fast restart on the same port.
         params.allowLocalEndpointReuse = true
 

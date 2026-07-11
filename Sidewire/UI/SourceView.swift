@@ -11,6 +11,23 @@ struct SourceView: View {
         VStack(alignment: .leading, spacing: 16) {
             header
 
+            GroupBox("Pairing PIN (shown on the Display)") {
+                HStack {
+                    TextField("6-digit PIN", text: $controller.pairingPIN)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                        .disabled(controller.isConnected || controller.isConnecting)
+                    if controller.pairingPIN.count == 6 {
+                        Label("Encrypted (TLS)", systemImage: "lock.fill")
+                            .font(.caption).foregroundStyle(.green)
+                    } else {
+                        Text("Enter the PIN shown on the other Mac.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+
             GroupBox("Displays on your network") {
                 HStack {
                     InterfacePicker(controller: controller, monitor: controller.interfaceMonitor)
@@ -41,7 +58,7 @@ struct SourceView: View {
                                     if controller.isConnected { controller.disconnect() }
                                     else { controller.connect(to: peer) }
                                 }
-                                .disabled(controller.isConnecting)
+                                .disabled(controller.isConnecting || (!controller.isConnected && controller.pairingPIN.count != 6))
                             }
                             .padding(.vertical, 6)
                             Divider()
@@ -57,7 +74,7 @@ struct SourceView: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 200)
                         Button("Connect") { controller.connect(host: manualHost) }
-                            .disabled(manualHost.isEmpty || controller.isConnected || controller.isConnecting)
+                            .disabled(manualHost.isEmpty || controller.isConnected || controller.isConnecting || controller.pairingPIN.count != 6)
                     }
                     if let tb = controller.localThunderboltIP {
                         Label("Thunderbolt cable detected (this Mac: \(tb)). Enter the OTHER Mac's 169.254.x.x to go over the cable.",
