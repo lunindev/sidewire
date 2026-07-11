@@ -121,10 +121,8 @@ final class DisplayController: ObservableObject {
                     self.firstVideoLogged = true
                     Log.media.info("first VIDEO frame received (\(nal.count) bytes, key=\(isKey))")
                 }
+                _ = ltrToken // reserved for the future lossy-transport LTR/NACK path
                 self.decoder?.decode(nalData: nal, isKeyframe: isKey)
-                // Acknowledge long-term references so the source can recover via a small
-                // LTR-P instead of a full keyframe.
-                if ltrToken != 0 { self.session?.sendLTRAck([ltrToken]) }
             }
         }
         session.onClosed = { [weak self, weak session] reason in

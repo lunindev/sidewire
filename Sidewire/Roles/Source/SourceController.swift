@@ -37,7 +37,6 @@ final class SourceController: ObservableObject {
     private var ticksSinceEncoded = 0
     private var lastKeyframe: Data?
     private var encoderStallStrikes = 0
-    private var ackedLTRTokens: Set<UInt16> = []
 
     // Adaptive bitrate (RTT-driven congestion control).
     private var currentBitrate = 30_000_000
@@ -165,20 +164,10 @@ final class SourceController: ObservableObject {
                 self?.injector.inject(event: rec) // CGEvent post is fine off-main
             }
             session.onRequestIDR = { [weak self] in
-                Task { @MainActor in
-                    guard let self else { return }
-                    // Prefer a small LTR-P refresh from an acknowledged frame; fall back to
-                    // a full keyframe if the receiver hasn't acknowledged any LTR yet.
-                    if !self.ackedLTRTokens.isEmpty { self.encoder?.requestLTRRefresh() }
-                    else { self.encoder?.forceKeyframe() }
-                }
-            }
-            session.onLTRAck = { [weak self] tokens in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.ackedLTRTokens.formUnion(tokens)
-                    self.encoder?.acknowledgeLTR(tokens: Array(self.ackedLTRTokens))
-                }
+                // A decoder rebuild has no reference frames or parameter sets, so recovery
+                // must be a full keyframe. (LTR-P refresh needs a decoder-state-aware NACK
+                // and only pays off on a lossy transport — deferred to the QUIC path.)
+                Task { @MainActor in self?.encoder?.forceKeyframe() }
             }
             session.onRTT = { [weak self] rtt in
                 Task { @MainActor in self?.rttMs = rtt }
@@ -297,7 +286,6 @@ final class SourceController: ObservableObject {
         currentBitrateMbps = Double(currentBitrate) / 1_000_000
         rttBaseline = 0
         rampClearTicks = 0
-        ackedLTRTokens.removeAll()
         enc.forceKeyframe()
         enc.onEncodedFrame = { [weak self, weak session] data, isKey, ltrToken in
             Task { @MainActor in
@@ -369,11 +357,9 @@ final class SourceController: ObservableObject {
     /// the congestion signal (send buffers filling). Cut fast, ramp up cautiously.
     private func adaptBitrate() {
         guard let enc = encoder, rttMs > 0 else { return }
-        if rttBaseline == 0 || rttMs < rttBaseline {
-            rttBaseline = rttMs
-        } else {
-            rttBaseline += (rttMs - rttBaseline) * 0.02 // let the baseline drift up slowly
-        }
+        // Track the "good" RTT as a minimum; only let it drift UP while the link is clear,
+        // so sustained congestion can't raise the baseline and defeat its own detection.
+        if rttBaseline == 0 || rttMs < rttBaseline { rttBaseline = rttMs }
         let congested = rttMs > max(rttBaseline * 2.5, rttBaseline + 40)
         if congested {
             rampClearTicks = 0
@@ -385,6 +371,7 @@ final class SourceController: ObservableObject {
                 Log.media.notice("congestion (RTT \(Int(self.rttMs))ms vs base \(Int(self.rttBaseline))ms) → \(self.currentBitrate / 1_000_000) Mbps")
             }
         } else {
+            rttBaseline += (rttMs - rttBaseline) * 0.02 // drift up only when not congested
             rampClearTicks += 1
             if rampClearTicks >= 4 { // ~2s stable at 0.5s ticks
                 rampClearTicks = 0
