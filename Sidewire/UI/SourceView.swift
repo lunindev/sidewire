@@ -50,13 +50,23 @@ struct SourceView: View {
                 }
             }
 
-            GroupBox("Connect by IP (Thunderbolt link-local)") {
-                HStack {
-                    TextField("169.254.x.x", text: $manualHost)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 200)
-                    Button("Connect") { controller.connect(host: manualHost) }
-                        .disabled(manualHost.isEmpty || controller.isConnected || controller.isConnecting)
+            GroupBox("Connect by IP — forces Thunderbolt") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        TextField("169.254.x.x", text: $manualHost)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 200)
+                        Button("Connect") { controller.connect(host: manualHost) }
+                            .disabled(manualHost.isEmpty || controller.isConnected || controller.isConnecting)
+                    }
+                    if let tb = controller.localThunderboltIP {
+                        Label("Thunderbolt cable detected (this Mac: \(tb)). Enter the OTHER Mac's 169.254.x.x to go over the cable.",
+                              systemImage: "cable.connector")
+                            .font(.caption2).foregroundStyle(.green)
+                    } else {
+                        Text("No Thunderbolt Bridge found — connect a cable and check System Settings → Network.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
             }
 

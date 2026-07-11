@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Darwin
 
 /// A selectable network interface (Wi-Fi / Thunderbolt bridge / Ethernet).
 struct AvailableInterface: Identifiable, Hashable {
@@ -51,5 +52,32 @@ final class InterfaceMonitor: ObservableObject {
     func stop() {
         monitor?.cancel()
         monitor = nil
+    }
+
+    /// This Mac's own Thunderbolt Bridge IPv4 address (e.g. "169.254.36.98"), if the
+    /// cable is connected. NWPathMonitor omits this link-local-only interface, so we read
+    /// it directly from the BSD interface list. Used to hint the Connect-by-IP flow.
+    static func localThunderboltIP() -> String? {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return nil }
+        defer { freeifaddrs(head) }
+
+        var ptr: UnsafeMutablePointer<ifaddrs>? = first
+        while let cur = ptr {
+            defer { ptr = cur.pointee.ifa_next }
+            let name = String(cString: cur.pointee.ifa_name)
+            guard name.hasPrefix("bridge"), let sa = cur.pointee.ifa_addr,
+                  sa.pointee.sa_family == UInt8(AF_INET),
+                  (Int32(cur.pointee.ifa_flags) & IFF_UP) != 0 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count),
+                           nil, 0, NI_NUMERICHOST) == 0 {
+                let ip = String(cString: host)
+                // The Thunderbolt Bridge self-assigns a 169.254.x.x link-local address;
+                // this filter avoids picking up a VM/Parallels bridge (10.x etc.).
+                if ip.hasPrefix("169.254.") { return ip }
+            }
+        }
+        return nil
     }
 }

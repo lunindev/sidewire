@@ -47,6 +47,7 @@ final class SourceController: ObservableObject {
     @Published var currentBitrateMbps: Double = 0
 
     @Published var needsScreenRecording = false
+    @Published var localThunderboltIP: String?
     @Published var peers: [DiscoveredPeer] = []
     @Published var statusText = "Idle"
     @Published var isConnected = false
@@ -94,6 +95,7 @@ final class SourceController: ObservableObject {
 
     func startDiscovery() {
         interfaceMonitor.start()
+        localThunderboltIP = InterfaceMonitor.localThunderboltIP()
         discovery.start()
     }
     func stopDiscovery() { discovery.stop() }
@@ -101,6 +103,7 @@ final class SourceController: ObservableObject {
     /// Re-scan the network for Displays.
     func refreshDiscovery() {
         peers = []
+        localThunderboltIP = InterfaceMonitor.localThunderboltIP()
         discovery.stop()
         discovery.start()
     }
