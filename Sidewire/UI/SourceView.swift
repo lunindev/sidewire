@@ -12,6 +12,19 @@ struct SourceView: View {
             header
 
             GroupBox("Displays on your network") {
+                HStack {
+                    InterfacePicker(controller: controller, monitor: controller.interfaceMonitor)
+                        .frame(maxWidth: 240)
+                    Spacer()
+                    Button {
+                        controller.refreshDiscovery()
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                }
+                .padding(.bottom, 4)
+                Divider()
+
                 if controller.peers.isEmpty {
                     Label("Searching…", systemImage: "magnifyingglass")
                         .foregroundStyle(.secondary)
@@ -105,6 +118,22 @@ private struct VirtualDisplayStatusView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+private struct InterfacePicker: View {
+    @ObservedObject var controller: SourceController
+    @ObservedObject var monitor: InterfaceMonitor
+
+    var body: some View {
+        Picker("Network", selection: $controller.selectedInterfaceName) {
+            Text("Auto").tag("")
+            ForEach(monitor.interfaces) { iface in
+                Text(iface.label).tag(iface.name)
+            }
+        }
+        .labelsHidden()
+        .disabled(controller.isConnected || controller.isConnecting)
     }
 }
 

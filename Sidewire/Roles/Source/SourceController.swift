@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import CoreGraphics
 import CoreMedia
+import Network
 import SidewireProtocol
 import SidewireCore
 
@@ -13,6 +14,15 @@ final class SourceController: ObservableObject {
     let discovery = Discovery()
     let capture = ScreenCapture()
     let virtualDisplay = VirtualDisplayManager()
+    let interfaceMonitor = InterfaceMonitor()
+
+    /// "" = Auto (let macOS choose). Otherwise the interface name to pin the connection to.
+    @Published var selectedInterfaceName: String = UserDefaults.standard.string(forKey: "sidewire.interface") ?? "" {
+        didSet { UserDefaults.standard.set(selectedInterfaceName, forKey: "sidewire.interface") }
+    }
+    private var selectedInterface: NWInterface? {
+        interfaceMonitor.interfaces.first { $0.name == selectedInterfaceName }?.nwInterface
+    }
 
     private let injector = InputInjector()
     private var encoder: VideoEncoder?
@@ -74,15 +84,27 @@ final class SourceController: ObservableObject {
         }
     }
 
-    func startDiscovery() { discovery.start() }
+    func startDiscovery() {
+        interfaceMonitor.start()
+        discovery.start()
+    }
     func stopDiscovery() { discovery.stop() }
 
+    /// Re-scan the network for Displays.
+    func refreshDiscovery() {
+        peers = []
+        discovery.stop()
+        discovery.start()
+    }
+
     func connect(to peer: DiscoveredPeer) {
-        startLink(peerName: peer.name) { TCPTransport(endpoint: peer.endpoint) }
+        let iface = selectedInterface
+        startLink(peerName: peer.name) { TCPTransport(endpoint: peer.endpoint, interface: iface) }
     }
 
     func connect(host: String, port: UInt16 = ProtocolConstants.fallbackPort) {
-        startLink(peerName: host) { TCPTransport(host: host, port: port) }
+        let iface = selectedInterface
+        startLink(peerName: host) { TCPTransport(host: host, port: port, interface: iface) }
     }
 
     func disconnect() {
