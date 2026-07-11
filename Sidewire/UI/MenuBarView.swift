@@ -26,7 +26,10 @@ struct MenuBarView: View {
 
             Divider()
             HStack {
-                Button("Open Sidewire") { openWindow(id: "main") }
+                Button("Open Sidewire") {
+                    NSApp.activate(ignoringOtherApps: true) // bring the window forward in menu-bar-only mode
+                    openWindow(id: "main")
+                }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
             }

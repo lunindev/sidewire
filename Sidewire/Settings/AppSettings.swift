@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 /// Virtual-display resolution options (pixel dimensions; the display is created HiDPI so
 /// the logical size is half). "Match Display" uses the receiver's native panel.
@@ -57,6 +58,12 @@ final class AppSettings: ObservableObject {
     @Published var maxBitrateMbps: Int { didSet { d.set(maxBitrateMbps, forKey: Keys.maxBitrate) } }
     @Published var resolutionPreset: ResolutionPreset { didSet { d.set(resolutionPreset.rawValue, forKey: Keys.resolution) } }
     @Published var autoConnectLastPeer: Bool { didSet { d.set(autoConnectLastPeer, forKey: Keys.autoConnect) } }
+    /// Run without a Dock icon, living in the menu bar. Applied live via the activation policy.
+    @Published var menuBarOnly: Bool {
+        didSet { d.set(menuBarOnly, forKey: Keys.menuBarOnly); applyActivationPolicy() }
+    }
+    /// One-shot: the first-run welcome has been dismissed.
+    @Published var hasSeenWelcome: Bool { didSet { d.set(hasSeenWelcome, forKey: Keys.hasSeenWelcome) } }
 
     private let d = UserDefaults.standard
     private enum Keys {
@@ -65,6 +72,8 @@ final class AppSettings: ObservableObject {
         static let maxBitrate = "sidewire.maxBitrateMbps"
         static let resolution = "sidewire.resolution"
         static let autoConnect = "sidewire.autoConnect"
+        static let menuBarOnly = "sidewire.menuBarOnly"
+        static let hasSeenWelcome = "sidewire.hasSeenWelcome"
     }
 
     private init() {
@@ -73,7 +82,15 @@ final class AppSettings: ObservableObject {
         maxBitrateMbps = (d.object(forKey: Keys.maxBitrate) as? Int) ?? 50
         resolutionPreset = ResolutionPreset(rawValue: d.string(forKey: Keys.resolution) ?? "") ?? .matchDisplay
         autoConnectLastPeer = d.bool(forKey: Keys.autoConnect)
+        menuBarOnly = d.bool(forKey: Keys.menuBarOnly)
+        hasSeenWelcome = d.bool(forKey: Keys.hasSeenWelcome)
     }
 
     var maxBitrateBps: Int { maxBitrateMbps * 1_000_000 }
+
+    /// Reflect menuBarOnly into the app's Dock presence. `.accessory` hides the Dock icon;
+    /// `.regular` restores it. Safe to call repeatedly.
+    func applyActivationPolicy() {
+        NSApp.setActivationPolicy(menuBarOnly ? .accessory : .regular)
+    }
 }

@@ -32,6 +32,12 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            Section("General") {
+                Toggle("Show only in the menu bar (no Dock icon)", isOn: $settings.menuBarOnly)
+                Text("Sidewire keeps running in the menu bar; reopen the window from there.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section {
                 Text("Changes apply to the next connection.")
                     .font(.caption).foregroundStyle(.secondary)

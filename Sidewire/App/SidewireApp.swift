@@ -3,6 +3,7 @@ import SwiftUI
 // Not @main: the entry point is main.swift, which routes `--vd-helper` to the
 // virtual-display helper before starting the app.
 struct SidewireApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
     var body: some Scene {
@@ -24,12 +25,22 @@ struct SidewireApp: App {
     }
 }
 
+/// Applies the Dock-presence preference before any window shows.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        MainActor.assumeIsolated { AppSettings.shared.applyActivationPolicy() }
+    }
+}
+
 struct RootView: View {
     @EnvironmentObject var model: AppModel
+    @ObservedObject private var settings = AppSettings.shared
 
     var body: some View {
         Group {
-            if model.role == nil {
+            if !settings.hasSeenWelcome {
+                WelcomeView { settings.hasSeenWelcome = true }
+            } else if model.role == nil {
                 RolePickerView()
             } else if let source = model.source {
                 SourceView(controller: source)
