@@ -52,6 +52,7 @@ public final class Session: @unchecked Sendable {
     // Liveness: an application-level heartbeat with a dead-peer watchdog. This is the
     // primary detector (TCP's own default is ~2h and a blocked send can hang forever).
     private var heartbeatTimer: DispatchSourceTimer?
+    private var connectTimer: DispatchSourceTimer?
     private var lastInboundNanos: UInt64 = 0
     private(set) public var lastRTTms: Double = 0
 
@@ -71,7 +72,28 @@ public final class Session: @unchecked Sendable {
             self?.queue.async { self?.handle(frame) }
         }
         setPhase(.connecting)
+        armConnectTimeout()
         transport.start()
+    }
+
+    /// One-shot bound on reaching streaming. Because transient `.waiting` is non-fatal,
+    /// this is what eventually fails a connection to a down/absent peer so the Reconnector
+    /// re-dials (re-resolving the Bonjour service).
+    private func armConnectTimeout() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + SessionConstants.connectTimeout)
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.ready, !self.closed else { return }
+            coreLog.notice("session[\(self.role.rawValue, privacy: .public)] connect/handshake timeout → closing")
+            self.finishClose("timeout")
+        }
+        connectTimer = timer
+        timer.resume()
+    }
+
+    private func cancelConnectTimeout() {
+        connectTimer?.cancel()
+        connectTimer = nil
     }
 
     // MARK: - Sending (public API for controllers)
@@ -128,11 +150,15 @@ public final class Session: @unchecked Sendable {
                 coreLog.info("session[display] sending DISPLAY_INFO \(info.width)x\(info.height)")
                 transport.send(type: .displayInfo, seq: nextSeq(), payload: JSONWire.encode(info))
             }
-        case .failed(let msg), .waiting(let msg):
-            // Phase 0: surface as closed; Phase 1 replaces this with the reconnect engine.
+        case .failed(let msg):
             finishClose(msg)
         case .cancelled:
             finishClose(nil)
+        case .waiting(let msg):
+            // Transient — Network.framework keeps retrying (normal during initial connect
+            // and brief flaps). Don't close here; the heartbeat watchdog catches a real
+            // death in ~2.5s, avoiding a needless reconnect on a momentary blip.
+            coreLog.notice("session[\(self.role.rawValue, privacy: .public)] transport waiting: \(msg, privacy: .public)")
         case .setup:
             break
         }
@@ -218,6 +244,7 @@ public final class Session: @unchecked Sendable {
     private func becomeReady(_ cfg: Config) {
         guard !ready else { return }
         ready = true
+        cancelConnectTimeout()
         setPhase(.streaming)
         coreLog.info("session[\(self.role.rawValue, privacy: .public)] READY codec=\(cfg.codec, privacy: .public) \(cfg.width)x\(cfg.height)@\(cfg.fps)")
         onReady?(cfg)
@@ -284,6 +311,7 @@ public final class Session: @unchecked Sendable {
         guard !closed else { return }
         closed = true
         stopHeartbeat()
+        cancelConnectTimeout()
         coreLog.notice("session[\(self.role.rawValue, privacy: .public)] CLOSED reason=\(reason ?? "nil", privacy: .public)")
         transport.cancel()
         setPhase(.closed(reason))

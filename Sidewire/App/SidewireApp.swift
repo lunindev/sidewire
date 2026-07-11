@@ -1,6 +1,7 @@
 import SwiftUI
 
-@main
+// Not @main: the entry point is main.swift, which routes `--vd-helper` to the
+// virtual-display helper before starting the app.
 struct SidewireApp: App {
     @StateObject private var model = AppModel()
 

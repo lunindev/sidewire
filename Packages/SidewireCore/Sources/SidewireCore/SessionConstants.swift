@@ -8,6 +8,9 @@ public enum SessionConstants {
     public static let heartbeatInterval: TimeInterval = 0.5
     public static let heartbeatTimeout: TimeInterval = 2.5
     public static let heartbeatMissLimit = 5
+    // Bound on reaching .streaming after start(). Since transient .waiting is non-fatal,
+    // this ensures a Source dialing a down peer eventually fails → the Reconnector re-dials.
+    public static let connectTimeout: TimeInterval = 10.0
 
     // TCP options
     public static let tcpKeepaliveIdle = 2       // seconds
@@ -17,8 +20,11 @@ public enum SessionConstants {
 
     // Reconnect / viability (Phase 1)
     public static let viabilityDebounce: TimeInterval = 2.5
-    public static let noFrameDim: TimeInterval = 0.75
-    public static let noFrameTeardown: TimeInterval = 3.0
+    // Source keep-alive tick (resends a keyframe on a static screen). Must be shorter
+    // than noFrameDim so a still screen never dims.
+    public static let keepAliveInterval: TimeInterval = 0.5
+    public static let noFrameDim: TimeInterval = 1.5
+    public static let noFrameTeardown: TimeInterval = 4.0
     public static let encoderWatchdog: TimeInterval = 1.0
     public static let encoderStallEscalate = 3
     public static let decoderRebuildLimit = 3

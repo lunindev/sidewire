@@ -79,7 +79,7 @@ struct SourceView: View {
 }
 
 private struct VirtualDisplayStatusView: View {
-    @ObservedObject var vd: VirtualDisplayController
+    @ObservedObject var vd: VirtualDisplayManager
     @ObservedObject var capture: ScreenCapture
     let isStreaming: Bool
 

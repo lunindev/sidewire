@@ -11,6 +11,8 @@ final class VideoDecoder {
     private var reusableBlockData = Data()
 
     var onDecodedFrame: ((CMSampleBuffer) -> Void)?
+    /// Called on a VideoToolbox decode error (drives the recovery ladder in DisplayController).
+    var onDecodeError: ((OSStatus) -> Void)?
 
     func decode(nalData: Data, isKeyframe: Bool) {
         guard nalData.count > 4 else { return }
@@ -174,9 +176,10 @@ final class VideoDecoder {
         }
 
         var flagsOut: VTDecodeInfoFlags = []
-        VTDecompressionSessionDecodeFrame(session, sampleBuffer: sampleBuffer,
+        let decodeStatus = VTDecompressionSessionDecodeFrame(session, sampleBuffer: sampleBuffer,
                                           flags: [._EnableAsynchronousDecompression], infoFlagsOut: &flagsOut) { [weak self] status, _, imageBuffer, presentationTime, _ in
-            guard status == noErr, let imageBuffer else { return }
+            if status != noErr { self?.onDecodeError?(status); return }
+            guard let imageBuffer else { return }
             var outputFormatDesc: CMVideoFormatDescription?
             CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: imageBuffer, formatDescriptionOut: &outputFormatDesc)
             guard let outputFormatDesc else { return }
@@ -188,6 +191,7 @@ final class VideoDecoder {
                                                sampleTiming: &outputTiming, sampleBufferOut: &outputSampleBuffer)
             if let outputSampleBuffer { self?.onDecodedFrame?(outputSampleBuffer) }
         }
+        if decodeStatus != noErr { onDecodeError?(decodeStatus) }
     }
 
     deinit { invalidate() }

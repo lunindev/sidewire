@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import CoreMedia
 import SidewireProtocol
 import SidewireCore
@@ -10,7 +11,7 @@ import SidewireCore
 final class SourceController: ObservableObject {
     let discovery = Discovery()
     let capture = ScreenCapture()
-    let virtualDisplay = VirtualDisplayController()
+    let virtualDisplay = VirtualDisplayManager()
 
     private let injector = InputInjector()
     private var encoder: VideoEncoder?
@@ -18,6 +19,13 @@ final class SourceController: ObservableObject {
     private weak var activeSession: Session?
     private var pendingConfig: Config?
     private var firstEncodedLogged = false
+
+    // Source-side monitor: static-screen keep-alive + encoder-stall watchdog.
+    private var monitorTimer: Timer?
+    private var encodedSinceCheck = 0
+    private var ticksSinceEncoded = 0
+    private var lastKeyframe: Data?
+    private var encoderStallStrikes = 0
 
     @Published var peers: [DiscoveredPeer] = []
     @Published var statusText = "Idle"
@@ -27,12 +35,39 @@ final class SourceController: ObservableObject {
     @Published var peerName: String?
     @Published var rttMs: Double = 0
 
+    private var wakeObserver: Any?
+
     init() {
         discovery.onPeersChanged = { [weak self] peers in
             Task { @MainActor in self?.peers = peers }
         }
         virtualDisplay.onActivated = { [weak self] did in
             Task { @MainActor in self?.beginStreaming(displayID: did) }
+        }
+        // A capture death (SCStream error) is not a static screen — force a reconnect.
+        capture.onStopped = { [weak self] error in
+            Task { @MainActor in
+                guard let self, self.isStreaming else { return }
+                Log.media.notice("capture stopped (\(error.localizedDescription)) → reconnect")
+                self.activeSession?.close(reason: "capture-stall")
+            }
+        }
+        // On wake, force an immediate reconnect AND rebuild the virtual display (fragile
+        // across sleep) rather than reuse a possibly-invalidated one.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.reconnector != nil else { return }
+                Log.source.notice("woke from sleep → rebuilding")
+                self.virtualDisplay.destroy()
+                self.activeSession?.close(reason: "wake")
+            }
+        }
+    }
+
+    deinit {
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
     }
 
@@ -155,47 +190,115 @@ final class SourceController: ObservableObject {
 
     private func beginStreaming(displayID: CGDirectDisplayID) {
         guard reconnector != nil, let config = pendingConfig, let session = activeSession else { return }
-        tearDownEncoderCapture() // clear any wiring bound to a previous session
+        // Clear any wiring bound to a previous session, but do NOT stop capture here —
+        // the ordered stop→start below owns that so the two never race.
+        stopMonitor()
+        encoder?.invalidate()
+        encoder = nil
+        isStreaming = false
         injector.virtualDisplayID = displayID
         firstEncodedLogged = false
         Log.media.info("virtual display \(displayID) active → starting capture \(config.width)x\(config.height)@\(config.fps) codec=\(config.codec)")
 
+        let enc = makeEncoder(config: config, session: session)
+        statusText = "Streaming"
+        startMonitor()
+        Task { [weak self] in
+            // Ordered: always stop a prior stream before starting, so startCapture never
+            // no-ops against a still-running capture (which would leave "streaming" with
+            // no frames).
+            await self?.capture.stopCapture()
+            await self?.capture.startCapture(displayID: displayID, fps: config.fps,
+                                             pixelWidth: config.width, pixelHeight: config.height)
+            await MainActor.run {
+                guard let self, self.encoder === enc else { return } // stale completion after teardown
+                self.isStreaming = true
+            }
+        }
+    }
+
+    /// Create an encoder wired to the current session + capture. Reused by beginStreaming
+    /// and the encoder-stall recovery path.
+    @discardableResult
+    private func makeEncoder(config: Config, session: Session) -> VideoEncoder {
         let enc = VideoEncoder(width: Int32(config.width), height: Int32(config.height),
                                codec: VideoCodec(rawValue: config.codec) ?? .hevc,
                                fps: config.fps, bitrate: config.bitrateStartBps)
         encoder = enc
         enc.forceKeyframe()
         enc.onEncodedFrame = { [weak self, weak session] data, isKey in
-            if let self, !self.firstEncodedLogged {
-                self.firstEncodedLogged = true
-                Log.media.info("first frame ENCODED (\(data.count) bytes, key=\(isKey)) → sending")
+            Task { @MainActor in
+                guard let self else { return }
+                self.encodedSinceCheck += 1
+                if isKey { self.lastKeyframe = data }
+                if !self.firstEncodedLogged {
+                    self.firstEncodedLogged = true
+                    Log.media.info("first frame ENCODED (\(data.count) bytes, key=\(isKey)) → sending")
+                }
             }
             session?.sendVideo(data, keyframe: isKey)
         }
-        capture.onSampleBuffer = { [weak enc] sampleBuffer in
+        capture.setSampleHandler { [weak enc] sampleBuffer in
             guard let pb = sampleBuffer.imageBuffer else { return }
             let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             enc?.encode(pixelBuffer: pb, presentationTime: pts)
         }
+        return enc
+    }
 
-        statusText = "Streaming"
-        Task { [weak self] in
-            await self?.capture.startCapture(displayID: displayID, fps: config.fps,
-                                             pixelWidth: config.width, pixelHeight: config.height)
-            await MainActor.run {
-                // Ignore a stale completion after teardown (tearDownEncoderCapture nils encoder).
-                guard let self, self.encoder === enc else { return }
-                self.isStreaming = true
+    private func startMonitor() {
+        stopMonitor()
+        encodedSinceCheck = 0
+        encoderStallStrikes = 0
+        ticksSinceEncoded = 0
+        monitorTimer = Timer.scheduledTimer(withTimeInterval: SessionConstants.keepAliveInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.monitorTick() }
+        }
+    }
+
+    private func stopMonitor() {
+        monitorTimer?.invalidate()
+        monitorTimer = nil
+    }
+
+    /// Runs every keepAliveInterval while streaming. Distinguishes a legitimately static
+    /// screen (send a keep-alive keyframe so the receiver's no-frame watchdog isn't fooled)
+    /// from a wedged encoder (capture is delivering but no output for ~1s → recreate;
+    /// escalate to reconnect if it recurs).
+    private func monitorTick() {
+        guard isStreaming, let config = pendingConfig, let session = activeSession else { return }
+        let encoded = encodedSinceCheck
+        encodedSinceCheck = 0
+        if encoded > 0 { encoderStallStrikes = 0; ticksSinceEncoded = 0; return }
+        ticksSinceEncoded += 1
+
+        if capture.fps > 2 {
+            // Capture is delivering but the encoder produced nothing → stall (wait ~1s).
+            guard ticksSinceEncoded >= 2 else { return }
+            ticksSinceEncoded = 0
+            encoderStallStrikes += 1
+            Log.media.notice("encoder stall (\(self.encoderStallStrikes)) — capture fps=\(self.capture.fps) but 0 encoded")
+            if encoderStallStrikes >= SessionConstants.encoderStallEscalate {
+                encoderStallStrikes = 0
+                session.close(reason: "encoder-stall") // escalate → reconnect rebuilds everything
+            } else {
+                encoder?.invalidate()
+                makeEncoder(config: config, session: session)
             }
+        } else if let keyframe = lastKeyframe {
+            // Static screen: resend the last keyframe so the receiver keeps presenting.
+            session.sendVideo(keyframe, keyframe: true)
         }
     }
 
     private func tearDownEncoderCapture() {
-        capture.onSampleBuffer = nil
+        stopMonitor()
+        capture.setSampleHandler(nil)
         Task { await capture.stopCapture() }
         encoder?.flush()
         encoder?.invalidate()
         encoder = nil
+        lastKeyframe = nil
         isStreaming = false
     }
 }

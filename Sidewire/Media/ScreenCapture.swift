@@ -2,10 +2,10 @@ import Foundation
 import ScreenCaptureKit
 import CoreMedia
 
-/// Captures a display via ScreenCaptureKit. Phase 0 change from the old app:
-/// pixelFormat is 420v (NV12, video-range) so the captured IOSurface feeds the
-/// HEVC encoder with no RGB→YUV conversion (see docs/04-media-pipeline.md § Capture).
-final class ScreenCapture: NSObject, ObservableObject, SCStreamOutput {
+/// Captures a display via ScreenCaptureKit (420v so the IOSurface feeds the HEVC encoder
+/// with no color conversion). The sample handler is mutated only on the capture queue to
+/// avoid a torn read of the closure while a frame is being delivered.
+final class ScreenCapture: NSObject, ObservableObject, SCStreamOutput, SCStreamDelegate {
     private var stream: SCStream?
     private var isRunning = false
 
@@ -13,12 +13,20 @@ final class ScreenCapture: NSObject, ObservableObject, SCStreamOutput {
     @Published var captureStatus = "Idle"
     @Published var availableDisplays: [SCDisplay] = []
 
-    /// Called on the capture queue with each complete frame's sample buffer.
-    var onSampleBuffer: ((CMSampleBuffer) -> Void)?
+    /// Fired if the capture stops on its own (SCStream error) — a real capture death the
+    /// source must react to (reconnect), distinct from a legitimately static screen.
+    var onStopped: ((Error) -> Void)?
 
+    // Touched only on captureQueue.
+    private var sampleHandler: ((CMSampleBuffer) -> Void)?
     private var frameCount = 0
     private var fpsTimer: Timer?
     private let captureQueue = DispatchQueue(label: "com.kinocoder.sidewire.capture")
+
+    /// Set/replace the per-frame handler safely (serialized on the capture queue).
+    func setSampleHandler(_ handler: ((CMSampleBuffer) -> Void)?) {
+        captureQueue.async { self.sampleHandler = handler }
+    }
 
     func fetchAvailableDisplays() async {
         do {
@@ -54,14 +62,13 @@ final class ScreenCapture: NSObject, ObservableObject, SCStreamOutput {
             let config = SCStreamConfiguration()
             config.width = captureW
             config.height = captureH
-            // 420v: hand YUV straight to the encoder, no color conversion.
             config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
             config.colorSpaceName = CGColorSpace.sRGB
             config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
             config.queueDepth = 5
             config.showsCursor = true
 
-            let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+            let stream = SCStream(filter: filter, configuration: config, delegate: self)
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: captureQueue)
             try await stream.startCapture()
             self.stream = stream
@@ -78,29 +85,52 @@ final class ScreenCapture: NSObject, ObservableObject, SCStreamOutput {
 
     func stopCapture() async {
         guard isRunning else { return }
+        isRunning = false
         try? await stream?.stopCapture()
         stream = nil
-        isRunning = false
         await MainActor.run {
             self.captureStatus = "Stopped"
             self.fpsTimer?.invalidate(); self.fpsTimer = nil; self.fps = 0
         }
     }
 
+    // SCStreamOutput — on captureQueue.
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.imageBuffer != nil else { return }
-        // Phase 0: forward complete frames. Phase 1 adds explicit SCFrameStatus.idle
-        // gating + the static-screen keep-alive (see docs/03, docs/04).
+        // Only forward .complete frames; a static screen yields .idle (no new surface).
+        guard isCompleteFrame(sampleBuffer) else { return }
         frameCount += 1
-        onSampleBuffer?(sampleBuffer)
+        sampleHandler?(sampleBuffer)
+    }
+
+    // SCStreamDelegate — capture stopped with an error (real death).
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        Task { @MainActor in
+            self.isRunning = false
+            self.captureStatus = "Capture stopped: \(error.localizedDescription)"
+            self.onStopped?(error)
+        }
+    }
+
+    private func isCompleteFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+                as? [[SCStreamFrameInfo: Any]],
+              let raw = attachments.first?[.status] as? Int,
+              let status = SCFrameStatus(rawValue: raw) else {
+            return true // no status info → treat as a real frame (conservative)
+        }
+        return status == .complete
     }
 
     private func startFPSCounter() {
-        frameCount = 0
+        captureQueue.async { self.frameCount = 0 }
         fpsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.fps = Double(self.frameCount)
-            self.frameCount = 0
+            self.captureQueue.async {
+                let c = self.frameCount
+                self.frameCount = 0
+                Task { @MainActor in self.fps = Double(c) }
+            }
         }
     }
 }

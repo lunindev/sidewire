@@ -26,6 +26,15 @@ struct DisplayView: View {
                         .font(.caption)
                         .foregroundStyle(.gray.opacity(0.7))
                 }
+            } else if controller.videoStalled {
+                // Connected but no frames — dim the last frame and say so, never a bare freeze.
+                Color.black.opacity(0.55).ignoresSafeArea()
+                VStack(spacing: 10) {
+                    ProgressView().controlSize(.large).tint(.white)
+                    Text("Reconnecting…")
+                        .font(.title3)
+                        .foregroundStyle(.white)
+                }
             }
 
             VStack {

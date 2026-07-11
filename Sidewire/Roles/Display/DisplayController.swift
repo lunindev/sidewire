@@ -18,9 +18,16 @@ final class DisplayController: ObservableObject {
     private var firstVideoLogged = false
     private var firstDecodedLogged = false
 
+    // Receiver no-frame watchdog + decoder recovery ladder.
+    private var videoWatchdog: Timer?
+    private var lastPresentedNanos: UInt64 = 0
+    private var decodeErrorStrikes = 0
+    private var lastIDRRequestNanos: UInt64 = 0
+
     @Published var statusText = "Idle"
     @Published var isListening = false
     @Published var isConnected = false
+    @Published var videoStalled = false
     @Published var sourceName: String?
 
     init() {
@@ -62,9 +69,11 @@ final class DisplayController: ObservableObject {
         session = nil
         listener.stop()
         inputCapture.isEnabled = false
+        stopVideoWatchdog()
         exitImmersive()
         isConnected = false
         isListening = false
+        videoStalled = false
         statusText = "Stopped"
     }
 
@@ -126,11 +135,30 @@ final class DisplayController: ObservableObject {
     }
 
     private func startPresenting(config: Config) {
+        makeDecoder()
+        presenter.flush()
+        isConnected = true
+        videoStalled = false
+        sourceName = session?.peerName
+        statusText = "Connected"
+        inputCapture.isEnabled = true
+        enterImmersive()
+        lastPresentedNanos = DispatchTime.now().uptimeNanoseconds
+        startVideoWatchdog()
+        // Ask for a fresh keyframe so we start clean.
+        session?.requestIDR()
+        Log.media.info("presenting started \(config.width)x\(config.height)@\(config.fps) codec=\(config.codec)")
+    }
+
+    private func makeDecoder() {
         let decoder = VideoDecoder()
         self.decoder = decoder
         decoder.onDecodedFrame = { [weak self] sampleBuffer in
             Task { @MainActor in
                 guard let self else { return }
+                self.lastPresentedNanos = DispatchTime.now().uptimeNanoseconds
+                self.decodeErrorStrikes = 0
+                if self.videoStalled { self.videoStalled = false }
                 if !self.firstDecodedLogged {
                     self.firstDecodedLogged = true
                     Log.media.info("first frame DECODED → presenting")
@@ -138,21 +166,64 @@ final class DisplayController: ObservableObject {
                 self.presenter.enqueue(sampleBuffer)
             }
         }
-        presenter.flush()
-        isConnected = true
-        sourceName = session?.peerName
-        statusText = "Connected"
-        inputCapture.isEnabled = true
-        enterImmersive()
-        // Ask for a fresh keyframe so we start clean.
-        session?.requestIDR()
-        Log.media.info("presenting started \(config.width)x\(config.height)@\(config.fps) codec=\(config.codec)")
+        decoder.onDecodeError = { [weak self] status in
+            Task { @MainActor in self?.handleDecodeError(status) }
+        }
+    }
+
+    // MARK: - Recovery
+
+    /// VideoToolbox recovery ladder: request an IDR (throttled) on any decode error, and
+    /// after repeated errors rebuild the decoder so the next keyframe fully re-primes it.
+    private func handleDecodeError(_ status: OSStatus) {
+        decodeErrorStrikes += 1
+        Log.media.notice("decode error \(status) (strike \(self.decodeErrorStrikes))")
+        let now = DispatchTime.now().uptimeNanoseconds
+        if Double(now &- lastIDRRequestNanos) / 1_000_000 > 300 {
+            lastIDRRequestNanos = now
+            session?.requestIDR()
+        }
+        if decodeErrorStrikes >= SessionConstants.decoderRebuildLimit {
+            decodeErrorStrikes = 0
+            Log.media.notice("rebuilding decoder after repeated errors")
+            decoder?.invalidate()
+            makeDecoder()
+            session?.requestIDR()
+        }
+    }
+
+    private func startVideoWatchdog() {
+        stopVideoWatchdog()
+        videoWatchdog = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.videoWatchdogTick() }
+        }
+    }
+
+    private func stopVideoWatchdog() {
+        videoWatchdog?.invalidate()
+        videoWatchdog = nil
+    }
+
+    /// If no decoded frame has been presented for a while (despite the source's keep-alive
+    /// keyframes on a static screen), the video pipeline is wedged: dim + show reconnecting,
+    /// then tear the session down so the Reconnector rebuilds everything.
+    private func videoWatchdogTick() {
+        guard isConnected else { return }
+        let idleMs = Double(DispatchTime.now().uptimeNanoseconds &- lastPresentedNanos) / 1_000_000
+        if idleMs > SessionConstants.noFrameTeardown * 1000 {
+            Log.media.notice("no decoded frame for \(Int(idleMs))ms → tearing down for reconnect")
+            session?.close(reason: "no-frame")
+        } else if idleMs > SessionConstants.noFrameDim * 1000 {
+            if !videoStalled { videoStalled = true }
+        }
     }
 
     private func handleClosed(_ reason: String?) {
         isConnected = false
+        videoStalled = false
         sourceName = nil
         inputCapture.isEnabled = false
+        stopVideoWatchdog()
         decoder?.invalidate()
         decoder = nil
         presenter.flush()
