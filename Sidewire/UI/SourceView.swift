@@ -87,7 +87,8 @@ struct SourceView: View {
                 if controller.isConnected, !controller.connectionInterface.isEmpty {
                     Label {
                         Text("via \(controller.connectionInterface)" +
-                             (controller.rttMs > 0 ? " · \(Int(controller.rttMs)) ms RTT" : ""))
+                             (controller.rttMs > 0 ? " · \(Int(controller.rttMs)) ms" : "") +
+                             (controller.currentBitrateMbps > 0 ? " · \(String(format: "%.0f", controller.currentBitrateMbps)) Mbps" : ""))
                     } icon: {
                         Image(systemName: controller.connectionInterface.hasPrefix("Thunderbolt") ? "cable.connector" : "wifi")
                     }

@@ -38,6 +38,14 @@ final class SourceController: ObservableObject {
     private var lastKeyframe: Data?
     private var encoderStallStrikes = 0
 
+    // Adaptive bitrate (RTT-driven congestion control).
+    private var currentBitrate = 30_000_000
+    private var rttBaseline: Double = 0
+    private var rampClearTicks = 0
+    private let minBitrate = 5_000_000
+    private let maxBitrate = 50_000_000
+    @Published var currentBitrateMbps: Double = 0
+
     @Published var needsScreenRecording = false
     @Published var peers: [DiscoveredPeer] = []
     @Published var statusText = "Idle"
@@ -268,6 +276,10 @@ final class SourceController: ObservableObject {
                                codec: VideoCodec(rawValue: config.codec) ?? .hevc,
                                fps: config.fps, bitrate: config.bitrateStartBps)
         encoder = enc
+        currentBitrate = config.bitrateStartBps
+        currentBitrateMbps = Double(currentBitrate) / 1_000_000
+        rttBaseline = 0
+        rampClearTicks = 0
         enc.forceKeyframe()
         enc.onEncodedFrame = { [weak self, weak session] data, isKey in
             Task { @MainActor in
@@ -310,6 +322,7 @@ final class SourceController: ObservableObject {
     /// escalate to reconnect if it recurs).
     private func monitorTick() {
         guard isStreaming, let config = pendingConfig, let session = activeSession else { return }
+        adaptBitrate()
         let encoded = encodedSinceCheck
         encodedSinceCheck = 0
         if encoded > 0 { encoderStallStrikes = 0; ticksSinceEncoded = 0; return }
@@ -331,6 +344,39 @@ final class SourceController: ObservableObject {
         } else if let keyframe = lastKeyframe {
             // Static screen: resend the last keyframe so the receiver keeps presenting.
             session.sendVideo(keyframe, keyframe: true)
+        }
+    }
+
+    /// RTT-driven congestion control. On TCP there is no packet loss, so a rising RTT is
+    /// the congestion signal (send buffers filling). Cut fast, ramp up cautiously.
+    private func adaptBitrate() {
+        guard let enc = encoder, rttMs > 0 else { return }
+        if rttBaseline == 0 || rttMs < rttBaseline {
+            rttBaseline = rttMs
+        } else {
+            rttBaseline += (rttMs - rttBaseline) * 0.02 // let the baseline drift up slowly
+        }
+        let congested = rttMs > max(rttBaseline * 2.5, rttBaseline + 40)
+        if congested {
+            rampClearTicks = 0
+            let reduced = max(minBitrate, Int(Double(currentBitrate) * 0.8))
+            if reduced != currentBitrate {
+                currentBitrate = reduced
+                enc.updateBitrate(currentBitrate)
+                currentBitrateMbps = Double(currentBitrate) / 1_000_000
+                Log.media.notice("congestion (RTT \(Int(self.rttMs))ms vs base \(Int(self.rttBaseline))ms) → \(self.currentBitrate / 1_000_000) Mbps")
+            }
+        } else {
+            rampClearTicks += 1
+            if rampClearTicks >= 4 { // ~2s stable at 0.5s ticks
+                rampClearTicks = 0
+                let raised = min(maxBitrate, Int(Double(currentBitrate) * 1.1))
+                if raised != currentBitrate {
+                    currentBitrate = raised
+                    enc.updateBitrate(currentBitrate)
+                    currentBitrateMbps = Double(currentBitrate) / 1_000_000
+                }
+            }
         }
     }
 
