@@ -39,6 +39,7 @@ final class AppModel: ObservableObject {
             source = c
             display = nil
             c.startDiscovery()
+            c.maybeAutoConnect()
         case .display:
             let d = DisplayController()
             display = d

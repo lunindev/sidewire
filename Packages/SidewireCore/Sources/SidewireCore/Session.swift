@@ -47,6 +47,10 @@ public final class Session: @unchecked Sendable {
     /// Source override for the virtual-display resolution (nil = match the Display's native).
     /// Set before start().
     public var preferredDimensions: (width: Int, height: Int)?
+    /// Source stream-preference overrides (nil / 0 = negotiate normally). Set before start().
+    public var preferredCodec: String?
+    public var preferredMaxFps: Int?
+    public var preferredMaxBitrateBps: Int?
 
     private var seq: UInt32 = 0
     private var peerHello: Hello?
@@ -256,7 +260,9 @@ public final class Session: @unchecked Sendable {
         guard role == .source, !configSent, let peer = peerHello else { return }
         // We need the display info to size the virtual display exactly.
         guard let info = peerDisplayInfo else { return }
-        let cfg = Self.negotiate(local: localHello, peer: peer, displayInfo: info, override: preferredDimensions)
+        let cfg = Self.negotiate(local: localHello, peer: peer, displayInfo: info,
+                                 override: preferredDimensions, codecOverride: preferredCodec,
+                                 fpsCap: preferredMaxFps, maxBitrateBps: preferredMaxBitrateBps)
         configSent = true
         coreLog.info("session[source] sending CONFIG codec=\(cfg.codec, privacy: .public) \(cfg.width)x\(cfg.height)@\(cfg.fps)")
         transport.send(type: .config, seq: nextSeq(), payload: JSONWire.encode(cfg))
@@ -275,14 +281,29 @@ public final class Session: @unchecked Sendable {
     // MARK: - Helpers
 
     static func negotiate(local: Hello, peer: Hello, displayInfo: DisplayInfo?,
-                          override: (width: Int, height: Int)? = nil) -> Config {
-        let codec = local.capabilities.videoCodecs.first { peer.capabilities.videoCodecs.contains($0) } ?? "h264"
+                          override: (width: Int, height: Int)? = nil,
+                          codecOverride: String? = nil,
+                          fpsCap: Int? = nil,
+                          maxBitrateBps: Int? = nil) -> Config {
+        let common = local.capabilities.videoCodecs.first { peer.capabilities.videoCodecs.contains($0) } ?? "h264"
+        // Honor a codec override only if BOTH peers actually support it.
+        let codec: String
+        if let c = codecOverride,
+           local.capabilities.videoCodecs.contains(c), peer.capabilities.videoCodecs.contains(c) {
+            codec = c
+        } else {
+            codec = common
+        }
         let width = override?.width ?? displayInfo?.width ?? min(local.capabilities.maxWidth, peer.capabilities.maxWidth)
         let height = override?.height ?? displayInfo?.height ?? min(local.capabilities.maxHeight, peer.capabilities.maxHeight)
-        let fps = min(local.capabilities.maxFps, peer.capabilities.maxFps)
+        var fps = min(local.capabilities.maxFps, peer.capabilities.maxFps)
+        if let cap = fpsCap, cap > 0 { fps = min(fps, cap) }
         let ltr = local.capabilities.ltr && peer.capabilities.ltr
+        let maxBps = maxBitrateBps ?? 50_000_000
+        let startBps = min(30_000_000, maxBps)
+        let minBps = min(5_000_000, maxBps)
         return Config(codec: codec, width: width, height: height, fps: fps, ltr: ltr,
-                      bitrateStartBps: 30_000_000, bitrateMinBps: 5_000_000, bitrateMaxBps: 50_000_000)
+                      bitrateStartBps: startBps, bitrateMinBps: minBps, bitrateMaxBps: maxBps)
     }
 
     private func sendHello() {

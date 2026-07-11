@@ -17,6 +17,10 @@ struct SidewireApp: App {
                 .environmentObject(model)
         }
         .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+        }
     }
 }
 

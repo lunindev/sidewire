@@ -5,6 +5,7 @@ import SidewireCore
 struct SourceView: View {
     @ObservedObject var controller: SourceController
     @EnvironmentObject var model: AppModel
+    @ObservedObject private var settings = AppSettings.shared
     @StateObject private var permissions = PermissionsModel()
     @State private var manualHost = SourceController.lastHost
 
@@ -100,9 +101,9 @@ struct SourceView: View {
                 }
             }
 
-            GroupBox("Resolution") {
+            GroupBox("Quality") {
                 HStack {
-                    Picker("Resolution", selection: $controller.resolutionPreset) {
+                    Picker("Resolution", selection: $settings.resolutionPreset) {
                         ForEach(ResolutionPreset.allCases) { preset in
                             Text(preset.label).tag(preset)
                         }
@@ -111,6 +112,9 @@ struct SourceView: View {
                     .frame(maxWidth: 260)
                     .disabled(controller.isConnected || controller.isConnecting)
                     Spacer()
+                    SettingsLink {
+                        Label("More settings…", systemImage: "slider.horizontal.3")
+                    }
                 }
             }
 
