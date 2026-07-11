@@ -28,6 +28,7 @@ final class DisplayController: ObservableObject {
     private var hasFirstFrame = false
     private var decodeErrorStrikes = 0
     private var lastIDRRequestNanos: UInt64 = 0
+    private var streamCodec: VideoCodec = .hevc
     /// Last time a heartbeat PONG landed (updated on the main actor via onRTT). PONGs flow
     /// ~2 Hz independent of video, so this is a video-independent "is the link alive" signal.
     private var lastHeartbeatNanos: UInt64 = 0
@@ -175,6 +176,7 @@ final class DisplayController: ObservableObject {
     }
 
     private func startPresenting(config: Config) {
+        streamCodec = VideoCodec(rawValue: config.codec) ?? .hevc
         makeDecoder()
         presenter.flush()
         isConnected = true
@@ -197,7 +199,7 @@ final class DisplayController: ObservableObject {
     }
 
     private func makeDecoder() {
-        let decoder = VideoDecoder()
+        let decoder = VideoDecoder(codec: streamCodec)
         self.decoder = decoder
         decoder.onDecodedFrame = { [weak self] sampleBuffer in
             Task { @MainActor in

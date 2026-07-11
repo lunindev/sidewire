@@ -8,9 +8,9 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Video") {
-                // Codec is HEVC end-to-end today (the decoder is HEVC-only). Shown for
-                // transparency rather than as a choice that couldn't take effect.
-                LabeledContent("Codec", value: "HEVC (H.265)")
+                Picker("Codec", selection: $settings.codec) {
+                    ForEach(AppSettings.CodecPref.allCases) { Text($0.label).tag($0) }
+                }
                 Picker("Resolution", selection: $settings.resolutionPreset) {
                     ForEach(ResolutionPreset.allCases) { Text($0.label).tag($0) }
                 }

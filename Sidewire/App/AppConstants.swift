@@ -18,14 +18,14 @@ enum DeviceIdentity {
         Host.current().localizedName ?? "Mac"
     }
 
-    /// Local capabilities. Phase 0 advertises HEVC only (both the M4 source and the
-    /// Intel display support HEVC); H.264 fallback + LTR are advertised once implemented.
+    /// Local capabilities. HEVC is the default (listed first, so negotiation prefers it);
+    /// H.264 is advertised as a selectable fallback (encoder + decoder both support it).
     static func capabilities() -> Capabilities {
         let screen = NSScreen.main
         let scale = screen?.backingScaleFactor ?? 2.0
         let frame = screen?.frame ?? CGRect(x: 0, y: 0, width: 2560, height: 1600)
         return Capabilities(
-            videoCodecs: ["hevc"],
+            videoCodecs: ["hevc", "h264"],
             maxWidth: Int(frame.width * scale),
             maxHeight: Int(frame.height * scale),
             maxFps: 60,

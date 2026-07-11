@@ -9,10 +9,26 @@ final class VideoDecoder {
     private var session: VTDecompressionSession?
     private var formatDescription: CMVideoFormatDescription?
     private var reusableBlockData = Data()
+    /// Which codec's Annex-B stream we're decoding. Determines NAL-header parsing and which
+    /// parameter-set format-description constructor to use.
+    let codec: VideoCodec
 
     var onDecodedFrame: ((CMSampleBuffer) -> Void)?
     /// Called on a VideoToolbox decode error (drives the recovery ladder in DisplayController).
     var onDecodeError: ((OSStatus) -> Void)?
+
+    init(codec: VideoCodec = .hevc) { self.codec = codec }
+
+    /// NAL unit type from the header byte. HEVC packs it in bits 6..1 of byte 0; H.264 in
+    /// bits 4..0.
+    private func nalType(_ headerByte: UInt8) -> Int {
+        codec == .hevc ? Int((headerByte >> 1) & 0x3F) : Int(headerByte & 0x1F)
+    }
+
+    /// Is this a parameter-set NAL? HEVC: VPS(32)/SPS(33)/PPS(34). H.264: SPS(7)/PPS(8).
+    private func isParameterSet(_ type: Int) -> Bool {
+        codec == .hevc ? (type == 32 || type == 33 || type == 34) : (type == 7 || type == 8)
+    }
 
     func decode(nalData: Data, isKeyframe: Bool) {
         guard nalData.count > 4 else { return }
@@ -28,8 +44,7 @@ final class VideoDecoder {
                 for (idx, start) in positions.enumerated() {
                     let end = idx + 1 < positions.count ? findNALEnd(bytes: bytes, nextStart: positions[idx + 1]) : bytes.count
                     guard end > start, bytes[start] != 0 else { continue }
-                    let nalType = (bytes[start] >> 1) & 0x3F
-                    if nalType == 32 || nalType == 33 || nalType == 34 {
+                    if isParameterSet(nalType(bytes[start])) {
                         paramSets.append((start, end - start))
                     }
                 }
@@ -45,8 +60,7 @@ final class VideoDecoder {
             for (idx, start) in positions.enumerated() {
                 let end = idx + 1 < positions.count ? findNALEnd(bytes: bytes, nextStart: positions[idx + 1]) : bytes.count
                 guard end > start + 2 else { continue }
-                let nalType = (bytes[start] >> 1) & 0x3F
-                if nalType != 32 && nalType != 33 && nalType != 34 {
+                if !isParameterSet(nalType(bytes[start])) {
                     videoNALRanges.append((start, end - start))
                 }
             }
@@ -96,12 +110,19 @@ final class VideoDecoder {
         }
 
         var newFormat: CMVideoFormatDescription?
-        let status = pointers.withUnsafeBufferPointer { ptrBuf in
-            sizes.withUnsafeBufferPointer { sizeBuf in
-                CMVideoFormatDescriptionCreateFromHEVCParameterSets(
-                    allocator: nil, parameterSetCount: paramSets.count,
-                    parameterSetPointers: ptrBuf.baseAddress!, parameterSetSizes: sizeBuf.baseAddress!,
-                    nalUnitHeaderLength: 4, extensions: nil, formatDescriptionOut: &newFormat)
+        let status = pointers.withUnsafeBufferPointer { ptrBuf -> OSStatus in
+            sizes.withUnsafeBufferPointer { sizeBuf -> OSStatus in
+                if codec == .hevc {
+                    return CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                        allocator: nil, parameterSetCount: paramSets.count,
+                        parameterSetPointers: ptrBuf.baseAddress!, parameterSetSizes: sizeBuf.baseAddress!,
+                        nalUnitHeaderLength: 4, extensions: nil, formatDescriptionOut: &newFormat)
+                } else {
+                    return CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                        allocator: nil, parameterSetCount: paramSets.count,
+                        parameterSetPointers: ptrBuf.baseAddress!, parameterSetSizes: sizeBuf.baseAddress!,
+                        nalUnitHeaderLength: 4, formatDescriptionOut: &newFormat)
+                }
             }
         }
         guard status == noErr, let newFormat else {
