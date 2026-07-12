@@ -3,26 +3,40 @@ import Foundation
 /// Helpers for the binary hot-path payloads: VIDEO, PING/PONG, LTR_ACK.
 
 public enum VideoPayload {
-    /// Size of the 4-byte video subheader that always precedes the Annex-B NAL data:
-    /// `ltrToken:UInt16` + `reserved:UInt16`.
-    public static let subheaderBytes = 4
+    /// Size of the **12-byte** video subheader that always precedes the Annex-B NAL data:
+    /// `ltrToken:UInt16` + `flags:UInt16` (reserved) + `pts:UInt64`.
+    ///
+    /// Layout (big-endian):
+    /// ```
+    /// off size field           notes
+    /// 0   2    ltrToken:UInt16  reserved for future loss recovery; senders currently send 0
+    /// 2   2    flags:UInt16     reserved; MUST be 0 on send, ignored on receive
+    /// 4   8    pts:UInt64       capture presentation timestamp, NANOSECONDS on an arbitrary
+    ///                           monotonic epoch (the source's capture clock). 0 = unspecified.
+    /// 12  …    Annex-B NAL units (00 00 00 01 start codes)
+    /// ```
+    public static let subheaderBytes = 12
 
-    /// Build a VIDEO payload: 4-byte subheader + Annex-B NAL bytes.
-    public static func encode(ltrToken: UInt16, nalData: Data) -> Data {
+    /// Build a VIDEO payload: 12-byte subheader + Annex-B NAL bytes.
+    /// `ptsNanos` is the capture timestamp in nanoseconds (monotonic epoch); pass 0 if unknown.
+    public static func encode(ltrToken: UInt16, ptsNanos: UInt64, nalData: Data) -> Data {
         var d = Data(capacity: subheaderBytes + nalData.count)
         ByteWriter.appendBE16(&d, ltrToken)
-        ByteWriter.appendBE16(&d, 0) // reserved
+        ByteWriter.appendBE16(&d, 0)          // flags (reserved)
+        ByteWriter.appendBE64(&d, ptsNanos)   // capture PTS, nanoseconds
         d.append(nalData)
         return d
     }
 
-    /// Split a VIDEO payload into (ltrToken, NAL bytes). Returns nil if malformed.
-    public static func decode(_ payload: Data) -> (ltrToken: UInt16, nalData: Data)? {
+    /// Split a VIDEO payload into (ltrToken, ptsNanos, NAL bytes). Returns nil if malformed.
+    public static func decode(_ payload: Data) -> (ltrToken: UInt16, ptsNanos: UInt64, nalData: Data)? {
         guard payload.count >= subheaderBytes else { return nil }
         let b = payload.startIndex
         let token = ByteReader.be16(payload, b)
+        // bytes 2..3 = flags (reserved, ignored)
+        let pts = ByteReader.be64(payload, b + 4)
         let nal = Data(payload[(b + subheaderBytes)...])
-        return (token, nal)
+        return (token, pts, nal)
     }
 }
 

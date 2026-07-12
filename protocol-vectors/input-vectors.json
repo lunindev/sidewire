@@ -1,0 +1,103 @@
+{
+  "note" : "Fixed 32-byte input records. Integers big-endian, floats IEEE-754 big-endian. keyCode = USB HID keyboard usage (page 0x07); modifiers = HID boot-protocol modifier byte (bit0 LCtrl … bit7 RGui). Scroll deltas are in pixels. Bytes 4..11 and 30..31 are reserved (zero).",
+  "vectors" : [
+    {
+      "buttonNumber" : 0,
+      "clickCount" : 0,
+      "deltaX" : 0,
+      "deltaY" : 0,
+      "description" : "Pointer move to the center of the video rect.",
+      "eventType" : 1,
+      "hex" : "0100000000000000000000003f0000003f000000000000000000000000000000",
+      "keyCode" : 0,
+      "modifiers" : 0,
+      "name" : "mouse_move_center",
+      "x" : 0.5,
+      "y" : 0.5
+    },
+    {
+      "buttonNumber" : 0,
+      "clickCount" : 2,
+      "deltaX" : 0,
+      "deltaY" : 0,
+      "description" : "Left double-click at (0.25, 0.75).",
+      "eventType" : 2,
+      "hex" : "0200020000000000000000003e8000003f400000000000000000000000000000",
+      "keyCode" : 0,
+      "modifiers" : 0,
+      "name" : "mouse_down_double",
+      "x" : 0.25,
+      "y" : 0.75
+    },
+    {
+      "buttonNumber" : 1,
+      "clickCount" : 1,
+      "deltaX" : 0,
+      "deltaY" : 0,
+      "description" : "Right button down at the bottom-left corner.",
+      "eventType" : 4,
+      "hex" : "040101000000000000000000000000003f800000000000000000000000000000",
+      "keyCode" : 0,
+      "modifiers" : 0,
+      "name" : "right_mouse_down",
+      "x" : 0,
+      "y" : 1
+    },
+    {
+      "buttonNumber" : 0,
+      "clickCount" : 0,
+      "deltaX" : -3.5,
+      "deltaY" : 12,
+      "description" : "Scroll with pixel deltas (dx=-3.5, dy=12.0).",
+      "eventType" : 6,
+      "hex" : "0600000000000000000000003f0000003f000000c06000004140000000000000",
+      "keyCode" : 0,
+      "modifiers" : 0,
+      "name" : "scroll_wheel",
+      "x" : 0.5,
+      "y" : 0.5
+    },
+    {
+      "buttonNumber" : 0,
+      "clickCount" : 0,
+      "deltaX" : 0,
+      "deltaY" : 0,
+      "description" : "keyDown 'a' (HID usage 0x04) with Left Shift held.",
+      "eventType" : 7,
+      "hex" : "0700000200000000000000000000000000000000000000000000000000040000",
+      "keyCode" : 4,
+      "modifiers" : 2,
+      "name" : "key_down_shift_a",
+      "x" : 0,
+      "y" : 0
+    },
+    {
+      "buttonNumber" : 0,
+      "clickCount" : 0,
+      "deltaX" : 0,
+      "deltaY" : 0,
+      "description" : "keyUp Return (HID usage 0x28), no modifiers.",
+      "eventType" : 8,
+      "hex" : "0800000000000000000000000000000000000000000000000000000000280000",
+      "keyCode" : 40,
+      "modifiers" : 0,
+      "name" : "key_up_return",
+      "x" : 0,
+      "y" : 0
+    },
+    {
+      "buttonNumber" : 0,
+      "clickCount" : 0,
+      "deltaX" : 0,
+      "deltaY" : 0,
+      "description" : "flagsChanged for Left Shift (HID usage 0xE1); modifier bit set.",
+      "eventType" : 9,
+      "hex" : "0900000200000000000000000000000000000000000000000000000000e10000",
+      "keyCode" : 225,
+      "modifiers" : 2,
+      "name" : "flags_changed_left_shift",
+      "x" : 0,
+      "y" : 0
+    }
+  ]
+}

@@ -32,6 +32,46 @@ public enum SessionConstants {
     // two Sources would steal the Display from each other forever.
     public static let supersededReason = "superseded"
 
+    // MARK: - Reconnect reason registry (docs/02 § BYE)
+    //
+    // v2 flips the default: an UNKNOWN close reason is FATAL (the Reconnector does not re-dial),
+    // so a foreign/newer peer sending a reason we don't understand fails loud instead of looping.
+    // Reconnection is gated by an explicit allowlist of *transient* reasons below. Everything not
+    // in that set — including all the fatal handshake/security reasons above ("user", "protocol",
+    // "role", "error", "auth", "keyChanged", "rateLimited", "superseded") and any unknown token —
+    // is fatal-for-reconnect. See `Reconnector.transientReasons`.
+
+    /// Connect/handshake bound or heartbeat-silence timeout. The peer may simply be slow or
+    /// briefly away; re-dialing (re-resolving Bonjour) is the correct recovery.
+    public static let timeoutReason = "timeout"
+    /// Canonical low-level transport failure (TCP reset/refused/abort, interface drop, framing
+    /// error). `TCPTransport` maps every non-`keyChanged` `.failed` to this so a network blip
+    /// stays transient under the "unknown ⇒ fatal" rule instead of leaking an OS error string.
+    public static let transportFailureReason = "transport"
+    /// Local sleep/wake: the Source tears down and rebuilds the virtual display + capture on wake.
+    public static let wakeReason = "wake"
+    /// Source ScreenCaptureKit stream died — rebuild by reconnecting.
+    public static let captureStallReason = "capture-stall"
+    /// Source encoder wedged (capture delivering, no output) — escalated rebuild by reconnecting.
+    public static let encoderStallReason = "encoder-stall"
+    /// Display never received a first decoded frame within the grace budget — rebuild.
+    public static let noVideoReason = "no-video"
+    /// Display video pipeline wedged after streaming started — rebuild.
+    public static let noFrameReason = "no-frame"
+
+    /// The complete set of transient (reconnect-eligible) close reasons. Any reason NOT in this
+    /// set is fatal-for-reconnect. A `nil` reason is treated as transient (a clean drop). Kept in
+    /// lockstep with every `close(reason:)` call site in the app + core and with docs/02 § BYE.
+    public static let transientReasons: Set<String> = [
+        timeoutReason,
+        transportFailureReason,
+        wakeReason,
+        captureStallReason,
+        encoderStallReason,
+        noVideoReason,
+        noFrameReason,
+    ]
+
     // TCP options
     public static let tcpKeepaliveIdle = 2       // seconds
     public static let tcpKeepaliveInterval = 1   // seconds

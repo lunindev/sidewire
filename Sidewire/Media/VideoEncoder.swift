@@ -21,9 +21,11 @@ final class VideoEncoder {
     private var forceNextKeyframe = false
     let codec: VideoCodec
 
-    /// (nalData, isKeyframe, ltrToken). ltrToken is reserved for a future LTR/loss-recovery
-    /// path (currently always 0 — recovery is keyframe-based; see docs/04 § Encoder).
-    var onEncodedFrame: ((Data, Bool, UInt16) -> Void)?
+    /// (nalData, isKeyframe, ltrToken, ptsNanos). ltrToken is reserved for a future LTR/loss-
+    /// recovery path (currently always 0 — recovery is keyframe-based; see docs/04 § Encoder).
+    /// ptsNanos is the capture presentation timestamp in nanoseconds, carried through from the
+    /// CMSampleBuffer that fed `encode(pixelBuffer:presentationTime:)` (VideoToolbox preserves it).
+    var onEncodedFrame: ((Data, Bool, UInt16, UInt64) -> Void)?
 
     /// Codecs this machine can actually create an encode session for, in preference order
     /// (HEVC first, then H.264). Probed once via a cheap trial VTCompressionSessionCreate —
@@ -173,7 +175,15 @@ final class VideoEncoder {
             nalData.append(Data(bytes: dataPointer.advanced(by: offset), count: Int(naluLength)))
             offset += Int(naluLength)
         }
-        onEncodedFrame?(nalData, isKeyframe, 0)
+        // The capture PTS rides through the encoder unchanged; forward it in nanoseconds so the
+        // receiver can expose/jitter-buffer it (docs/02 § VIDEO subheader).
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        var ptsNanos: UInt64 = 0
+        if pts.isValid && pts.isNumeric {
+            let ns = CMTimeConvertScale(pts, timescale: 1_000_000_000, method: .roundHalfAwayFromZero)
+            if ns.value > 0 { ptsNanos = UInt64(ns.value) }
+        }
+        onEncodedFrame?(nalData, isKeyframe, 0, ptsNanos)
     }
 
     private func extractParameterSets(from formatDescription: CMFormatDescription) -> Data {

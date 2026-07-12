@@ -120,6 +120,63 @@ final class ReliabilityTests: XCTestCase {
         reconnector.stop()
     }
 
+    /// v2 flip (docs/10 E5): an UNKNOWN close reason is now FATAL — the Reconnector surfaces it
+    /// and must NOT re-dial (a foreign/newer peer's unrecognized BYE shouldn't loop forever).
+    func testReconnectorTreatsUnknownReasonAsFatal() {
+        let hello = Hello(role: .source, deviceId: "src", deviceName: "S",
+                          sessionId: "s", capabilities: caps())
+        let lock = NSLock()
+        var makeCount = 0
+        let reconnector = Reconnector(makeSession: {
+            lock.lock(); makeCount += 1; lock.unlock()
+            return Session(transport: FailingTransport(reason: "some-future-reason"),
+                           role: .source, localHello: hello)
+        })
+
+        let failed = expectation(description: "unknown reason is fatal")
+        failed.assertForOverFulfill = false
+        reconnector.onState = { state in
+            if case .failed(let reason) = state {
+                XCTAssertEqual(reason, "some-future-reason")
+                failed.fulfill()
+            }
+        }
+        reconnector.start()
+        wait(for: [failed], timeout: 5)
+
+        Thread.sleep(forTimeInterval: 1.0)
+        lock.lock(); let count = makeCount; lock.unlock()
+        XCTAssertEqual(count, 1, "an unknown reason must not re-dial")
+        reconnector.stop()
+    }
+
+    /// A known transient reason (here the canonical "transport" failure) MUST re-dial — network
+    /// blips stay reconnect-eligible under the "unknown ⇒ fatal" rule.
+    func testReconnectorRetriesOnTransientReason() {
+        let hello = Hello(role: .source, deviceId: "src", deviceName: "S",
+                          sessionId: "s", capabilities: caps())
+        let lock = NSLock()
+        var makeCount = 0
+        let reconnector = Reconnector(makeSession: {
+            lock.lock(); makeCount += 1; lock.unlock()
+            return Session(transport: FailingTransport(reason: SessionConstants.transportFailureReason),
+                           role: .source, localHello: hello)
+        })
+
+        let retried = expectation(description: "transient reason re-dials")
+        retried.assertForOverFulfill = false
+        reconnector.onState = { state in
+            if case .reconnecting(let attempt) = state, attempt >= 1 { retried.fulfill() }
+        }
+        reconnector.start()
+        wait(for: [retried], timeout: 5)
+        // It kept dialing (more than the single initial attempt).
+        Thread.sleep(forTimeInterval: 0.6)
+        lock.lock(); let count = makeCount; lock.unlock()
+        XCTAssertGreaterThanOrEqual(count, 2, "a transient reason must re-dial")
+        reconnector.stop()
+    }
+
     /// A `.failed` listener must re-arm itself: after the OS drops the socket (modelled here
     /// by a forced port collision), the listener auto-restarts and eventually binds again.
     func testListenerAutoRestartsAfterFailure() throws {
@@ -194,7 +251,8 @@ final class ReliabilityTests: XCTestCase {
             counter.lock(); streamingCount += 1; let n = streamingCount; counter.unlock()
             if n == 1 {
                 firstStreaming.fulfill()
-                if !dropped { dropped = true; box.session?.close(reason: "drop") } // simulate a drop
+                // Simulate a transport-level drop (transient reason ⇒ the Reconnector re-dials).
+                if !dropped { dropped = true; box.session?.close(reason: SessionConstants.transportFailureReason) }
             } else if n == 2 {
                 secondStreaming.fulfill()
             }

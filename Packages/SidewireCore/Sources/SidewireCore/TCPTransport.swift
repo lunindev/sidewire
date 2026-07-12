@@ -105,8 +105,12 @@ public final class TCPTransport: Transport, @unchecked Sendable {
                 coreLog.notice("transport WAITING: \(error.localizedDescription, privacy: .public)")
                 self.onState?(.waiting(error.localizedDescription))
             case .failed(let error):
+                // Canonicalize the OS error string to the transient "transport" reason: a network
+                // drop must stay reconnect-eligible under the v2 "unknown reason ⇒ fatal" rule
+                // (docs/02 § BYE). The explicit "keyChanged" failure emitted from
+                // publishSecurityContext() is a real fatal reason and is passed through unchanged.
                 coreLog.error("transport FAILED: \(error.localizedDescription, privacy: .public)")
-                self.onState?(.failed(error.localizedDescription))
+                self.onState?(.failed(SessionConstants.transportFailureReason))
             case .cancelled:
                 coreLog.info("transport CANCELLED")
                 self.onState?(.cancelled)
@@ -177,14 +181,17 @@ public final class TCPTransport: Transport, @unchecked Sendable {
                     let frames = try self.parser.append(data)
                     for f in frames { self.onFrame?(f) }
                 } catch {
-                    // Unrecoverable framing error → drop the connection.
-                    self.onState?(.failed("framing: \(error)"))
+                    // Unrecoverable framing error → drop the connection. Surfaced as the transient
+                    // "transport" reason (a rebuilt connection re-syncs the frame stream).
+                    coreLog.error("transport framing error: \(String(describing: error), privacy: .public)")
+                    self.onState?(.failed(SessionConstants.transportFailureReason))
                     self.connection.cancel()
                     return
                 }
             }
             if let error {
-                self.onState?(.failed(error.localizedDescription))
+                coreLog.error("transport receive error: \(error.localizedDescription, privacy: .public)")
+                self.onState?(.failed(SessionConstants.transportFailureReason))
                 return
             }
             if isComplete {

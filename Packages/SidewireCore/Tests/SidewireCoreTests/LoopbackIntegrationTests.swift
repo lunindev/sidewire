@@ -46,9 +46,10 @@ final class LoopbackIntegrationTests: XCTestCase {
                 DisplayInfo(width: 1920, height: 1200, scaleFactor: 2, refreshRate: 60, name: "test")
             }
             s.onReady = { _ in displayReady.fulfill() }
-            s.onVideoFrame = { nal, isKey, _ in
+            s.onVideoFrame = { nal, isKey, _, pts in
                 XCTAssertEqual(nal, Data([0x00, 0x00, 0x00, 0x01, 0x42]))
                 XCTAssertTrue(isKey)
+                XCTAssertEqual(pts, 42_000_000_000, "PTS must round-trip end to end over real TLS")
                 gotVideo.fulfill()
             }
             s.start()
@@ -73,7 +74,8 @@ final class LoopbackIntegrationTests: XCTestCase {
         wait(for: [sourceReady, displayReady], timeout: 10) // TLS 1.3 handshake adds a moment
 
         // Round-trip a video frame (source→display) and an input event (display→source).
-        sourceSession.sendVideo(Data([0x00, 0x00, 0x00, 0x01, 0x42]), keyframe: true, ltrToken: 0)
+        sourceSession.sendVideo(Data([0x00, 0x00, 0x00, 0x01, 0x42]), keyframe: true, ltrToken: 0,
+                                ptsNanos: 42_000_000_000)
         box.session?.sendInput(InputEventRecord(type: .mouseDown, x: 0.5, y: 0.5))
 
         wait(for: [gotVideo, gotInput], timeout: 5)

@@ -85,7 +85,8 @@ final class InputCapture {
 
     private func handleEvent(_ event: NSEvent) {
         let type: InputEventType
-        var kc: UInt16 = 0
+        var macKey: UInt16 = 0
+        var isKeyEvent = false
         var dx: Float = 0
         var dy: Float = 0
         var cc: UInt8 = 0
@@ -99,19 +100,28 @@ final class InputCapture {
         case .rightMouseUp: type = .rightMouseUp; cc = UInt8(clamping: event.clickCount); bn = UInt8(clamping: event.buttonNumber)
         case .leftMouseDragged: type = .mouseDragged
         case .rightMouseDragged: type = .rightMouseDragged
+        // Scroll deltas cross the wire in pixels (macOS delivers pixel-precise deltas).
         case .scrollWheel: type = .scrollWheel; dx = Float(event.scrollingDeltaX); dy = Float(event.scrollingDeltaY)
-        case .keyDown: type = .keyDown; kc = event.keyCode
-        case .keyUp: type = .keyUp; kc = event.keyCode
-        case .flagsChanged: type = .flagsChanged; kc = event.keyCode
+        case .keyDown: type = .keyDown; macKey = event.keyCode; isKeyEvent = true
+        case .keyUp: type = .keyUp; macKey = event.keyCode; isKeyEvent = true
+        case .flagsChanged: type = .flagsChanged; macKey = event.keyCode; isKeyEvent = true
         default: return
+        }
+
+        // Translate the macOS virtual keycode → platform-neutral HID usage (v2 wire contract).
+        // A key with no HID mapping is dropped (logged once by KeyMapping) rather than sent as 0.
+        var hidUsage: UInt16 = 0
+        if isKeyEvent {
+            hidUsage = KeyMapping.hidUsage(fromMacVirtualKey: macKey)
+            if hidUsage == 0 { return }
         }
 
         let (nx, ny) = normalizedLocation(for: event)
 
         let record = InputEventRecord(
             type: type, buttonNumber: bn, clickCount: cc,
-            modifierFlags: UInt64(event.modifierFlags.rawValue),
-            x: nx, y: ny, deltaX: dx, deltaY: dy, keyCode: kc)
+            modifiers: KeyMapping.hidModifiers(from: event.modifierFlags),
+            x: nx, y: ny, deltaX: dx, deltaY: dy, keyCode: hidUsage)
         onInputEvent?(record)
     }
 

@@ -1,0 +1,104 @@
+{
+  "note" : "12-byte header: type(1) flags(1) reserved(2=0) length(4,BE) seq(4,BE), then payload. Unknown/reserved types are skipped by length. Reject length > 16 MiB.",
+  "vectors" : [
+    {
+      "description" : "HELLO frame, JSON payload (see message-vectors.json for the JSON).",
+      "flags" : 0,
+      "frameHex" : "0100000000000007000000007b2278223a317d",
+      "name" : "hello",
+      "payloadHex" : "7b2278223a317d",
+      "seq" : 0,
+      "type" : 1
+    },
+    {
+      "description" : "HELLO_ACK frame — same JSON shape as HELLO, only the type byte differs.",
+      "flags" : 0,
+      "frameHex" : "0200000000000007000000017b2278223a317d",
+      "name" : "hello_ack",
+      "payloadHex" : "7b2278223a317d",
+      "seq" : 1,
+      "type" : 2
+    },
+    {
+      "description" : "PAIR_PROOF frame: 32-byte HMAC payload (example bytes; real proofs in pairing-vectors.json).",
+      "flags" : 0,
+      "frameHex" : "040000000000002000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name" : "pair_proof",
+      "payloadHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "seq" : 0,
+      "type" : 4
+    },
+    {
+      "description" : "PAIR_ACK frame: empty payload.",
+      "flags" : 0,
+      "frameHex" : "050000000000000000000001",
+      "name" : "pair_ack",
+      "payloadHex" : "",
+      "seq" : 1,
+      "type" : 5
+    },
+    {
+      "description" : "VIDEO frame, keyframe flag (0x01) set, seq 42, 12-byte subheader + Annex-B.",
+      "flags" : 1,
+      "frameHex" : "10010000000000130000002a000000000102030405060708000000014001ff",
+      "name" : "video_keyframe",
+      "payloadHex" : "000000000102030405060708000000014001ff",
+      "seq" : 42,
+      "type" : 16
+    },
+    {
+      "description" : "INPUT frame: one 32-byte record (see input-vectors.json).",
+      "flags" : 0,
+      "frameHex" : "2000000000000020000000070200010000000000000000003f0000003f000000000000000000000000000000",
+      "name" : "input",
+      "payloadHex" : "0200010000000000000000003f0000003f000000000000000000000000000000",
+      "seq" : 7,
+      "type" : 32
+    },
+    {
+      "description" : "PING frame: 8-byte big-endian monotonic-nanos payload.",
+      "flags" : 0,
+      "frameHex" : "3000000000000008000000641122334455667788",
+      "name" : "ping",
+      "payloadHex" : "1122334455667788",
+      "seq" : 100,
+      "type" : 48
+    },
+    {
+      "description" : "REQUEST_IDR frame: empty payload (edge: length 0).",
+      "flags" : 0,
+      "frameHex" : "400000000000000000000005",
+      "name" : "request_idr",
+      "payloadHex" : "",
+      "seq" : 5,
+      "type" : 64
+    },
+    {
+      "description" : "BYE frame: JSON {reason}. Here reason=\"user\".",
+      "flags" : 0,
+      "frameHex" : "6f00000000000011000000097b22726561736f6e223a2275736572227d",
+      "name" : "bye",
+      "payloadHex" : "7b22726561736f6e223a2275736572227d",
+      "seq" : 9,
+      "type" : 111
+    },
+    {
+      "description" : "seq at its maximum (0xFFFFFFFF); the next seq wraps to 0.",
+      "flags" : 0,
+      "frameHex" : "3000000000000008ffffffff0000000000000001",
+      "name" : "seq_wrap",
+      "payloadHex" : "0000000000000001",
+      "seq" : 4294967295,
+      "type" : 48
+    },
+    {
+      "description" : "Reserved type 0x7A: a conformant reader skips it by length and continues.",
+      "flags" : 0,
+      "frameHex" : "7a0000000000000400000064deadbeef",
+      "name" : "unknown_reserved_type",
+      "payloadHex" : "deadbeef",
+      "seq" : 100,
+      "type" : 122
+    }
+  ]
+}

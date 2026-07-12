@@ -22,7 +22,8 @@ public enum MessageType: UInt8, Sendable {
     case pong        = 0x31
     case requestIDR  = 0x40
     case ltrAck      = 0x41
-    case feedback    = 0x42
+    // 0x42 is reserved (was FEEDBACK in early v2 drafts; removed — adaptive bitrate is
+    // RTT-driven and the message was never sent). Skippable like any unknown type.
     case displayInfo = 0x50
     case pause       = 0x60
     case resume      = 0x61

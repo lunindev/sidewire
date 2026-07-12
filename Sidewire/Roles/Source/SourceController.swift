@@ -126,7 +126,7 @@ final class SourceController: ObservableObject {
             Task { @MainActor in
                 guard let self, self.isStreaming else { return }
                 Log.media.notice("capture stopped (\(error.localizedDescription)) → reconnect")
-                self.activeSession?.close(reason: "capture-stall")
+                self.activeSession?.close(reason: SessionConstants.captureStallReason)
             }
         }
         // On wake, force an immediate reconnect AND rebuild the virtual display (fragile
@@ -137,7 +137,7 @@ final class SourceController: ObservableObject {
                 guard let self, self.reconnector != nil else { return }
                 Log.source.notice("woke from sleep → rebuilding")
                 self.virtualDisplay.destroy()
-                self.activeSession?.close(reason: "wake")
+                self.activeSession?.close(reason: SessionConstants.wakeReason)
             }
         }
     }
@@ -509,7 +509,7 @@ final class SourceController: ObservableObject {
         rttBaseline = 0
         rampClearTicks = 0
         enc.forceKeyframe()
-        enc.onEncodedFrame = { [weak self, weak session] data, isKey, ltrToken in
+        enc.onEncodedFrame = { [weak self, weak session] data, isKey, ltrToken, ptsNanos in
             Task { @MainActor in
                 guard let self else { return }
                 self.encodedSinceCheck += 1
@@ -519,7 +519,7 @@ final class SourceController: ObservableObject {
                     Log.media.info("first frame ENCODED (\(data.count) bytes, key=\(isKey)) → sending")
                 }
             }
-            session?.sendVideo(data, keyframe: isKey, ltrToken: ltrToken)
+            session?.sendVideo(data, keyframe: isKey, ltrToken: ltrToken, ptsNanos: ptsNanos)
         }
         capture.setSampleHandler { [weak enc] sampleBuffer in
             guard let pb = sampleBuffer.imageBuffer else { return }
@@ -587,7 +587,7 @@ final class SourceController: ObservableObject {
             Log.media.notice("encoder stall (\(self.encoderStallStrikes)) — capture fps=\(self.capture.fps) but 0 encoded")
             if encoderStallStrikes >= SessionConstants.encoderStallEscalate {
                 encoderStallStrikes = 0
-                session.close(reason: "encoder-stall") // escalate → reconnect rebuilds everything
+                session.close(reason: SessionConstants.encoderStallReason) // escalate → reconnect rebuilds everything
             } else {
                 encoder?.invalidate()
                 makeEncoder(config: config, session: session)

@@ -55,10 +55,11 @@ final class SessionHandshakeTests: XCTestCase {
         source.onReady = { cfg in sourceConfig = cfg; sourceReady.fulfill() }
         display.onReady = { cfg in displayConfig = cfg; displayReady.fulfill() }
 
-        display.onVideoFrame = { nal, isKey, token in
+        display.onVideoFrame = { nal, isKey, token, pts in
             XCTAssertEqual(nal, Data([0xAA, 0xBB]))
             XCTAssertTrue(isKey)
             XCTAssertEqual(token, 3)
+            XCTAssertEqual(pts, 987_654_321, "video PTS must round-trip through the subheader")
             gotVideo.fulfill()
         }
         source.onInputEvent = { rec in
@@ -78,8 +79,8 @@ final class SessionHandshakeTests: XCTestCase {
         XCTAssertEqual(sourceConfig?.width, 1920)
         XCTAssertEqual(sourceConfig?.height, 1200)
 
-        // Relay a frame each way.
-        source.sendVideo(Data([0xAA, 0xBB]), keyframe: true, ltrToken: 3)
+        // Relay a frame each way (with a PTS that must survive the round-trip).
+        source.sendVideo(Data([0xAA, 0xBB]), keyframe: true, ltrToken: 3, ptsNanos: 987_654_321)
         display.sendInput(InputEventRecord(type: .mouseDown, x: 0.5, y: 0.5))
 
         wait(for: [gotVideo, gotInput], timeout: 2.0)
@@ -146,5 +147,97 @@ final class SessionHandshakeTests: XCTestCase {
         b.start()
         a.start()
         wait(for: [closed], timeout: 2.0)
+    }
+
+    /// Fail loud: a malformed handshake JSON must close with BYE("protocol"), not silently drop
+    /// and hang to the 10s timeout (Phase 7b item 3).
+    func testMalformedHelloClosesProtocol() {
+        let sT = FakeTransport(), dT = FakeTransport()
+        sT.peer = dT; dT.peer = sT
+        let hello = Hello(role: .source, deviceId: "src", deviceName: "S",
+                          sessionId: "s", capabilities: caps(["hevc"]))
+        let source = Session(transport: sT, role: .source, localHello: hello)
+
+        let closed = expectation(description: "closed protocol on malformed HELLO")
+        closed.assertForOverFulfill = false
+        source.onClosed = { reason in
+            XCTAssertEqual(reason, HelloRejection.protocolMismatch.rawValue)
+            closed.fulfill()
+        }
+        source.start()
+        // The "peer" sends unparseable HELLO bytes.
+        dT.send(type: .hello, seq: 0, payload: Data("not json at all".utf8))
+        wait(for: [closed], timeout: 2.0)
+    }
+
+    /// Peers that advertise a different `inputMapping` must be refused with BYE("protocol").
+    func testInputMappingMismatchClosesProtocol() {
+        let sT = FakeTransport(), dT = FakeTransport()
+        sT.peer = dT; dT.peer = sT
+        let displayHello = Hello(role: .display, deviceId: "dsp", deviceName: "D",
+                                 sessionId: "s", capabilities: caps(["hevc"])) // inputMapping "hid1"
+        let display = Session(transport: sT, role: .display, localHello: displayHello)
+
+        let closed = expectation(description: "closed protocol on mapping mismatch")
+        closed.assertForOverFulfill = false
+        display.onClosed = { reason in
+            XCTAssertEqual(reason, HelloRejection.protocolMismatch.rawValue)
+            closed.fulfill()
+        }
+        display.start()
+
+        var badCaps = caps(["hevc"])
+        badCaps.inputMapping = "hid2" // a mapping we don't speak
+        let sourceHello = Hello(role: .source, deviceId: "src", deviceName: "S",
+                                sessionId: "s", capabilities: badCaps)
+        dT.send(type: .hello, seq: 0, payload: JSONWire.encode(sourceHello))
+        wait(for: [closed], timeout: 2.0)
+    }
+
+    /// E6: the Display must send DISPLAY_INFO only AFTER receiving+validating the peer's HELLO
+    /// (right after its HELLO_ACK), never before — so a rejected peer never learns the panel.
+    func testDisplaySendsDisplayInfoOnlyAfterPeerHello() {
+        let displayT = FakeTransport(), driverT = FakeTransport()
+        displayT.peer = driverT; driverT.peer = displayT
+
+        let lock = NSLock()
+        var received: [UInt8] = []
+        let helloSeen = expectation(description: "display sent HELLO")
+        helloSeen.assertForOverFulfill = false
+        let infoSeen = expectation(description: "display sent DISPLAY_INFO")
+        infoSeen.assertForOverFulfill = false
+        driverT.onFrame = { frame in
+            lock.lock(); received.append(frame.rawType); lock.unlock()
+            if frame.rawType == MessageType.hello.rawValue { helloSeen.fulfill() }
+            if frame.rawType == MessageType.displayInfo.rawValue { infoSeen.fulfill() }
+        }
+
+        let displayHello = Hello(role: .display, deviceId: "dsp", deviceName: "D",
+                                 sessionId: "s", capabilities: caps(["hevc"]))
+        let display = Session(transport: displayT, role: .display, localHello: displayHello)
+        display.provideDisplayInfo = {
+            DisplayInfo(width: 1920, height: 1200, scaleFactor: 2.0, refreshRate: 60, name: "panel")
+        }
+        display.start()
+
+        wait(for: [helloSeen], timeout: 2.0)
+        lock.lock(); let sentInfoEarly = received.contains(MessageType.displayInfo.rawValue); lock.unlock()
+        XCTAssertFalse(sentInfoEarly, "DISPLAY_INFO must not precede the peer HELLO")
+
+        // Now the Source's HELLO arrives; the Display should reply HELLO_ACK then DISPLAY_INFO.
+        let sourceHello = Hello(role: .source, deviceId: "src", deviceName: "S",
+                                sessionId: "s", capabilities: caps(["hevc"]))
+        driverT.send(type: .hello, seq: 0, payload: JSONWire.encode(sourceHello))
+
+        wait(for: [infoSeen], timeout: 2.0)
+        lock.lock(); let order = received; lock.unlock()
+        let ackIdx = order.firstIndex(of: MessageType.helloAck.rawValue)
+        let infoIdx = order.firstIndex(of: MessageType.displayInfo.rawValue)
+        XCTAssertNotNil(ackIdx, "the Display must send a HELLO_ACK")
+        XCTAssertNotNil(infoIdx)
+        if let a = ackIdx, let i = infoIdx {
+            XCTAssertLessThan(a, i, "DISPLAY_INFO comes right after the HELLO_ACK")
+        }
+        display.close(reason: "user")
     }
 }

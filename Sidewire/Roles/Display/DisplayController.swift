@@ -29,6 +29,10 @@ final class DisplayController: ObservableObject {
 
     private var firstVideoLogged = false
     private var firstDecodedLogged = false
+    /// The capture PTS (nanoseconds, source's monotonic epoch) of the most recent VIDEO frame,
+    /// parsed from the wire subheader. Frames still render on arrival — this is exposed for the
+    /// stats HUD and a future receiver-side jitter buffer. 0 until the first frame / when absent.
+    private(set) var lastFramePTSNanos: UInt64 = 0
 
     // Receiver no-frame watchdog + decoder recovery ladder.
     private var videoWatchdog: Timer?
@@ -219,14 +223,17 @@ final class DisplayController: ObservableObject {
                 self.startPresenting(config: config)
             }
         }
-        session.onVideoFrame = { [weak self, weak session] nal, isKey, ltrToken in
+        session.onVideoFrame = { [weak self, weak session] nal, isKey, ltrToken, ptsNanos in
             Task { @MainActor in
                 guard let self, self.session === session else { return }
                 if !self.firstVideoLogged {
                     self.firstVideoLogged = true
-                    Log.media.info("first VIDEO frame received (\(nal.count) bytes, key=\(isKey))")
+                    Log.media.info("first VIDEO frame received (\(nal.count) bytes, key=\(isKey), pts=\(ptsNanos)ns)")
                 }
                 _ = ltrToken // reserved for the future lossy-transport LTR/NACK path
+                // Expose the source's capture PTS (render is still on-arrival — no jitter buffer
+                // yet; this is here for the stats HUD and a future receiver-side buffer).
+                self.lastFramePTSNanos = ptsNanos
                 self.decoder?.decode(nalData: nal, isKeyframe: isKey)
             }
         }
@@ -381,7 +388,7 @@ final class DisplayController: ObservableObject {
             let sinceStartMs = Double(now &- streamStartNanos) / 1_000_000
             if sinceStartMs > 12_000 {
                 Log.media.notice("no first frame in \(Int(sinceStartMs))ms → tearing down for reconnect")
-                session?.close(reason: "no-video")
+                session?.close(reason: SessionConstants.noVideoReason)
             }
             return
         }
@@ -393,7 +400,7 @@ final class DisplayController: ObservableObject {
             // Video wedged for a long time. If the link is alive this is a rare local decoder
             // wedge (not a disconnect); tear down either way so the Reconnector rebuilds.
             Log.media.notice("no decoded frame for \(Int(idleMs))ms (linkAlive=\(linkAlive)) → tearing down for reconnect")
-            session?.close(reason: "no-frame")
+            session?.close(reason: SessionConstants.noFrameReason)
         } else if idleMs > SessionConstants.noFrameDim * 1000 {
             if linkAlive {
                 // Healthy link, just no new video → the source screen is static. Hold the last

@@ -1,0 +1,33 @@
+{
+  "note" : "Channel-bound PIN proof (docs/05). channelBinding = SHA256(clientSPKI(32) ‖ serverSPKI(32)); K = HKDF-SHA256(IKM=utf8(PIN), salt=saltAscii, info=channelBinding, L=32); clientProof = HMAC-SHA256(K, clientLabelAscii); serverProof = HMAC-SHA256(K, serverLabelAscii). On the wire: PAIR_PROOF (type 0x04) carries the 32-byte proof; PAIR_ACK (type 0x05) is empty. Proof comparisons MUST be constant-time. clientSPKI/serverSPKI here are fixed test patterns, not real certificates.",
+  "vectors" : [
+    {
+      "channelBindingHex" : "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "clientLabelAscii" : "sidewire-client-proof",
+      "clientProofHex" : "e33b454301d7d3ab5839ffdd155686d06f29a3b3b73941679120d567e6dc8ee5",
+      "clientSPKIHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "description" : "Reference vector with PIN 314159.",
+      "keyHex" : "9dbb5fba4e036a835892903393a0025f157e629bdce84a49be3c2389a1003926",
+      "name" : "pin_314159",
+      "pin" : "314159",
+      "saltAscii" : "sidewire-pairing-v2",
+      "serverLabelAscii" : "sidewire-server-proof",
+      "serverProofHex" : "1597acd072b76870f9e13b4b5de997bac115cb1fa8f19534e2e776554acfe898",
+      "serverSPKIHex" : "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+    },
+    {
+      "channelBindingHex" : "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+      "clientLabelAscii" : "sidewire-client-proof",
+      "clientProofHex" : "0cb307da702e895cd96354e2763fa14d3528924139787bcc9173578ee481d83f",
+      "clientSPKIHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "description" : "Same channel binding, PIN 000000 — proves PIN sensitivity.",
+      "keyHex" : "5db753809e1253311d42d658635f9443023d5ba41a8788e1df3835b923fb70dc",
+      "name" : "pin_000000",
+      "pin" : "000000",
+      "saltAscii" : "sidewire-pairing-v2",
+      "serverLabelAscii" : "sidewire-server-proof",
+      "serverProofHex" : "7179cbd8f3a83aa09d5d1fa3aad3e53ca872b293827a3a755156f440253ab98f",
+      "serverSPKIHex" : "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+    }
+  ]
+}

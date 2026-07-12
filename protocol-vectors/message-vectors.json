@@ -1,0 +1,79 @@
+{
+  "bye" : [
+    {
+      "description" : "BYE with the fatal auth (wrong-PIN) reason.",
+      "message" : {
+        "reason" : "auth"
+      },
+      "name" : "bye_auth"
+    },
+    {
+      "description" : "BYE with the graceful user-disconnect reason.",
+      "message" : {
+        "reason" : "user"
+      },
+      "name" : "bye_user"
+    }
+  ],
+  "config" : [
+    {
+      "description" : "Canonical CONFIG for a 2560x1600 HEVC stream.",
+      "message" : {
+        "bitrateMaxBps" : 50000000,
+        "bitrateMinBps" : 5000000,
+        "bitrateStartBps" : 30000000,
+        "codec" : "hevc",
+        "fps" : 60,
+        "height" : 1600,
+        "hiDPI" : true,
+        "ltr" : true,
+        "width" : 2560
+      },
+      "name" : "config_hevc_1600p"
+    }
+  ],
+  "displayInfo" : [
+    {
+      "description" : "Canonical DISPLAY_INFO for a 2x Retina panel.",
+      "message" : {
+        "height" : 1600,
+        "name" : "Built-in Retina Display",
+        "refreshRate" : 60,
+        "scaleFactor" : 2,
+        "width" : 2560
+      },
+      "name" : "display_info_retina"
+    }
+  ],
+  "hello" : [
+    {
+      "description" : "Canonical source HELLO (protocol v2.0).",
+      "message" : {
+        "capabilities" : {
+          "audio" : false,
+          "hdr" : false,
+          "inputMapping" : "hid1",
+          "ltr" : true,
+          "maxFps" : 60,
+          "maxHeight" : 2234,
+          "maxWidth" : 3456,
+          "videoCodecs" : [
+            "hevc",
+            "h264"
+          ]
+        },
+        "deviceId" : "a1b2c3d4e5f6a7b8",
+        "deviceName" : "Sidewire Mac",
+        "magic" : "SIDEWIRE",
+        "role" : "source",
+        "sessionId" : "00000000-0000-0000-0000-000000000000",
+        "version" : {
+          "major" : 2,
+          "minor" : 0
+        }
+      },
+      "name" : "hello_source"
+    }
+  ],
+  "note" : "Cold-path JSON messages. Match SEMANTICALLY: decode and compare fields — JSON key order is NOT significant (and is not fixed on the wire). The `message` object here is the canonical field set. HELLO_ACK uses the identical Hello shape (only the frame type byte differs: 0x02 vs 0x01). Decoders MUST ignore unknown fields; fields beyond the v2 required set are optional-with-defaults (e.g. capabilities.inputMapping defaults to \"hid1\", config.hiDPI to true)."
+}

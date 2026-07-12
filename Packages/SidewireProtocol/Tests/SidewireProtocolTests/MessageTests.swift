@@ -45,12 +45,17 @@ final class MessageTests: XCTestCase {
     }
 
     func testInputEventRecordRoundTrip() {
+        // modifiers is the HID boot modifier byte; keyCode is a HID usage (0x28 = Return).
         let rec = InputEventRecord(type: .scrollWheel, buttonNumber: 2, clickCount: 1,
-                                   modifierFlags: 0x0102_0304_0506_0708,
-                                   x: 0.25, y: 0.75, deltaX: -3.5, deltaY: 12.0, keyCode: 53)
+                                   modifiers: HIDModifier([.leftShift, .rightGUI]).rawValue,
+                                   x: 0.25, y: 0.75, deltaX: -3.5, deltaY: 12.0, keyCode: 0x28)
         let data = rec.encoded
         XCTAssertEqual(data.count, ProtocolConstants.inputRecordBytes)
         XCTAssertEqual(InputEventRecord.decode(from: data), rec)
+        // Reserved bytes (4..11, 30..31) must be zero.
+        for i in 4..<12 { XCTAssertEqual(data[data.startIndex + i], 0) }
+        XCTAssertEqual(data[data.startIndex + 30], 0)
+        XCTAssertEqual(data[data.startIndex + 31], 0)
     }
 
     func testInputEventBatchDecode() {
@@ -64,10 +69,26 @@ final class MessageTests: XCTestCase {
 
     func testVideoPayloadRoundTrip() {
         let nal = Data([0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0xFF])
-        let payload = VideoPayload.encode(ltrToken: 7, nalData: nal)
+        let pts: UInt64 = 1_234_567_890_123
+        let payload = VideoPayload.encode(ltrToken: 7, ptsNanos: pts, nalData: nal)
+        XCTAssertEqual(payload.count, VideoPayload.subheaderBytes + nal.count)
         let decoded = VideoPayload.decode(payload)
         XCTAssertEqual(decoded?.ltrToken, 7)
+        XCTAssertEqual(decoded?.ptsNanos, pts)
         XCTAssertEqual(decoded?.nalData, nal)
+    }
+
+    func testCapabilitiesInputMappingDefaultsWhenAbsent() {
+        // A JSON blob missing `inputMapping` (an older/foreign sender) must decode to "hid1".
+        let json = Data("""
+        {"videoCodecs":["hevc"],"maxWidth":100,"maxHeight":100,"maxFps":60,"ltr":false,"audio":false,"hdr":false}
+        """.utf8)
+        let caps = JSONWire.decode(Capabilities.self, from: json)
+        XCTAssertEqual(caps?.inputMapping, "hid1")
+        // And it always round-trips explicitly when present.
+        let explicit = Capabilities(videoCodecs: ["hevc"], maxWidth: 1, maxHeight: 1, maxFps: 30,
+                                    ltr: false, audio: false, hdr: false, inputMapping: "hid1")
+        XCTAssertEqual(JSONWire.decode(Capabilities.self, from: JSONWire.encode(explicit)), explicit)
     }
 
     func testHeartbeatPayloadRoundTrip() {

@@ -11,9 +11,18 @@ public struct Capabilities: Codable, Sendable, Equatable {
     public var ltr: Bool
     public var audio: Bool
     public var hdr: Bool
+    /// The wire input-event encoding this peer speaks. Always `"hid1"` in v2 (platform-neutral
+    /// USB-HID keyboard usages + HID modifier byte; see `InputEventRecord`). Optional-with-default
+    /// on decode (absent JSON ⇒ `"hid1"`) per the evolution policy, but **always sent**. A peer
+    /// advertising a value we don't understand is refused with `BYE("protocol")`.
+    public var inputMapping: String
+
+    /// The only input mapping defined in v2.
+    public static let defaultInputMapping = "hid1"
 
     public init(videoCodecs: [String], maxWidth: Int, maxHeight: Int, maxFps: Int,
-                ltr: Bool, audio: Bool, hdr: Bool) {
+                ltr: Bool, audio: Bool, hdr: Bool,
+                inputMapping: String = Capabilities.defaultInputMapping) {
         self.videoCodecs = videoCodecs
         self.maxWidth = maxWidth
         self.maxHeight = maxHeight
@@ -21,6 +30,27 @@ public struct Capabilities: Codable, Sendable, Equatable {
         self.ltr = ltr
         self.audio = audio
         self.hdr = hdr
+        self.inputMapping = inputMapping
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case videoCodecs, maxWidth, maxHeight, maxFps, ltr, audio, hdr, inputMapping
+    }
+
+    // Custom decode so a missing `inputMapping` defaults to "hid1" (evolution policy: fields
+    // beyond the required set are optional-with-defaults). Encoding stays synthesized (always
+    // writes `inputMapping`). Unknown JSON keys are ignored by JSONDecoder automatically.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        videoCodecs = try c.decode([String].self, forKey: .videoCodecs)
+        maxWidth = try c.decode(Int.self, forKey: .maxWidth)
+        maxHeight = try c.decode(Int.self, forKey: .maxHeight)
+        maxFps = try c.decode(Int.self, forKey: .maxFps)
+        ltr = try c.decode(Bool.self, forKey: .ltr)
+        audio = try c.decode(Bool.self, forKey: .audio)
+        hdr = try c.decode(Bool.self, forKey: .hdr)
+        inputMapping = try c.decodeIfPresent(String.self, forKey: .inputMapping)
+            ?? Capabilities.defaultInputMapping
     }
 }
 
@@ -114,24 +144,6 @@ public struct DisplayInfo: Codable, Sendable, Equatable {
         self.scaleFactor = scaleFactor
         self.refreshRate = refreshRate
         self.name = name
-    }
-}
-
-/// Periodic receiver → sender quality feedback (~2 Hz) driving adaptive bitrate.
-public struct Feedback: Codable, Sendable, Equatable {
-    public var lossPct: Double
-    public var jitterMs: Double
-    public var decodeQueue: Int
-    public var presentedFps: Int
-    public var rttMsEstimate: Int
-
-    public init(lossPct: Double, jitterMs: Double, decodeQueue: Int,
-                presentedFps: Int, rttMsEstimate: Int) {
-        self.lossPct = lossPct
-        self.jitterMs = jitterMs
-        self.decodeQueue = decodeQueue
-        self.presentedFps = presentedFps
-        self.rttMsEstimate = rttMsEstimate
     }
 }
 

@@ -64,7 +64,7 @@ final class SecurityTests: XCTestCase {
         let (listener, port) = startDisplay(identity: displayID, trust: displayTrust, pin: "123456") { s, tap in
             box.session = s; box.tap = tap
             s.onReady = { _ in displayReady.fulfill() }
-            s.onVideoFrame = { nal, _, _ in
+            s.onVideoFrame = { nal, _, _, _ in
                 XCTAssertEqual(nal, Data([1, 2, 3])); gotVideo.fulfill()
             }
         }

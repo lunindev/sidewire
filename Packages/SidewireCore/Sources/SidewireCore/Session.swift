@@ -50,8 +50,9 @@ public final class Session: @unchecked Sendable {
     public var onReady: ((Config) -> Void)?
     // Source side: the Display's native panel info arrived.
     public var onDisplayInfo: ((DisplayInfo) -> Void)?
-    // Display side: a decoded-ready video frame arrived (nal, isKeyframe, ltrToken).
-    public var onVideoFrame: ((Data, Bool, UInt16) -> Void)?
+    // Display side: a video frame arrived (nal, isKeyframe, ltrToken, ptsNanos).
+    // ptsNanos is the source's capture timestamp (nanoseconds, monotonic epoch; 0 = unspecified).
+    public var onVideoFrame: ((Data, Bool, UInt16, UInt64) -> Void)?
     // Source side: an input event arrived.
     public var onInputEvent: ((InputEventRecord) -> Void)?
     // Display side: source requests a keyframe.
@@ -158,13 +159,17 @@ public final class Session: @unchecked Sendable {
 
     // MARK: - Sending (public API for controllers)
 
-    public func sendVideo(_ nal: Data, keyframe: Bool, ltrToken: UInt16 = 0) {
+    /// Send one encoded video frame. `ptsNanos` is the capture presentation timestamp in
+    /// nanoseconds on the source's monotonic clock (0 = unspecified, e.g. a keep-alive resend);
+    /// it rides the video subheader so a receiver can build a jitter buffer / HUD later. `ltrToken`
+    /// is reserved for future loss recovery — senders currently always pass 0.
+    public func sendVideo(_ nal: Data, keyframe: Bool, ltrToken: UInt16 = 0, ptsNanos: UInt64 = 0) {
         queue.async {
             guard self.ready, !self.closed else { return }
             var flags = VideoFlags()
             if keyframe { flags.insert(.keyframe) }
             if ltrToken != 0 { flags.insert(.ltr) }
-            let payload = VideoPayload.encode(ltrToken: ltrToken, nalData: nal)
+            let payload = VideoPayload.encode(ltrToken: ltrToken, ptsNanos: ptsNanos, nalData: nal)
             self.transport.send(type: .video, flags: flags.rawValue, seq: self.nextSeq(), payload: payload)
         }
     }
@@ -334,10 +339,9 @@ public final class Session: @unchecked Sendable {
         coreLog.info("session[\(self.role.rawValue, privacy: .public)] transport ready → sending HELLO")
         startHeartbeat()
         sendHello()
-        if role == .display, let info = provideDisplayInfo?() {
-            coreLog.info("session[display] sending DISPLAY_INFO \(info.width)x\(info.height)")
-            transport.send(type: .displayInfo, seq: nextSeq(), payload: JSONWire.encode(info))
-        }
+        // DISPLAY_INFO is deferred until AFTER the peer's HELLO is received and validated (E6):
+        // sending it here would leak the panel description to a peer we then reject. See
+        // receiveHello, which emits it right after the Display's HELLO_ACK.
     }
 
     private func sendBye(_ reason: String) {
@@ -370,23 +374,38 @@ public final class Session: @unchecked Sendable {
 
         switch type {
         case .hello, .helloAck:
-            if let hello = JSONWire.decode(Hello.self, from: frame.payload) {
-                receiveHello(hello, isAck: frame.type == .helloAck)
+            // Fail loud on a malformed handshake message (was: silent drop → 10s timeout). A
+            // foreign/garbled peer gets a clear BYE("protocol") instead of a hang.
+            guard let hello = JSONWire.decode(Hello.self, from: frame.payload) else {
+                coreLog.error("session[\(self.role.rawValue, privacy: .public)] malformed HELLO → BYE(protocol)")
+                closeSendingBye(HelloRejection.protocolMismatch.rawValue)
+                return
             }
+            receiveHello(hello, isAck: frame.type == .helloAck)
         case .displayInfo:
-            if role == .source, let info = JSONWire.decode(DisplayInfo.self, from: frame.payload) {
+            if role == .source {
+                guard let info = JSONWire.decode(DisplayInfo.self, from: frame.payload) else {
+                    coreLog.error("session[source] malformed DISPLAY_INFO → BYE(protocol)")
+                    closeSendingBye(HelloRejection.protocolMismatch.rawValue)
+                    return
+                }
                 peerDisplayInfo = info
                 onDisplayInfo?(info)
                 finalizeIfPossible()
             }
         case .config:
-            if role == .display, let cfg = JSONWire.decode(Config.self, from: frame.payload) {
+            if role == .display {
+                guard let cfg = JSONWire.decode(Config.self, from: frame.payload) else {
+                    coreLog.error("session[display] malformed CONFIG → BYE(protocol)")
+                    closeSendingBye(HelloRejection.protocolMismatch.rawValue)
+                    return
+                }
                 becomeReady(cfg)
             }
         case .video:
-            if role == .display, let (token, nal) = VideoPayload.decode(frame.payload) {
+            if role == .display, let (token, pts, nal) = VideoPayload.decode(frame.payload) {
                 let isKey = (frame.flags & VideoFlags.keyframe.rawValue) != 0
-                onVideoFrame?(nal, isKey, token)
+                onVideoFrame?(nal, isKey, token, pts)
             }
         case .input:
             if role == .source, let rec = InputEventRecord.decode(from: frame.payload) {
@@ -408,7 +427,7 @@ public final class Session: @unchecked Sendable {
             let reason = JSONWire.decode(ReasonMessage.self, from: frame.payload)?.reason
             finishClose(reason)
         default:
-            break // audio/ltrAck/feedback/pause/resume — reserved for later phases
+            break // audio/pause/resume — reserved for later phases; 0x42 (was FEEDBACK) removed
         }
     }
 
@@ -417,6 +436,14 @@ public final class Session: @unchecked Sendable {
         if let rejection = hello.validate(againstLocalRole: role) {
             coreLog.error("session[\(self.role.rawValue, privacy: .public)] rejecting peer: \(rejection.rawValue, privacy: .public)")
             closeSendingBye(rejection.rawValue)
+            return
+        }
+        // Future-proofing: the peers must agree on the wire input encoding. Both v2 implementations
+        // send "hid1"; a peer advertising something else is refused rather than fed misinterpreted
+        // keycodes. (Optional-with-default on decode, so an absent field reads as "hid1".)
+        if hello.capabilities.inputMapping != localHello.capabilities.inputMapping {
+            coreLog.error("session[\(self.role.rawValue, privacy: .public)] input mapping mismatch (peer=\(hello.capabilities.inputMapping, privacy: .public), local=\(self.localHello.capabilities.inputMapping, privacy: .public)) → BYE(protocol)")
+            closeSendingBye(HelloRejection.protocolMismatch.rawValue)
             return
         }
         if peerHello == nil {
@@ -431,6 +458,12 @@ public final class Session: @unchecked Sendable {
             if !isAck {
                 // Reply with our HELLO_ACK so the peer has our capabilities regardless of order.
                 transport.send(type: .helloAck, seq: nextSeq(), payload: JSONWire.encode(localHello))
+            }
+            // E6: the Display sends DISPLAY_INFO only now — after the Source's HELLO is received and
+            // validated (right after our HELLO_ACK) — so a rejected peer never learns our panel.
+            if role == .display, let info = provideDisplayInfo?() {
+                coreLog.info("session[display] sending DISPLAY_INFO \(info.width)x\(info.height)")
+                transport.send(type: .displayInfo, seq: nextSeq(), payload: JSONWire.encode(info))
             }
         }
         finalizeIfPossible()

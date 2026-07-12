@@ -104,5 +104,5 @@ Milestones:
 
 1. **Localization scope at v1** — English-only or multi-locale (D13 default: catalog now, English copy first).
 2. **Rust client UI depth** — bare viewer (fullscreen + a connect dialog) vs settings/HUD parity with the Mac Display role. Default assumption: bare viewer first.
-3. **LTR loss recovery** (reverted in commit `17a117a`, `ltrToken` reserved on the wire) — re-land per docs/04, or accept IDR-based recovery permanently? Affects protocol v2 (keep or repurpose the subheader field).
+3. **LTR loss recovery** — **DECIDED (Phase 7b): keep the field reserved.** `ltrToken`, the two LTR flag bits, and `LTR_ACK` (0x41) stay in the v2 wire format but are documented as *reserved for future loss recovery; senders always send 0*; recovery remains IDR-based. This keeps the wire stable for a later loss-recovery path (e.g. the QUIC/lossy transport) without shipping dead code now. See docs/02 § VIDEO, docs/10 E2. (Re-landing actual LTR recovery per docs/04 is deferred, not blocked.)
 4. **Helper subprocess** for `CGVirtualDisplay` (disabled: `VirtualDisplayManager.swift:33`) — fix the ~3 s activation-timeout regression and re-enable (docs/00 C2 called it required), or accept in-process creation. Backlog B14.

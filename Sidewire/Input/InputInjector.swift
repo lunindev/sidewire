@@ -18,6 +18,8 @@ final class InputInjector {
     func inject(event: InputEventRecord) {
         guard injectionEnabled else { return }
         let point = mapToDisplay(x: Double(event.x), y: Double(event.y))
+        // Translate the platform-neutral HID modifier byte → macOS CGEventFlags (v2 wire contract).
+        let flags = KeyMapping.cgEventFlags(fromHIDModifiers: event.modifiers)
 
         switch event.type {
         case .mouseMove:
@@ -35,19 +37,24 @@ final class InputInjector {
         case .rightMouseDragged:
             postMouse(.rightMouseDragged, at: point, button: .right)
         case .scrollWheel:
+            // Wire deltas are pixels; inject as pixel-unit scroll.
             if let scroll = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
                                     wheel1: Int32(event.deltaY), wheel2: Int32(event.deltaX), wheel3: 0) {
                 scroll.location = point
                 scroll.post(tap: .cghidEventTap)
             }
         case .keyDown:
-            postKey(keyCode: event.keyCode, keyDown: true, flags: event.modifierFlags)
+            // HID usage → macOS virtual keycode; unmapped usages are dropped (logged once).
+            guard let macKey = KeyMapping.macVirtualKey(fromHIDUsage: event.keyCode) else { return }
+            postKey(keyCode: macKey, keyDown: true, flags: flags)
         case .keyUp:
-            postKey(keyCode: event.keyCode, keyDown: false, flags: event.modifierFlags)
+            guard let macKey = KeyMapping.macVirtualKey(fromHIDUsage: event.keyCode) else { return }
+            postKey(keyCode: macKey, keyDown: false, flags: flags)
         case .flagsChanged:
-            if let flagEvent = CGEvent(keyboardEventSource: nil, virtualKey: event.keyCode, keyDown: true) {
+            guard let macKey = KeyMapping.macVirtualKey(fromHIDUsage: event.keyCode) else { return }
+            if let flagEvent = CGEvent(keyboardEventSource: nil, virtualKey: macKey, keyDown: true) {
                 flagEvent.type = .flagsChanged
-                flagEvent.flags = CGEventFlags(rawValue: event.modifierFlags)
+                flagEvent.flags = flags
                 flagEvent.post(tap: .cghidEventTap)
             }
         }
@@ -68,9 +75,9 @@ final class InputInjector {
         }
     }
 
-    private func postKey(keyCode: UInt16, keyDown: Bool, flags: UInt64) {
+    private func postKey(keyCode: UInt16, keyDown: Bool, flags: CGEventFlags) {
         if let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: keyDown) {
-            event.flags = CGEventFlags(rawValue: flags)
+            event.flags = flags
             event.post(tap: .cghidEventTap)
         }
     }

@@ -1,0 +1,21 @@
+{
+  "note" : "VIDEO payload = 12-byte subheader + Annex-B NAL. Subheader (BE): ltrToken:u16 | flags:u16(=0) | pts:u64(nanoseconds). The keyframe bit lives in the FRAME header flags (0x01), not here. ltrToken is reserved (senders send 0).",
+  "vectors" : [
+    {
+      "description" : "Keyframe payload, pts=0x0102030405060708 ns, ltrToken 0.",
+      "ltrToken" : 0,
+      "nalHex" : "000000014001ff",
+      "name" : "keyframe_with_pts",
+      "payloadHex" : "000000000102030405060708000000014001ff",
+      "ptsNanos" : 72623859790382856
+    },
+    {
+      "description" : "Frame with pts unspecified (0), e.g. a keep-alive resend.",
+      "ltrToken" : 0,
+      "nalHex" : "0000000142",
+      "name" : "frame_zero_pts",
+      "payloadHex" : "0000000000000000000000000000000142",
+      "ptsNanos" : 0
+    }
+  ]
+}

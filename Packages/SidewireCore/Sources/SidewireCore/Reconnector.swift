@@ -25,20 +25,12 @@ public final class Reconnector: @unchecked Sendable {
     /// before it starts. Invoked on the reconnector's queue.
     public var onSession: ((Session) -> Void)?
 
-    /// Reasons that must NOT trigger auto-reconnect (explicit teardown / fatal handshake).
-    /// "auth" = wrong PIN: re-dialing with the same wrong PIN can only fail again, so stop and
-    /// let the UI prompt for the correct PIN. "keyChanged" = the paired peer's key changed
-    /// (re-dialing can't fix it — the user must re-pair). "rateLimited" = the Display locked us
-    /// out after repeated wrong PINs (re-dialing immediately would just be refused again).
-    /// "superseded" = another Source took the Display; re-dialing would just fight the taker
-    /// forever (newest-wins → steal loop). "error" = a peer-signalled fatal error.
-    private static let fatalReasons: Set<String> = [
-        "user", "protocol", "role", "error",
-        SessionConstants.authFailureReason,
-        SessionConstants.keyChangedReason,
-        SessionConstants.rateLimitedReason,
-        SessionConstants.supersededReason,
-    ]
+    /// The allowlist of *transient* reasons that DO trigger auto-reconnect. v2 default: an
+    /// UNKNOWN reason (and every fatal handshake/security reason — user, protocol, role, error,
+    /// auth, keyChanged, rateLimited, superseded) is FATAL — the Reconnector surfaces it and does
+    /// not re-dial. Only these transient reasons (plus a `nil` reason, treated as a clean drop)
+    /// reconnect. Defined once in `SessionConstants.transientReasons` and mirrored in docs/02 §BYE.
+    private static let transientReasons = SessionConstants.transientReasons
 
     private let makeSession: () -> Session
     private let queue = DispatchQueue(label: "sidewire.reconnector")
@@ -111,7 +103,9 @@ public final class Reconnector: @unchecked Sendable {
         guard session === current, !stopped else { return }
         current = nil
 
-        if let reason, Self.fatalReasons.contains(reason) {
+        // Fatal-for-reconnect unless the reason is a known transient one (nil ⇒ clean drop ⇒
+        // transient). This is the v2 flip: unknown reasons no longer silently reconnect.
+        if let reason, !Self.transientReasons.contains(reason) {
             coreLog.notice("reconnector: fatal close (\(reason, privacy: .public)) — not reconnecting")
             onState?(.failed(reason))
             return
