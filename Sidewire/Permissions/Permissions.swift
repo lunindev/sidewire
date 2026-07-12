@@ -29,6 +29,12 @@ enum Permissions {
         openSettings("Privacy_Accessibility")
     }
 
+    /// Deep link to System Settings → Privacy & Security → Local Network (macOS 15+). There is no
+    /// request API for this permission (unlike Screen Recording / Accessibility), so the
+    /// troubleshooting hints just open the pane so the user can toggle Sidewire on.
+    static let localNetworkSettingsURL =
+        URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
+
     private static func openSettings(_ anchor: String) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
             NSWorkspace.shared.open(url)

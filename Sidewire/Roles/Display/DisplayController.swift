@@ -225,7 +225,7 @@ final class DisplayController: ObservableObject {
         case .connecting: statusText = "Connecting…"
         case .handshaking: statusText = "Setting up…"
         case .streaming: isConnected = true; statusText = "Connected"
-        case .closed(let reason): statusText = reason.map { "Closed: \($0)" } ?? "Disconnected"
+        case .closed(let reason): statusText = reason.map { CloseReasonText.display($0) } ?? "Disconnected"
         }
     }
 
@@ -385,7 +385,7 @@ final class DisplayController: ObservableObject {
         presenter.flush()
         presenter.videoSize = .zero
         exitImmersive()
-        statusText = reason.map { "Closed: \($0)" } ?? "Waiting for a Source…"
+        statusText = reason.map { CloseReasonText.display($0) } ?? "Waiting for a Source…"
         session = nil
     }
 

@@ -25,6 +25,7 @@ struct RolePickerView: View {
                     icon: "macbook.and.iphone",
                     title: "Share this Mac",
                     subtitle: "Creates an extra display here and streams it to another Mac.",
+                    guidance: "Pick this on the Mac whose apps and files you want to use.",
                     role: "Source"
                 ) { model.setRole(.source) }
 
@@ -32,6 +33,7 @@ struct RolePickerView: View {
                     icon: "display",
                     title: "Use as a display",
                     subtitle: "Shows another Mac's screen and forwards your keyboard and mouse.",
+                    guidance: "Pick this on the spare Mac that will act as the extra screen.",
                     role: "Display"
                 ) { model.setRole(.display) }
             }
@@ -45,12 +47,14 @@ private struct RoleCard: View {
     let icon: String
     let title: String
     let subtitle: String
+    /// One plain-language sentence on which Mac this role belongs on (backlog C4).
+    let guidance: String
     let role: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 30))
                     .foregroundStyle(.tint)
@@ -61,12 +65,16 @@ private struct RoleCard: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Text(guidance)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Text(role.uppercased())
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
-            .frame(width: 240, height: 190, alignment: .topLeading)
+            .frame(width: 240, height: 220, alignment: .topLeading)
             .padding(18)
             .background(RoundedRectangle(cornerRadius: 14).fill(.quaternary.opacity(0.5)))
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.separator))

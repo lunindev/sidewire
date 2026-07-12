@@ -69,6 +69,10 @@ final class SourceController: ObservableObject {
         didSet { UserDefaults.standard.set(pairingPIN, forKey: "sidewire.enteredPIN") }
     }
     @Published var peers: [DiscoveredPeer] = []
+    /// True when discovery has been stuck (browser `.waiting`/`.failed`) with no peers found for
+    /// a few seconds — most often a denied Local Network permission. Drives a stronger inline
+    /// hint next to "Searching…" (backlog C1). Best-effort: cleared the moment a peer appears.
+    @Published var discoveryLikelyBlocked = false
     @Published var statusText = "Idle"
     /// Set when the last connect attempt failed the TLS-PSK handshake (wrong PIN). Drives a
     /// clear message in the UI instead of an endless silent "Reconnecting…". Cleared on the
@@ -82,10 +86,19 @@ final class SourceController: ObservableObject {
     @Published var connectionInterface = ""
 
     private var wakeObserver: Any?
+    /// Bumped whenever the discovery-waiting state flips, to invalidate a pending debounce check.
+    private var discoveryWaitGeneration = 0
 
     init() {
         discovery.onPeersChanged = { [weak self] peers in
-            Task { @MainActor in self?.peers = peers }
+            Task { @MainActor in
+                guard let self else { return }
+                self.peers = peers
+                if !peers.isEmpty { self.discoveryLikelyBlocked = false } // found something → not blocked
+            }
+        }
+        discovery.onWaiting = { [weak self] waiting in
+            Task { @MainActor in self?.handleDiscoveryWaiting(waiting) }
         }
         virtualDisplay.onActivated = { [weak self] did in
             Task { @MainActor in self?.beginStreaming(displayID: did) }
@@ -132,9 +145,23 @@ final class SourceController: ObservableObject {
     /// Re-scan the network for Displays.
     func refreshDiscovery() {
         peers = []
+        discoveryLikelyBlocked = false // give the fresh scan a clean slate before re-flagging
         localThunderboltIP = InterfaceMonitor.localThunderboltIP()
         discovery.stop()
         discovery.start()
+    }
+
+    /// Debounced handling of the discovery browser stalling. A brief `.waiting` at startup is
+    /// normal, so only flag a likely block (usually Local Network denied) if the browser is
+    /// STILL waiting with nothing found a few seconds later. Cleared immediately when it recovers.
+    private func handleDiscoveryWaiting(_ waiting: Bool) {
+        discoveryWaitGeneration += 1
+        guard waiting else { discoveryLikelyBlocked = false; return }
+        let gen = discoveryWaitGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self, self.discoveryWaitGeneration == gen, self.peers.isEmpty else { return }
+            self.discoveryLikelyBlocked = true
+        }
     }
 
     /// If the persisted interface selection no longer exists among the current interfaces,
@@ -295,14 +322,10 @@ final class SourceController: ObservableObject {
             // Terminal (protocol/role mismatch, wrong PIN, or displaced by another Source):
             // tear down and release the reconnector so a fresh connect() can proceed.
             isConnecting = false; isConnected = false
-            if reason == SessionConstants.authFailureReason {
-                pinRejected = true
-                statusText = "PIN incorrect — check the code shown on the other Mac."
-            } else if reason == SessionConstants.supersededReason {
-                statusText = "Another Mac took over this display."
-            } else {
-                statusText = "Failed: \(reason)"
-            }
+            // pinRejected drives a dedicated field-level hint; the human status copy for every
+            // reason (auth/superseded included) lives once in CloseReasonText (backlog C2).
+            if reason == SessionConstants.authFailureReason { pinRejected = true }
+            statusText = CloseReasonText.source(reason)
             tearDownEncoderCapture()
             virtualDisplay.destroy()
             activeSession = nil

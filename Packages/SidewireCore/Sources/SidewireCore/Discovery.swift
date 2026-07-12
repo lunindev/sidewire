@@ -19,6 +19,11 @@ public struct DiscoveredPeer: Identifiable, Hashable, Sendable {
 /// continuously so Phase 1 reconnection can re-resolve by service name (not a cached IP).
 public final class Discovery: @unchecked Sendable {
     public var onPeersChanged: (([DiscoveredPeer]) -> Void)?
+    /// Fires `true` when the browser can't make progress (`.waiting`/`.failed` — the shape a
+    /// denied Local Network permission takes on) and `false` once it's `.ready`. Best-effort:
+    /// the caller debounces before showing a "check Local Network permission" hint, since a
+    /// brief `.waiting` at startup is normal. Invoked on the discovery queue.
+    public var onWaiting: ((Bool) -> Void)?
 
     private var browser: NWBrowser?
     private let queue = DispatchQueue(label: "sidewire.discovery")
@@ -34,8 +39,18 @@ public final class Discovery: @unchecked Sendable {
         let browser = NWBrowser(for: descriptor, using: params)
 
         browser.stateUpdateHandler = { [weak self] state in
-            if case .failed = state {
+            switch state {
+            case .ready:
+                self?.onWaiting?(false)
+            case .waiting:
+                // Commonly a denied Local Network permission (Bonjour can't resolve), but also a
+                // transient no-network state — the caller debounces before surfacing anything.
+                self?.onWaiting?(true)
+            case .failed:
+                self?.onWaiting?(true)
                 self?.queue.asyncAfter(deadline: .now() + 2) { self?.start() }
+            default:
+                break
             }
         }
 

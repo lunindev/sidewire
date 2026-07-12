@@ -13,6 +13,15 @@ final class InputCapture {
     weak var presenter: VideoPresenterView?
 
     private var localMonitor: Any?
+    /// Key codes whose `.keyDown` we withheld locally (Cmd-combos, Esc). The matching `.keyUp`
+    /// must be withheld too — otherwise the remote Mac receives a keyUp with no keyDown and its
+    /// key state goes unbalanced (a key it thinks is still held, or a stray release).
+    private var suppressedKeyCodes = Set<UInt16>()
+
+    // Left/right ⌘ virtual key codes and Esc — the keys that stay local.
+    private static let leftCommandKeyCode: UInt16 = 55
+    private static let rightCommandKeyCode: UInt16 = 54
+    private static let escapeKeyCode: UInt16 = 53
 
     func start() {
         let eventMask: NSEvent.EventTypeMask = [
@@ -23,8 +32,31 @@ final class InputCapture {
 
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) { [weak self] event in
             guard let self, self.isEnabled else { return event }
-            if event.type == .keyDown, event.modifierFlags.contains(.command) { return event }
-            if event.type == .keyDown, event.keyCode == 53 { return event } // Esc
+
+            // Keep ⌘-combos and Esc on THIS Mac (local shortcuts; Esc exits fullscreen), and do
+            // it symmetrically so the remote never sees a half key stroke:
+            switch event.type {
+            case .keyDown:
+                if event.modifierFlags.contains(.command) || event.keyCode == Self.escapeKeyCode {
+                    // Withheld → remember the code so we drop its keyUp too.
+                    self.suppressedKeyCodes.insert(event.keyCode)
+                    return event
+                }
+            case .keyUp:
+                // Mirror the keyDown decision by code (the ⌘ flag may already be gone on release).
+                if self.suppressedKeyCodes.remove(event.keyCode) != nil { return event }
+            case .flagsChanged:
+                // The ⌘ modifier is reserved for local shortcuts (we never forward ⌘-combos), so
+                // never forward the ⌘ key's own press/release either — otherwise the remote Mac
+                // would be left with Command stuck down and no combo to release it. Other
+                // modifiers (Shift/Option/Control) still cross so remote Shift-click / Option-key
+                // behavior works.
+                if event.keyCode == Self.leftCommandKeyCode || event.keyCode == Self.rightCommandKeyCode {
+                    return event
+                }
+            default:
+                break
+            }
 
             self.handleEvent(event)
             switch event.type {
@@ -37,6 +69,7 @@ final class InputCapture {
     func stop() {
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
         localMonitor = nil
+        suppressedKeyCodes.removeAll() // don't carry a half-pressed key across sessions
     }
 
     private func handleEvent(_ event: NSEvent) {

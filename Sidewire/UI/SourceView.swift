@@ -63,10 +63,27 @@ struct SourceView: View {
                 Divider()
 
                 if controller.peers.isEmpty {
-                    Label("Searching…", systemImage: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 6)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Searching…", systemImage: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if controller.discoveryLikelyBlocked {
+                            // Discovery has been stuck with nothing found — almost always Local
+                            // Network permission denied (Bonjour returns nothing when it's off).
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("No Displays found. Local Network permission may be off — turn it on for Sidewire on both Macs.")
+                                        .font(.caption)
+                                    if let url = Permissions.localNetworkSettingsURL {
+                                        Link("Open Local Network settings", destination: url)
+                                            .font(.caption)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 6)
                 } else {
                     VStack(spacing: 0) {
                         ForEach(controller.peers) { peer in
@@ -98,6 +115,8 @@ struct SourceView: View {
                     }
                 }
             }
+
+            troubleshooting
 
             GroupBox("Connect by IP — forces Thunderbolt") {
                 VStack(alignment: .leading, spacing: 6) {
@@ -190,6 +209,55 @@ struct SourceView: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Collapsed-by-default guide for the two failures users actually hit but that the app can't
+    /// always detect: Local Network permission, the firewall, network/VPN isolation, and both
+    /// Macs picking the same role (backlog C1).
+    private var troubleshooting: some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 10) {
+                TroubleRow(icon: "lock.shield") {
+                    Text("**Local Network permission.** Both Macs must allow it (System Settings › Privacy & Security › Local Network). If the prompt was denied, discovery finds nothing.")
+                    if let url = Permissions.localNetworkSettingsURL {
+                        Link("Open Local Network settings", destination: url)
+                    }
+                }
+                TroubleRow(icon: "flame") {
+                    Text("**Firewall.** The macOS firewall on the Display Mac (System Settings › Network › Firewall) can block incoming connections — allow Sidewire. \u{201C}Connect by IP\u{201D} needs this too.")
+                }
+                TroubleRow(icon: "wifi") {
+                    Text("**Same network.** Both Macs must be on the same Wi-Fi/LAN; a VPN can isolate them. A Thunderbolt cable is the reliable fallback.")
+                }
+                TroubleRow(icon: "arrow.2.squarepath") {
+                    Text("**Roles.** The other Mac must be set to \u{201C}Use as a display\u{201D}. If both are sharing, this list stays empty.")
+                }
+            }
+            .font(.caption)
+            .padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            Label("Can't connect?", systemImage: "questionmark.circle")
+                .font(.callout)
+        }
+    }
+}
+
+/// One troubleshooting row: a leading SF Symbol and secondary-styled explanatory content.
+private struct TroubleRow<Content: View>: View {
+    let icon: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) { content }
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
     }
 }
 

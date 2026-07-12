@@ -11,6 +11,7 @@ struct DisplayView: View {
 
     @State private var controlsVisible = true
     @State private var showExitToast = false
+    @State private var showInputHelp = false
     @State private var hideWork: DispatchWorkItem?
 
     var body: some View {
@@ -66,12 +67,38 @@ struct DisplayView: View {
                 }
             }
             Spacer()
+            Button {
+                showInputHelp.toggle()
+            } label: {
+                Image(systemName: "keyboard")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.white)
+            .help("Keyboard & mouse")
+            .popover(isPresented: $showInputHelp, arrowEdge: .bottom) {
+                inputHelp
+            }
             Button("Exit") { exitFullscreen() }
             Button("Switch role") { model.switchRole() }
         }
         .padding(8)
         .background(.black.opacity(0.6))
         .foregroundStyle(.white)
+    }
+
+    /// What the local user keeps vs. what reaches the remote Mac (backlog C3). A compact popover,
+    /// not a window — matches the "surfaces only when needed" onboarding style.
+    private var inputHelp: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Keyboard & mouse", systemImage: "keyboard")
+                .font(.headline)
+            Text("⌘ shortcuts and Esc stay on this Mac (Esc exits fullscreen). Everything else is sent to the remote Mac.")
+            Text("Non-US layouts: keys follow the remote Mac's layout.")
+                .foregroundStyle(.secondary)
+        }
+        .font(.callout)
+        .frame(width: 300, alignment: .leading)
+        .padding(14)
     }
 
     private var waitingOverlay: some View {
@@ -110,6 +137,22 @@ struct DisplayView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .padding(.top, 2)
+            }
+
+            if controller.isListening {
+                // The Source-side counterpart of SourceView's "Can't connect?" guide: the two
+                // things that silently stop this Mac from being found/reached (backlog C1).
+                VStack(spacing: 3) {
+                    Text("Not seeing this Mac from the Source? Check Local Network permission and the firewall on this Mac.")
+                        .multilineTextAlignment(.center)
+                    if let url = Permissions.localNetworkSettingsURL {
+                        Link("Open Local Network settings", destination: url)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.gray)
+                .frame(maxWidth: 360)
+                .padding(.top, 4)
             }
 
             Text(controller.statusText).font(.caption).foregroundStyle(.gray.opacity(0.7))
