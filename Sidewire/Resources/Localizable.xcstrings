@@ -1,0 +1,363 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "%lld Mbps" : {
+
+    },
+    "%lld fps" : {
+
+    },
+    "**Firewall.** The macOS firewall on the Display Mac (System Settings › Network › Firewall) can block incoming connections — allow Sidewire. “Connect by IP” needs this too." : {
+
+    },
+    "**Local Network permission.** Both Macs must allow it (System Settings › Privacy & Security › Local Network). If the prompt was denied, discovery finds nothing." : {
+
+    },
+    "**Roles.** The other Mac must be set to “Use as a display”. If both are sharing, this list stays empty." : {
+
+    },
+    "**Same network.** Both Macs must be on the same Wi-Fi/LAN; a VPN can isolate them. A Thunderbolt cable is the reliable fallback." : {
+
+    },
+    "169.254.x.x" : {
+
+    },
+    "6-digit PIN" : {
+
+    },
+    "Accessibility permission revoked — remote input disabled. Re-grant in System Settings › Privacy & Security." : {
+
+    },
+    "Accessibility revoked — remote input disabled." : {
+
+    },
+    "After turning a permission on, restart to apply it." : {
+
+    },
+    "Another Mac took over this display." : {
+
+    },
+    "Another Source took over." : {
+
+    },
+    "Auto" : {
+
+    },
+    "Auto-connect to the last Mac on launch" : {
+
+    },
+    "Can't connect?" : {
+
+    },
+    "Cancel" : {
+
+    },
+    "Changes apply on reconnect" : {
+
+    },
+    "Choose a role to get started." : {
+
+    },
+    "Codec" : {
+
+    },
+    "Connect" : {
+
+    },
+    "Connect by IP — forces Thunderbolt" : {
+
+    },
+    "Connect over the Thunderbolt cable (%@)" : {
+
+    },
+    "Connected" : {
+
+    },
+    "Connected to %@" : {
+
+    },
+    "Connecting…" : {
+
+    },
+    "Connection" : {
+
+    },
+    "Connection closed (%@)." : {
+
+    },
+    "Connection timed out." : {
+
+    },
+    "Couldn't reach %@. Connect manually." : {
+
+    },
+    "Creating display…" : {
+
+    },
+    "Device name" : {
+
+    },
+    "Diagnostics" : {
+
+    },
+    "Disconnect" : {
+
+    },
+    "Disconnected" : {
+
+    },
+    "Displays on your network" : {
+
+    },
+    "Encrypted (TLS)" : {
+
+    },
+    "Enter the 6-digit PIN in the main window to connect." : {
+
+    },
+    "Enter the PIN shown on the other Mac." : {
+
+    },
+    "Enter this on the other Mac to connect" : {
+
+    },
+    "Exit" : {
+
+    },
+    "Export Diagnostics…" : {
+
+    },
+    "Finish setup" : {
+
+    },
+    "General" : {
+
+    },
+    "Get Started" : {
+
+    },
+    "Grant Screen Recording, then reconnect" : {
+
+    },
+    "Idle" : {
+
+    },
+    "Includes debug-level detail in the log buffer and exported diagnostics." : {
+
+    },
+    "Keep this Mac awake while connected" : {
+
+    },
+    "Keyboard & mouse" : {
+
+    },
+    "Launch Sidewire at login" : {
+
+    },
+    "Listening…" : {
+
+    },
+    "Max bitrate" : {
+
+    },
+    "Max frame rate" : {
+
+    },
+    "More settings…" : {
+
+    },
+    "Most changes apply to the next connection." : {
+
+    },
+    "Network" : {
+
+    },
+    "New PIN" : {
+
+    },
+    "No Displays found. Local Network permission may be off — turn it on for Sidewire on both Macs." : {
+
+    },
+    "No Thunderbolt Bridge found — connect a cable and check System Settings → Network." : {
+
+    },
+    "Non-US layouts: keys follow the remote Mac's layout." : {
+
+    },
+    "Not accepting connections" : {
+
+    },
+    "Not accepting connections — open Sidewire to retry." : {
+
+    },
+    "Not seeing this Mac from the Source? Check Local Network permission and the firewall on this Mac." : {
+
+    },
+    "On" : {
+
+    },
+    "Open Local Network settings" : {
+
+    },
+    "Open Settings" : {
+
+    },
+    "Open Sidewire" : {
+
+    },
+    "PAIRING PIN" : {
+
+    },
+    "PIN incorrect — check the code shown on the other Mac." : {
+
+    },
+    "Pairing PIN" : {
+
+    },
+    "Pairing PIN (shown on the Display)" : {
+
+    },
+    "Permissions granted" : {
+
+    },
+    "Press Esc to exit" : {
+
+    },
+    "Quality" : {
+
+    },
+    "Quit" : {
+
+    },
+    "Reconnect" : {
+
+    },
+    "Reconnecting (%lld)…" : {
+
+    },
+    "Reconnecting…" : {
+
+    },
+    "Reconnects to the last IP you connected to, using the saved PIN." : {
+
+    },
+    "Refresh" : {
+
+    },
+    "Resolution" : {
+
+    },
+    "Restart Sidewire" : {
+
+    },
+    "Retry" : {
+
+    },
+    "Saves a text file with app/OS info, your settings, and recent logs — useful for reporting a problem." : {
+
+    },
+    "Searching for displays…" : {
+
+    },
+    "Searching…" : {
+
+    },
+    "Setting up…" : {
+
+    },
+    "Show Welcome…" : {
+
+    },
+    "Show only in the menu bar (no Dock icon)" : {
+
+    },
+    "Shown to the other Mac. Leave blank to use this Mac's name. Applies to new connections; the Display re-advertises its Bonjour name after you relaunch or switch roles." : {
+
+    },
+    "Sidewire" : {
+
+    },
+    "Sidewire keeps running in the menu bar; reopen the window from there." : {
+
+    },
+    "Source" : {
+
+    },
+    "Still trying — is Sidewire running on the other Mac?" : {
+
+    },
+    "Stopped" : {
+
+    },
+    "Stops this Mac's screen from sleeping while it's acting as a display for another Mac." : {
+
+    },
+    "Streaming" : {
+
+    },
+    "Switch role" : {
+
+    },
+    "The Macs couldn't agree on a video format — update Sidewire on both Macs." : {
+
+    },
+    "The other Mac disconnected." : {
+
+    },
+    "The other Mac is also set to 'Use as a display' — switch one of them to Share." : {
+
+    },
+    "The other Mac is also set to Share — switch one of them to 'Use as a display'." : {
+
+    },
+    "This Mac's name" : {
+
+    },
+    "Thunderbolt" : {
+
+    },
+    "Thunderbolt cable detected (this Mac: %@). Enter the OTHER Mac's 169.254.x.x to go over the cable." : {
+
+    },
+    "Turn a second Mac into an extra display — over Wi-Fi or a Thunderbolt cable." : {
+
+    },
+    "Unlimited" : {
+
+    },
+    "Use another Mac as a second display — over Wi-Fi or a Thunderbolt cable." : {
+
+    },
+    "Verbose logging" : {
+
+    },
+    "Video" : {
+
+    },
+    "Virtual display" : {
+
+    },
+    "Virtual display scale" : {
+
+    },
+    "Waiting for a Source…" : {
+
+    },
+    "Welcome to Sidewire" : {
+
+    },
+    "the last Mac" : {
+
+    },
+    "· %@" : {
+
+    },
+    "· %lld fps" : {
+
+    },
+    "⌘ shortcuts and Esc stay on this Mac (Esc exits fullscreen). Everything else is sent to the remote Mac." : {
+
+    }
+  },
+  "version" : "1.0"
+}

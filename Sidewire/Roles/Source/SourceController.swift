@@ -81,7 +81,7 @@ final class SourceController: ObservableObject {
     /// a few seconds — most often a denied Local Network permission. Drives a stronger inline
     /// hint next to "Searching…" (backlog C1). Best-effort: cleared the moment a peer appears.
     @Published var discoveryLikelyBlocked = false
-    @Published var statusText = "Idle"
+    @Published var statusText = String(localized: "Idle")
     /// Set when the last connect attempt failed the TLS-PSK handshake (wrong PIN). Drives a
     /// clear message in the UI instead of an endless silent "Reconnecting…". Cleared on the
     /// next connect attempt / disconnect.
@@ -237,7 +237,7 @@ final class SourceController: ObservableObject {
         autoConnecting = false
         accessibilityRevoked = false
         injector.injectionEnabled = true
-        statusText = "Disconnected"
+        statusText = String(localized: "Disconnected")
         peerName = nil
         rttMs = 0
         connectionInterface = ""
@@ -249,7 +249,7 @@ final class SourceController: ObservableObject {
     /// now. No-op if nothing is connected. `startLink` re-snapshots the live AppSettings.
     func reconnectWithCurrentSettings() {
         guard let make = currentMakeTransport else { return }
-        let name = peerName ?? "the last Mac"
+        let name = peerName ?? String(localized: "the last Mac")
         Log.event(.source, "reconnecting to apply new quality settings")
         disconnect() // clears currentMakeTransport — hence the local capture above
         startLink(peerName: name, makeTransport: make)
@@ -333,10 +333,10 @@ final class SourceController: ObservableObject {
         guard reconnector != nil else { return } // ignore late callbacks after disconnect()
         switch state {
         case .connecting:
-            isConnecting = true; isConnected = false; statusText = "Connecting…"
+            isConnecting = true; isConnected = false; statusText = String(localized: "Connecting…")
             Log.event(.source, "link: connecting")
         case .streaming:
-            isConnecting = false; isConnected = true; statusText = "Connected"
+            isConnecting = false; isConnected = true; statusText = String(localized: "Connected")
             autoConnecting = false // reached a live stream → the auto-attempt succeeded
             Log.event(.source, "link: connected")
         case .reconnecting(let attempt):
@@ -344,9 +344,9 @@ final class SourceController: ObservableObject {
             // after a few attempts, give up this attempt (the setting stays on for next time).
             if autoConnecting && attempt >= Self.maxAutoConnectAttempts {
                 Log.event(.source, "auto-connect gave up after \(attempt) attempts", level: .notice)
-                let name = peerName ?? "the last Mac"
+                let name = peerName ?? String(localized: "the last Mac")
                 disconnect()
-                statusText = "Couldn't reach \(name). Connect manually."
+                statusText = String(localized: "Couldn't reach \(name). Connect manually.")
                 return
             }
             // The session died; drop the encoder/capture but KEEP the virtual display so
@@ -355,8 +355,8 @@ final class SourceController: ObservableObject {
             // After many attempts, swap the counter for a "is it even running?" hint (still
             // retrying); a Cancel affordance in SourceView maps to the disconnect path.
             statusText = attempt >= reconnectHintAfter
-                ? "Still trying — is Sidewire running on the other Mac?"
-                : "Reconnecting (\(attempt))…"
+                ? String(localized: "Still trying — is Sidewire running on the other Mac?")
+                : String(localized: "Reconnecting (\(attempt))…")
             Log.event(.source, "link: reconnecting (attempt \(attempt))")
             tearDownEncoderCapture()
         case .failed(let reason):
@@ -377,7 +377,7 @@ final class SourceController: ObservableObject {
             activeQuality = nil
             currentMakeTransport = nil
         case .stopped:
-            isConnecting = false; isConnected = false; statusText = "Disconnected"
+            isConnecting = false; isConnected = false; statusText = String(localized: "Disconnected")
         }
     }
 
@@ -399,7 +399,7 @@ final class SourceController: ObservableObject {
            let did = virtualDisplay.virtualDisplayID {
             beginStreaming(displayID: did)
         } else {
-            statusText = "Creating display…"
+            statusText = String(localized: "Creating display…")
             Log.event(.media, "creating virtual display \(config.width)x\(config.height) hiDPI=\(hiDPI)")
             virtualDisplay.recreate(width: UInt(config.width), height: UInt(config.height), hiDPI: hiDPI)
         }
@@ -416,7 +416,7 @@ final class SourceController: ObservableObject {
             needsScreenRecording = true
             _ = CGRequestScreenCaptureAccess() // register the app / prompt once
             disconnect()
-            statusText = "Grant Screen Recording, then reconnect"
+            statusText = String(localized: "Grant Screen Recording, then reconnect")
             return
         }
         needsScreenRecording = false
@@ -432,7 +432,7 @@ final class SourceController: ObservableObject {
         Log.event(.media, "virtual display \(displayID) active → starting capture \(config.width)x\(config.height)@\(config.fps) codec=\(config.codec)")
 
         let enc = makeEncoder(config: config, session: session)
-        statusText = "Streaming"
+        statusText = String(localized: "Streaming")
         startMonitor()
         Task { [weak self] in
             // Ordered: always stop a prior stream before starting, so startCapture never

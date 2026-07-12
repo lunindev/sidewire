@@ -39,7 +39,7 @@ final class DisplayController: ObservableObject {
     /// ~2 Hz independent of video, so this is a video-independent "is the link alive" signal.
     private var lastHeartbeatNanos: UInt64 = 0
 
-    @Published var statusText = "Idle"
+    @Published var statusText = String(localized: "Idle")
     @Published var isListening = false
     @Published var isConnected = false
     @Published var videoStalled = false
@@ -65,6 +65,9 @@ final class DisplayController: ObservableObject {
         listener.onState = { [weak self] state in
             Task { @MainActor in
                 self?.isListening = state.hasPrefix("listening")
+                // Raw TCPListener state ("listening on port N", "listener error: …", "failed: …")
+                // is a diagnostic readout, deliberately left unlocalized (F1) — mapping it to
+                // human copy is backlog C2, not this localization pass.
                 self?.statusText = state
             }
         }
@@ -83,7 +86,7 @@ final class DisplayController: ObservableObject {
 
         inputCapture.start()
         startListener()
-        statusText = "Listening…"
+        statusText = String(localized: "Listening…")
 
         // The listener socket can die silently across sleep with no `.failed` state, so re-arm
         // on wake (mirrors the Source's wake handling). Harmless to an already-accepted session.
@@ -154,7 +157,7 @@ final class DisplayController: ObservableObject {
         isConnected = false
         isListening = false
         videoStalled = false
-        statusText = "Stopped"
+        statusText = String(localized: "Stopped")
         Log.event(.display, "stopped")
     }
 
@@ -227,11 +230,11 @@ final class DisplayController: ObservableObject {
 
     private func applyPhase(_ phase: SessionPhase) {
         switch phase {
-        case .connecting: statusText = "Connecting…"; Log.event(.display, "phase: connecting")
-        case .handshaking: statusText = "Setting up…"; Log.event(.display, "phase: handshaking")
-        case .streaming: isConnected = true; statusText = "Connected"; Log.event(.display, "phase: streaming")
+        case .connecting: statusText = String(localized: "Connecting…"); Log.event(.display, "phase: connecting")
+        case .handshaking: statusText = String(localized: "Setting up…"); Log.event(.display, "phase: handshaking")
+        case .streaming: isConnected = true; statusText = String(localized: "Connected"); Log.event(.display, "phase: streaming")
         case .closed(let reason):
-            statusText = reason.map { CloseReasonText.display($0) } ?? "Disconnected"
+            statusText = reason.map { CloseReasonText.display($0) } ?? String(localized: "Disconnected")
             Log.event(.display, "phase: closed (\(reason ?? "nil"))")
         }
     }
@@ -243,7 +246,9 @@ final class DisplayController: ObservableObject {
         isConnected = true
         videoStalled = false
         sourceName = session?.peerName
-        statusText = "Connected"
+        statusText = String(localized: "Connected")
+        // Technical readout (dimensions/fps/codec) — numbers and symbols only, nothing to
+        // translate. Deliberately NOT run through String(localized:) (F1).
         streamResolution = "\(config.width)×\(config.height) @\(config.fps) · \(config.codec.uppercased())"
         presenter.videoSize = CGSize(width: config.width, height: config.height)
         inputCapture.isEnabled = true
@@ -397,7 +402,7 @@ final class DisplayController: ObservableObject {
         presenter.flush()
         presenter.videoSize = .zero
         exitImmersive()
-        statusText = reason.map { CloseReasonText.display($0) } ?? "Waiting for a Source…"
+        statusText = reason.map { CloseReasonText.display($0) } ?? String(localized: "Waiting for a Source…")
         session = nil
     }
 

@@ -4,6 +4,10 @@ options:
   deploymentTarget:
     macOS: "14.0"
   minimumXcodeGenVersion: "2.30"
+  # F1 — English is the source/development language; the String Catalog
+  # (Sidewire/Resources/Localizable.xcstrings) ships en-only at v1. Further locales are a
+  # translation task, not an engineering one (doc 09 D13).
+  developmentLanguage: en
 
 settings:
   base:
@@ -26,6 +30,11 @@ settings:
     # sets this explicitly as well (harmless duplication). Dev signing (Apple Development cert)
     # + hardened runtime runs locally without notarization.
     ENABLE_HARDENED_RUNTIME: "YES"
+    # F1 — String Catalog. Have the compiler emit localizable strings so Xcode's automatic
+    # extraction merges them into Sidewire/Resources/Localizable.xcstrings at build time
+    # (Text("…") literals and the String(localized:) status strings). English-only at v1.
+    SWIFT_EMIT_LOC_STRINGS: "YES"
+    LOCALIZATION_PREFERS_STRING_CATALOGS: "YES"
 
 packages:
   SidewireProtocol:
