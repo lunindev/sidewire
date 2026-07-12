@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import ServiceManagement
 
 /// Virtual-display resolution options (pixel dimensions; the display is created HiDPI so
 /// the logical size is half). "Match Display" uses the receiver's native panel.
@@ -88,6 +89,37 @@ final class AppSettings: ObservableObject {
     /// One-shot: the first-run welcome has been dismissed.
     @Published var hasSeenWelcome: Bool { didSet { d.set(hasSeenWelcome, forKey: Keys.hasSeenWelcome) } }
 
+    /// D1 — start Sidewire at login. Backed by SMAppService (not UserDefaults): the login-item
+    /// registration is the source of truth, so we mirror the OS state and register/unregister on
+    /// change. Reflected from the actual status on load (the user can toggle it in System Settings).
+    @Published var launchAtLogin: Bool {
+        didSet {
+            guard !suppressLaunchAtLoginApply else { return }
+            applyLaunchAtLogin(launchAtLogin, previous: oldValue)
+        }
+    }
+    /// Re-entrancy guard so a failed apply can revert the toggle without re-triggering apply.
+    private var suppressLaunchAtLoginApply = false
+
+    /// D2 — hold a power assertion (no display sleep) on the Display while a session is connected,
+    /// so the spare Mac's screen doesn't sleep mid-stream. Default ON.
+    @Published var keepAwakeWhileConnected: Bool {
+        didSet { d.set(keepAwakeWhileConnected, forKey: Keys.keepAwake) }
+    }
+
+    /// D4 — override for the name shown to the other Mac / advertised over Bonjour. Empty = use
+    /// `Host.current().localizedName` (see DeviceIdentity). Persisted; DeviceIdentity reads the
+    /// same UserDefaults key so it needn't reach the main actor.
+    @Published var deviceName: String {
+        didSet { d.set(deviceName, forKey: Keys.deviceName) }
+    }
+
+    /// D6 — buffer .debug-level lines into the diagnostics ring buffer. Mirrored into LogBuffer,
+    /// which owns the thread-safe flag + its own UserDefaults persistence.
+    @Published var verboseLogging: Bool {
+        didSet { LogBuffer.shared.setVerbose(verboseLogging) }
+    }
+
     private let d = UserDefaults.standard
     private enum Keys {
         static let codec = "sidewire.codec"
@@ -98,7 +130,13 @@ final class AppSettings: ObservableObject {
         static let autoConnect = "sidewire.autoConnect"
         static let menuBarOnly = "sidewire.menuBarOnly"
         static let hasSeenWelcome = "sidewire.hasSeenWelcome"
+        static let keepAwake = "sidewire.keepAwakeWhileConnected"
+        static let deviceName = "sidewire.deviceName"
     }
+    /// The UserDefaults key DeviceIdentity reads for the D4 name override (kept in sync with
+    /// `Keys.deviceName`; duplicated as a literal there because that enum is private).
+    /// `nonisolated` so the nonisolated DeviceIdentity can reference it.
+    nonisolated static let deviceNameDefaultsKey = "sidewire.deviceName"
 
     private init() {
         codec = CodecPref(rawValue: d.string(forKey: Keys.codec) ?? "") ?? .auto
@@ -109,6 +147,33 @@ final class AppSettings: ObservableObject {
         autoConnectLastPeer = d.bool(forKey: Keys.autoConnect)
         menuBarOnly = d.bool(forKey: Keys.menuBarOnly)
         hasSeenWelcome = d.bool(forKey: Keys.hasSeenWelcome)
+        // Default ON — absent key reads as false, so seed it on first run.
+        keepAwakeWhileConnected = (d.object(forKey: Keys.keepAwake) as? Bool) ?? true
+        deviceName = d.string(forKey: Keys.deviceName) ?? ""
+        verboseLogging = LogBuffer.shared.verbose
+        // Reflect the real login-item status (property observers don't fire during init).
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    /// Register/unregister the app as a login item to match the toggle. On failure, log and
+    /// revert the toggle (without re-entering apply). No-op when already in the desired state.
+    private func applyLaunchAtLogin(_ enabled: Bool, previous: Bool) {
+        do {
+            if enabled {
+                guard SMAppService.mainApp.status != .enabled else { return }
+                try SMAppService.mainApp.register()
+                Log.event(.app, "registered as a login item")
+            } else {
+                guard SMAppService.mainApp.status == .enabled else { return }
+                try SMAppService.mainApp.unregister()
+                Log.event(.app, "unregistered as a login item")
+            }
+        } catch {
+            Log.event(.app, "launch-at-login \(enabled ? "register" : "unregister") failed: \(error.localizedDescription)", level: .error)
+            suppressLaunchAtLoginApply = true
+            launchAtLogin = previous
+            suppressLaunchAtLoginApply = false
+        }
     }
 
     var maxBitrateBps: Int { maxBitrateMbps * 1_000_000 }
@@ -117,5 +182,24 @@ final class AppSettings: ObservableObject {
     /// `.regular` restores it. Safe to call repeatedly.
     func applyActivationPolicy() {
         NSApp.setActivationPolicy(menuBarOnly ? .accessory : .regular)
+    }
+}
+
+/// The quality-affecting settings snapshotted by an active Source link (D3). Compared against
+/// the live AppSettings to decide whether "Changes apply on reconnect" should show — these are
+/// exactly the values baked into a Session at connect time.
+struct QualitySnapshot: Equatable {
+    var codec: AppSettings.CodecPref
+    var resolution: ResolutionPreset
+    var maxFps: Int
+    var maxBitrateMbps: Int
+    var scale: AppSettings.VirtualDisplayScale
+
+    @MainActor init(_ s: AppSettings) {
+        codec = s.codec
+        resolution = s.resolutionPreset
+        maxFps = s.maxFps
+        maxBitrateMbps = s.maxBitrateMbps
+        scale = s.virtualDisplayScale
     }
 }

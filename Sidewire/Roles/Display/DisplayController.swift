@@ -15,6 +15,8 @@ final class DisplayController: ObservableObject {
     private let listener = TCPListener(serviceName: DeviceIdentity.deviceName)
     private let inputCapture = InputCapture()
     private let interfaceMonitor = InterfaceMonitor()
+    /// D2 — keeps this Mac's screen awake while a session is connected (gated by the setting).
+    private let powerAssertion = PowerAssertion()
     private var decoder: VideoDecoder?
     private var session: Session?
     private var escMonitor: Any?
@@ -147,16 +149,19 @@ final class DisplayController: ObservableObject {
         inputCapture.isEnabled = false
         stopVideoWatchdog()
         stopFpsCounter()
+        powerAssertion.release()
         exitImmersive()
         isConnected = false
         isListening = false
         videoStalled = false
         statusText = "Stopped"
+        Log.event(.display, "stopped")
     }
 
     // MARK: - Private
 
     private func accept(_ transport: TCPTransport) {
+        Log.event(.display, "accepting incoming connection")
         // Menu-bar-only: with the main window closed, there's no view to present into, so video
         // would decode into a void and input capture would arm invisibly. Surface the window
         // now (enterImmersive retries until it mounts).
@@ -222,10 +227,12 @@ final class DisplayController: ObservableObject {
 
     private func applyPhase(_ phase: SessionPhase) {
         switch phase {
-        case .connecting: statusText = "Connecting…"
-        case .handshaking: statusText = "Setting up…"
-        case .streaming: isConnected = true; statusText = "Connected"
-        case .closed(let reason): statusText = reason.map { CloseReasonText.display($0) } ?? "Disconnected"
+        case .connecting: statusText = "Connecting…"; Log.event(.display, "phase: connecting")
+        case .handshaking: statusText = "Setting up…"; Log.event(.display, "phase: handshaking")
+        case .streaming: isConnected = true; statusText = "Connected"; Log.event(.display, "phase: streaming")
+        case .closed(let reason):
+            statusText = reason.map { CloseReasonText.display($0) } ?? "Disconnected"
+            Log.event(.display, "phase: closed (\(reason ?? "nil"))")
         }
     }
 
@@ -240,6 +247,10 @@ final class DisplayController: ObservableObject {
         streamResolution = "\(config.width)×\(config.height) @\(config.fps) · \(config.codec.uppercased())"
         presenter.videoSize = CGSize(width: config.width, height: config.height)
         inputCapture.isEnabled = true
+        // D2 — hold the no-display-sleep assertion for the life of the connection.
+        if AppSettings.shared.keepAwakeWhileConnected {
+            powerAssertion.acquire(reason: "Sidewire is showing another Mac's screen")
+        }
         enterImmersive()
         startFpsCounter()
         hasFirstFrame = false
@@ -251,7 +262,7 @@ final class DisplayController: ObservableObject {
         startVideoWatchdog()
         // Ask for a fresh keyframe so we start clean.
         session?.requestIDR()
-        Log.media.info("presenting started \(config.width)x\(config.height)@\(config.fps) codec=\(config.codec)")
+        Log.event(.media, "presenting started \(config.width)x\(config.height)@\(config.fps) codec=\(config.codec)")
     }
 
     private func makeDecoder() {
@@ -378,6 +389,7 @@ final class DisplayController: ObservableObject {
         videoStalled = false
         sourceName = nil
         inputCapture.isEnabled = false
+        powerAssertion.release() // D2 — connection ended; let the screen sleep again
         stopVideoWatchdog()
         stopFpsCounter()
         decoder?.invalidate()

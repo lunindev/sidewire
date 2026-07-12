@@ -31,6 +31,14 @@ final class SourceController: ObservableObject {
     private var pendingConfig: Config?
     private var firstEncodedLogged = false
 
+    // D3 — "Reconnect to apply". The active link bakes in the quality settings that were current
+    // when it dialed; when the live settings drift, Settings offers a reconnect. We keep the
+    // transport factory so we can re-dial the same peer with a fresh settings snapshot.
+    private var currentMakeTransport: (() -> TCPTransport)?
+    /// The quality settings the current link is using. nil when no link is up. When it differs
+    /// from live AppSettings, the Settings pane shows "Changes apply on reconnect".
+    @Published private(set) var activeQuality: QualitySnapshot?
+
     // Source-side monitor: static-screen keep-alive + encoder-stall watchdog.
     private var monitorTimer: Timer?
     private var encodedSinceCheck = 0
@@ -88,6 +96,11 @@ final class SourceController: ObservableObject {
     private var wakeObserver: Any?
     /// Bumped whenever the discovery-waiting state flips, to invalidate a pending debounce check.
     private var discoveryWaitGeneration = 0
+    /// Bumped per link (startLink). A retired reconnector's late `.stopped`/`.reconnecting`
+    /// callback carries the old generation and is ignored — important for D3's reconnect, which
+    /// tears down and re-dials back-to-back so the new reconnector exists before the old one's
+    /// stop() emits `.stopped`.
+    private var linkGeneration = 0
 
     init() {
         discovery.onPeersChanged = { [weak self] peers in
@@ -215,6 +228,8 @@ final class SourceController: ObservableObject {
         tearDownEncoderCapture()
         virtualDisplay.destroy()
         pendingConfig = nil
+        activeQuality = nil
+        currentMakeTransport = nil
         isConnected = false
         isConnecting = false
         isStreaming = false
@@ -226,6 +241,18 @@ final class SourceController: ObservableObject {
         peerName = nil
         rttMs = 0
         connectionInterface = ""
+        Log.event(.source, "disconnected")
+    }
+
+    /// D3 — tear down the current link and immediately re-dial the same peer, so quality changes
+    /// (codec/resolution/fps/bitrate/scale) that only apply on the next connection take effect
+    /// now. No-op if nothing is connected. `startLink` re-snapshots the live AppSettings.
+    func reconnectWithCurrentSettings() {
+        guard let make = currentMakeTransport else { return }
+        let name = peerName ?? "the last Mac"
+        Log.event(.source, "reconnecting to apply new quality settings")
+        disconnect() // clears currentMakeTransport — hence the local capture above
+        startLink(peerName: name, makeTransport: make)
     }
 
     // MARK: - Connection
@@ -234,12 +261,18 @@ final class SourceController: ObservableObject {
         guard reconnector == nil else { return } // ignore re-entrant connects
         pinRejected = false // fresh attempt clears any prior wrong-PIN error
         self.peerName = peerName
+        // Remember the transport factory so D3's reconnect can re-dial the same peer.
+        currentMakeTransport = makeTransport
+        linkGeneration &+= 1
+        let gen = linkGeneration
+        Log.event(.source, "connecting to \(peerName)")
 
         // One stable HELLO (and sessionId) reused across reconnect attempts — idempotent
         // resume. Built here on the main actor (capabilities read NSScreen).
         let hello = DeviceIdentity.makeHello(role: .source, sessionId: UUID().uuidString)
         // Snapshot settings on the main actor; makeSession runs on the reconnector queue.
         let settings = AppSettings.shared
+        activeQuality = QualitySnapshot(settings) // D3: what this link is using
         let dims = settings.resolutionPreset.dimensions
         let codecPref = settings.codec.forced
         let fpsCap = settings.maxFps
@@ -286,7 +319,12 @@ final class SourceController: ObservableObject {
             }
         }
         reconnector.onState = { [weak self] state in
-            Task { @MainActor in self?.applyLinkState(state) }
+            // Ignore callbacks from a retired reconnector (D3 reconnect re-dials before the old
+            // one's stop() emits `.stopped`).
+            Task { @MainActor in
+                guard let self, self.linkGeneration == gen else { return }
+                self.applyLinkState(state)
+            }
         }
         reconnector.start()
     }
@@ -296,14 +334,16 @@ final class SourceController: ObservableObject {
         switch state {
         case .connecting:
             isConnecting = true; isConnected = false; statusText = "Connecting…"
+            Log.event(.source, "link: connecting")
         case .streaming:
             isConnecting = false; isConnected = true; statusText = "Connected"
             autoConnecting = false // reached a live stream → the auto-attempt succeeded
+            Log.event(.source, "link: connected")
         case .reconnecting(let attempt):
             // A launch auto-connect to a stale lastHost must not loop forever on every launch:
             // after a few attempts, give up this attempt (the setting stays on for next time).
             if autoConnecting && attempt >= Self.maxAutoConnectAttempts {
-                Log.source.notice("auto-connect gave up after \(attempt) attempts")
+                Log.event(.source, "auto-connect gave up after \(attempt) attempts", level: .notice)
                 let name = peerName ?? "the last Mac"
                 disconnect()
                 statusText = "Couldn't reach \(name). Connect manually."
@@ -317,6 +357,7 @@ final class SourceController: ObservableObject {
             statusText = attempt >= reconnectHintAfter
                 ? "Still trying — is Sidewire running on the other Mac?"
                 : "Reconnecting (\(attempt))…"
+            Log.event(.source, "link: reconnecting (attempt \(attempt))")
             tearDownEncoderCapture()
         case .failed(let reason):
             // Terminal (protocol/role mismatch, wrong PIN, or displaced by another Source):
@@ -326,12 +367,15 @@ final class SourceController: ObservableObject {
             // reason (auth/superseded included) lives once in CloseReasonText (backlog C2).
             if reason == SessionConstants.authFailureReason { pinRejected = true }
             statusText = CloseReasonText.source(reason)
+            Log.event(.source, "link: failed (\(reason))", level: .notice)
             tearDownEncoderCapture()
             virtualDisplay.destroy()
             activeSession = nil
             pendingConfig = nil
             reconnector = nil
             autoConnecting = false
+            activeQuality = nil
+            currentMakeTransport = nil
         case .stopped:
             isConnecting = false; isConnected = false; statusText = "Disconnected"
         }
@@ -356,6 +400,7 @@ final class SourceController: ObservableObject {
             beginStreaming(displayID: did)
         } else {
             statusText = "Creating display…"
+            Log.event(.media, "creating virtual display \(config.width)x\(config.height) hiDPI=\(hiDPI)")
             virtualDisplay.recreate(width: UInt(config.width), height: UInt(config.height), hiDPI: hiDPI)
         }
     }
@@ -367,7 +412,7 @@ final class SourceController: ObservableObject {
         // receiver tears down, and we'd loop forever re-triggering the TCC prompt. Stop
         // the loop and tell the user instead.
         guard CGPreflightScreenCaptureAccess() else {
-            Log.media.error("Screen Recording NOT granted for this build → cannot capture; stopping (grant it + relaunch)")
+            Log.event(.media, "Screen Recording NOT granted for this build → cannot capture; stopping (grant it + relaunch)", level: .error)
             needsScreenRecording = true
             _ = CGRequestScreenCaptureAccess() // register the app / prompt once
             disconnect()
@@ -384,7 +429,7 @@ final class SourceController: ObservableObject {
         isStreaming = false
         injector.virtualDisplayID = displayID
         firstEncodedLogged = false
-        Log.media.info("virtual display \(displayID) active → starting capture \(config.width)x\(config.height)@\(config.fps) codec=\(config.codec)")
+        Log.event(.media, "virtual display \(displayID) active → starting capture \(config.width)x\(config.height)@\(config.fps) codec=\(config.codec)")
 
         let enc = makeEncoder(config: config, session: session)
         statusText = "Streaming"
@@ -512,11 +557,11 @@ final class SourceController: ObservableObject {
         if !trusted && !accessibilityRevoked {
             accessibilityRevoked = true
             injector.injectionEnabled = false
-            Log.source.error("Accessibility revoked mid-session → remote input disabled (video continues)")
+            Log.event(.source, "Accessibility revoked mid-session → remote input disabled (video continues)", level: .error)
         } else if trusted && accessibilityRevoked {
             accessibilityRevoked = false
             injector.injectionEnabled = true
-            Log.source.notice("Accessibility restored → remote input re-enabled")
+            Log.event(.source, "Accessibility restored → remote input re-enabled", level: .notice)
         }
     }
 

@@ -14,8 +14,15 @@ enum DeviceIdentity {
         return new
     }
 
+    /// The name shown to the other Mac (in HELLO) and advertised over Bonjour. A non-empty
+    /// override from Settings (D4) wins — trimmed and capped at 40 chars — otherwise the
+    /// system name. Read straight from UserDefaults (the same key AppSettings persists to) so
+    /// this stays nonisolated; callers are on the main actor.
     static var deviceName: String {
-        Host.current().localizedName ?? "Mac"
+        let override = (UserDefaults.standard.string(forKey: AppSettings.deviceNameDefaultsKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !override.isEmpty { return String(override.prefix(40)) }
+        return Host.current().localizedName ?? "Mac"
     }
 
     /// Local capabilities. `videoCodecs` is probed from VideoToolbox (HEVC first when this

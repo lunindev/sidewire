@@ -21,6 +21,11 @@ settings:
     CODE_SIGN_IDENTITY: "3A28D3256EEB6B7E4378E0540CB26C02CF883941"
     CODE_SIGNING_REQUIRED: "YES"
     CODE_SIGNING_ALLOWED: "YES"
+    # G1 — hardened runtime in dev builds too, so hardened-only failures (notably the
+    # --vd-helper self-re-exec) surface here rather than first in a shipped build. release.sh
+    # sets this explicitly as well (harmless duplication). Dev signing (Apple Development cert)
+    # + hardened runtime runs locally without notarization.
+    ENABLE_HARDENED_RUNTIME: "YES"
 
 packages:
   SidewireProtocol:

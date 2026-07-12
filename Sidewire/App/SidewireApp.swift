@@ -12,6 +12,14 @@ struct SidewireApp: App {
                 .environmentObject(model)
         }
         .defaultSize(width: 760, height: 520)
+        .commands {
+            // D8 — re-show the first-run Welcome from the Help menu.
+            CommandGroup(replacing: .help) {
+                Button("Show Welcome…") {
+                    NotificationCenter.default.post(name: .sidewireShowWelcome, object: nil)
+                }
+            }
+        }
 
         MenuBarExtra {
             MenuBarView()
@@ -24,6 +32,7 @@ struct SidewireApp: App {
 
         Settings {
             SettingsView()
+                .environmentObject(model)
         }
     }
 }
@@ -86,8 +95,11 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if !settings.hasSeenWelcome {
-                WelcomeView { settings.hasSeenWelcome = true }
+            if !settings.hasSeenWelcome || model.showWelcomeAgain {
+                WelcomeView {
+                    settings.hasSeenWelcome = true
+                    model.showWelcomeAgain = false // D8: clear the transient re-show
+                }
             } else if model.role == nil {
                 RolePickerView()
             } else if let source = model.source {
