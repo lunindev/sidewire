@@ -20,6 +20,8 @@ enum CloseReasonText {
     /// Phrasing for the Source (the Mac sharing its screen).
     static func source(_ reason: String) -> String {
         switch reason {
+        case "user":
+            return String(localized: "The other Mac disconnected.")
         case SessionConstants.authFailureReason:
             return String(localized: "PIN incorrect — check the code shown on the other Mac.")
         case SessionConstants.supersededReason:

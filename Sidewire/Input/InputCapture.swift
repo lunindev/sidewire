@@ -17,6 +17,10 @@ final class InputCapture {
     /// must be withheld too — otherwise the remote Mac receives a keyUp with no keyDown and its
     /// key state goes unbalanced (a key it thinks is still held, or a stray release).
     private var suppressedKeyCodes = Set<UInt16>()
+    /// Key codes whose `.keyDown` we DID forward — the remote thinks these are held. A later
+    /// suppressed repeat (e.g. ⌘ pressed while a forwarded key auto-repeats) must not swallow
+    /// the keyUp the remote still needs, so suppression only starts for keys not in this set.
+    private var forwardedKeyCodes = Set<UInt16>()
 
     // Left/right ⌘ virtual key codes and Esc — the keys that stay local.
     private static let leftCommandKeyCode: UInt16 = 55
@@ -38,13 +42,19 @@ final class InputCapture {
             switch event.type {
             case .keyDown:
                 if event.modifierFlags.contains(.command) || event.keyCode == Self.escapeKeyCode {
-                    // Withheld → remember the code so we drop its keyUp too.
-                    self.suppressedKeyCodes.insert(event.keyCode)
+                    // Withheld → remember the code so we drop its keyUp too. But if this key's
+                    // original keyDown already went to the remote (⌘ arrived mid-auto-repeat),
+                    // the remote still needs the keyUp — don't mark it suppressed.
+                    if !self.forwardedKeyCodes.contains(event.keyCode) {
+                        self.suppressedKeyCodes.insert(event.keyCode)
+                    }
                     return event
                 }
+                self.forwardedKeyCodes.insert(event.keyCode)
             case .keyUp:
                 // Mirror the keyDown decision by code (the ⌘ flag may already be gone on release).
                 if self.suppressedKeyCodes.remove(event.keyCode) != nil { return event }
+                self.forwardedKeyCodes.remove(event.keyCode)
             case .flagsChanged:
                 // The ⌘ modifier is reserved for local shortcuts (we never forward ⌘-combos), so
                 // never forward the ⌘ key's own press/release either — otherwise the remote Mac
@@ -70,6 +80,7 @@ final class InputCapture {
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
         localMonitor = nil
         suppressedKeyCodes.removeAll() // don't carry a half-pressed key across sessions
+        forwardedKeyCodes.removeAll()
     }
 
     private func handleEvent(_ event: NSEvent) {

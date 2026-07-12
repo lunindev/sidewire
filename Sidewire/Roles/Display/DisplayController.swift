@@ -149,6 +149,12 @@ final class DisplayController: ObservableObject {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
         }
+        // Remove the Esc monitor, or after a role switch the orphaned closure keeps swallowing
+        // Esc app-wide (it returns nil for keyCode 53 even once this controller is gone).
+        if let escMonitor {
+            NSEvent.removeMonitor(escMonitor)
+            self.escMonitor = nil
+        }
         inputCapture.isEnabled = false
         stopVideoWatchdog()
         stopFpsCounter()

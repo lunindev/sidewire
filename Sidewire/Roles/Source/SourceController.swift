@@ -368,6 +368,10 @@ final class SourceController: ObservableObject {
             if reason == SessionConstants.authFailureReason { pinRejected = true }
             statusText = CloseReasonText.source(reason)
             Log.event(.source, "link: failed (\(reason))", level: .notice)
+            // Mirror disconnect(): a stale revocation banner (and disabled injection) must not
+            // survive into the next link — the monitor that would clear it stops below.
+            accessibilityRevoked = false
+            injector.injectionEnabled = true
             tearDownEncoderCapture()
             virtualDisplay.destroy()
             activeSession = nil
