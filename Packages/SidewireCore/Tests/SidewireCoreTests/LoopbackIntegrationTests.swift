@@ -8,12 +8,20 @@ import SidewireProtocol
 /// "reason=user" and "Connection reset" field bugs, so those classes are caught here.
 final class LoopbackIntegrationTests: XCTestCase {
 
+    private var bag: IdentityBag!
+    override func setUp() { super.setUp(); bag = IdentityBag() }
+    override func tearDown() { bag.destroyAll(); super.tearDown() }
+
     private func caps() -> Capabilities {
         Capabilities(videoCodecs: ["hevc"], maxWidth: 3840, maxHeight: 2160, maxFps: 60,
                      ltr: false, audio: false, hdr: false)
     }
 
-    func testRealTCPHandshakeAndRoundTrip() {
+    func testRealTCPHandshakeAndRoundTrip() throws {
+        // Real TLS 1.3 with throwaway device identities. No pairingConfig ⇒ the Session treats
+        // the link as trusted and goes straight to the handshake (pairing itself is covered by
+        // SecurityTests); this exercises the cert-TLS transport + framing + relay end to end.
+        let displayID = try bag.make(), sourceID = try bag.make()
         let listener = TCPListener(serviceName: "sidewire-test")
 
         let portReady = expectation(description: "listener bound")
@@ -47,11 +55,11 @@ final class LoopbackIntegrationTests: XCTestCase {
         }
 
         // Loopback: ephemeral port, no Bonjour advertisement.
-        listener.start(port: 0, advertise: false)
+        listener.start(port: 0, advertise: false, identity: displayID)
         wait(for: [portReady], timeout: 5)
         XCTAssertGreaterThan(boundPort, 0)
 
-        let clientTransport = TCPTransport(host: "127.0.0.1", port: boundPort)
+        let clientTransport = TCPTransport(host: "127.0.0.1", port: boundPort, identity: sourceID)
         let sourceHello = Hello(role: .source, deviceId: "src", deviceName: "SourceTest",
                                 sessionId: "s", capabilities: caps())
         let sourceSession = Session(transport: clientTransport, role: .source, localHello: sourceHello)
@@ -62,7 +70,7 @@ final class LoopbackIntegrationTests: XCTestCase {
         }
         sourceSession.start()
 
-        wait(for: [sourceReady, displayReady], timeout: 5)
+        wait(for: [sourceReady, displayReady], timeout: 10) // TLS 1.3 handshake adds a moment
 
         // Round-trip a video frame (source→display) and an input event (display→source).
         sourceSession.sendVideo(Data([0x00, 0x00, 0x00, 0x01, 0x42]), keyframe: true, ltrToken: 0)

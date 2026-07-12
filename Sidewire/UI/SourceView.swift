@@ -44,6 +44,12 @@ struct SourceView: View {
                         Label("PIN incorrect — check the code shown on the other Mac.",
                               systemImage: "exclamationmark.triangle.fill")
                             .font(.caption).foregroundStyle(.red)
+                    } else if controller.isConnected {
+                        // Once paired, the peer's key is stored — the PIN is only needed to pair
+                        // a new Mac (or after "Forget" on either side).
+                        Label("Paired — the PIN is only needed to pair a Mac again.",
+                              systemImage: "checkmark.seal.fill")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }

@@ -29,7 +29,7 @@ final class MessageTests: XCTestCase {
         XCTAssertEqual(badMagic.validate(againstLocalRole: .source), .badMagic)
 
         var badVersion = displayHello
-        badVersion.version = ProtocolVersion(major: 2, minor: 0)
+        badVersion.version = ProtocolVersion(major: 1, minor: 0) // v1 peer rejected by v2
         XCTAssertEqual(badVersion.validate(againstLocalRole: .source), .protocolMismatch)
     }
 

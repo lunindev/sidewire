@@ -12,10 +12,20 @@ public enum SessionConstants {
     // this ensures a Source dialing a down peer eventually fails → the Reconnector re-dials.
     public static let connectTimeout: TimeInterval = 10.0
 
-    // Close reason emitted when the TLS-PSK handshake fails (wrong PIN → wrong pre-shared
-    // key). Fatal-for-reconnect so the user sees a clear error instead of an endless
-    // reconnect loop. Distinct from a plain network refusal ("timeout"/"error").
+    // Close reason emitted when the channel-bound PIN proof fails (wrong PIN). Fatal-for-
+    // reconnect so the user sees a clear error instead of an endless reconnect loop. Distinct
+    // from a plain network refusal ("timeout"/"error"). (In protocol v1 this came from a failed
+    // TLS-PSK handshake; in v2 it is a BYE("auth") from the pairing proof — same UX contract.)
     public static let authFailureReason = "auth"
+
+    // Close reason emitted when a paired peer presents a different public key than the pinned
+    // one (possible MITM or a reinstalled peer). Fatal-for-reconnect: the user must explicitly
+    // re-pair. Detected at the TLS layer on the dialing side (TCPTransport.publishSecurityContext).
+    public static let keyChangedReason = "keyChanged"
+
+    // Close reason the Display emits when too many wrong PIN proofs have been attempted and a
+    // lockout is in effect (PairingRateLimiter). Fatal-for-reconnect: the Source must wait.
+    public static let rateLimitedReason = "rateLimited"
 
     // Close reason the Display emits when a newer Source connects and displaces the current
     // one ("newest wins"). Fatal-for-reconnect: the ousted Source must NOT auto-redial, or

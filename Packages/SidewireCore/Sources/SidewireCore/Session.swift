@@ -1,4 +1,5 @@
 import Foundation
+import Crypto
 import SidewireProtocol
 
 /// Coarse session phase. Phase 0 is intentionally minimal; the full reconnect state
@@ -8,6 +9,26 @@ public enum SessionPhase: Sendable, Equatable {
     case handshaking
     case streaming
     case closed(String?)
+}
+
+/// Everything the Session needs to run (or skip) the channel-bound PIN proof before HELLO on a
+/// cert-based TLS connection (docs/05). Set on the Session before `start()`. When nil (e.g. the
+/// in-memory `FakeTransport` used by unit tests, which has no TLS security context), the Session
+/// treats the link as already-trusted and goes straight to the application handshake.
+public struct PairingConfig: Sendable {
+    /// The 6-digit PIN: on the Source it is the code the user typed; on the Display it is the
+    /// code this Mac is currently showing.
+    public let pin: String
+    /// This device's trust store (to check for an existing pin and to pin on success).
+    public let trustStore: any TrustStoring
+    /// Display side only: rate-limits online PIN guessing. nil on the Source.
+    public let rateLimiter: PairingRateLimiter?
+
+    public init(pin: String, trustStore: any TrustStoring, rateLimiter: PairingRateLimiter? = nil) {
+        self.pin = pin
+        self.trustStore = trustStore
+        self.rateLimiter = rateLimiter
+    }
 }
 
 /// Drives one connection through HELLO → HELLO_ACK → DISPLAY_INFO → CONFIG, then
@@ -37,6 +58,9 @@ public final class Session: @unchecked Sendable {
     public var onRequestIDR: (() -> Void)?
     public var onPhaseChange: ((SessionPhase) -> Void)?
     public var onClosed: ((String?) -> Void)?
+    /// Fired (on the session queue) when a peer is newly pinned via a successful PIN proof, so
+    /// the UI can refresh its "Paired Macs" list. Not fired on a paired reconnect (no new pin).
+    public var onPaired: ((TrustedPeer) -> Void)?
     /// Fired (~2 Hz) with the round-trip time in ms, measured on a single clock.
     public var onRTT: ((Double) -> Void)?
     /// Fired once the transport is ready, with the network interface in use.
@@ -54,6 +78,21 @@ public final class Session: @unchecked Sendable {
     /// Source override for virtual-display scale: nil = auto (derive from the Display's
     /// scaleFactor), true = force HiDPI (2×), false = force standard (1×). Set before start().
     public var preferredHiDPI: Bool?
+
+    /// Pairing configuration (PIN + trust store + optional rate limiter). nil ⇒ no PIN proof
+    /// (fake-transport unit tests, or a link with no TLS security context). Set before start().
+    public var pairingConfig: PairingConfig?
+
+    // Pairing (channel-bound PIN proof) state.
+    private var tlsPeerInfo: TLSPeerInfo?
+    private var pairingKey: SymmetricKey?
+    /// Set once the application handshake (HELLO exchange) has begun, i.e. pairing is done or
+    /// was not required. Until then only pairing/BYE messages are processed.
+    private var appHandshakeStarted = false
+    /// Source: we sent our proof and are waiting for the Display's proof.
+    private var awaitingServerProof = false
+    /// Display: we verified the Source's proof and replied with ours (waiting for pairAck).
+    private var pairingReplied = false
 
     private var seq: UInt32 = 0
     private var peerHello: Hello?
@@ -88,6 +127,9 @@ public final class Session: @unchecked Sendable {
         }
         transport.onInterface = { [weak self] label in
             self?.queue.async { self?.onInterface?(label) }
+        }
+        transport.onSecurity = { [weak self] info in
+            self?.queue.async { self?.tlsPeerInfo = info }
         }
         setPhase(.connecting)
         armConnectTimeout()
@@ -156,10 +198,11 @@ public final class Session: @unchecked Sendable {
             // Only send BYE if the transport actually reached .ready; sending into a
             // not-yet-ready connection is pointless and races the teardown.
             if self.transportReady {
-                self.transport.send(type: .bye, seq: self.nextSeq(),
-                                    payload: JSONWire.encode(ReasonMessage(reason: reason)))
+                self.sendBye(reason)
+                self.finishClose(reason, flushBye: true)
+            } else {
+                self.finishClose(reason)
             }
-            self.finishClose(reason)
         }
     }
 
@@ -170,13 +213,7 @@ public final class Session: @unchecked Sendable {
         case .ready:
             transportReady = true
             setPhase(.handshaking)
-            coreLog.info("session[\(self.role.rawValue, privacy: .public)] transport ready → sending HELLO")
-            startHeartbeat()
-            sendHello()
-            if role == .display, let info = provideDisplayInfo?() {
-                coreLog.info("session[display] sending DISPLAY_INFO \(info.width)x\(info.height)")
-                transport.send(type: .displayInfo, seq: nextSeq(), payload: JSONWire.encode(info))
-            }
+            beginPairingOrHandshake()
         case .failed(let msg):
             finishClose(msg)
         case .cancelled:
@@ -191,10 +228,146 @@ public final class Session: @unchecked Sendable {
         }
     }
 
+    // MARK: - Pairing (channel-bound PIN proof, pre-HELLO)
+
+    /// Decide, once TLS is ready, whether to run the PIN proof or go straight to the application
+    /// handshake. See docs/05 and PairingProof for the byte-exact scheme.
+    private func beginPairingOrHandshake() {
+        // No pairing config (unit tests) or no TLS security context ⇒ trust the link as-is.
+        guard let pairing = pairingConfig, let tls = tlsPeerInfo else {
+            beginApplicationHandshake()
+            return
+        }
+        // Already paired with exactly this key? Skip the proof (paired reconnect).
+        if let pinned = pairing.trustStore.pinned(for: tls.peerDeviceId),
+           pinned.spkiHash == tls.peerSPKIHash.hexString {
+            coreLog.info("session[\(self.role.rawValue, privacy: .public)] peer \(tls.peerDeviceId, privacy: .public) already paired → skipping proof")
+            beginApplicationHandshake()
+            return
+        }
+        // Unpaired → derive the pairing key. The Source proves first; the Display waits for the
+        // Source's proof (its own decision to skip is impossible here — it has no pin — so it can
+        // only pair). See handlePairProof.
+        pairingKey = PairingProof.deriveKey(pin: pairing.pin, channelBinding: tls.channelBinding)
+        if role == .source {
+            let proof = PairingProof.proof(key: pairingKey!, label: PairingProof.clientLabel)
+            coreLog.info("session[source] sending PIN proof (pairing \(tls.peerDeviceId, privacy: .public))")
+            awaitingServerProof = true
+            transport.send(type: .pairProof, seq: nextSeq(), payload: proof)
+        } else {
+            // Display waits for the Source's proof; rate-limit checked when it arrives.
+            coreLog.info("session[display] awaiting PIN proof (pairing \(tls.peerDeviceId, privacy: .public))")
+        }
+    }
+
+    private func handlePairProof(_ payload: Data) {
+        guard let pairing = pairingConfig, let tls = tlsPeerInfo, let key = pairingKey else { return }
+        if role == .display {
+            guard !pairingReplied else { return } // one proof per attempt
+            // Rate-limit online guessing before doing any work.
+            if let limiter = pairing.rateLimiter, !limiter.allowAttempt() {
+                coreLog.notice("session[display] pairing locked out → BYE(rateLimited)")
+                closeSendingBye(SessionConstants.rateLimitedReason)
+                return
+            }
+            if PairingProof.verify(payload, key: key, label: PairingProof.clientLabel) {
+                pairing.rateLimiter?.recordSuccess()
+                pinPeer(tls, trustStore: pairing.trustStore)
+                pairingReplied = true
+                let serverProof = PairingProof.proof(key: key, label: PairingProof.serverLabel)
+                coreLog.info("session[display] Source PIN proof OK → replying, awaiting ack")
+                transport.send(type: .pairProof, seq: nextSeq(), payload: serverProof)
+            } else {
+                pairing.rateLimiter?.recordFailure()
+                coreLog.notice("session[display] Source PIN proof MISMATCH → BYE(auth)")
+                closeSendingBye(SessionConstants.authFailureReason)
+            }
+        } else { // .source: this is the Display's proof
+            guard awaitingServerProof else { return }
+            awaitingServerProof = false
+            if PairingProof.verify(payload, key: key, label: PairingProof.serverLabel) {
+                pinPeer(tls, trustStore: pairing.trustStore)
+                coreLog.info("session[source] Display PIN proof OK → ack + handshake")
+                transport.send(type: .pairAck, seq: nextSeq(), payload: Data())
+                beginApplicationHandshake()
+            } else {
+                coreLog.notice("session[source] Display PIN proof MISMATCH → BYE(auth)")
+                closeSendingBye(SessionConstants.authFailureReason)
+            }
+        }
+    }
+
+    private func handlePairAck() {
+        guard role == .display, pairingReplied, !appHandshakeStarted else { return }
+        coreLog.info("session[display] pairing ack received → handshake")
+        beginApplicationHandshake()
+    }
+
+    /// The Display received a HELLO before pairing completed: the Source skipped the proof, so it
+    /// considers itself paired. Accept only if we have it pinned too; otherwise refuse (one side
+    /// forgot the pin → the Source must re-pair). The Source never reaches here (the Display does
+    /// not send HELLO until pairing completes).
+    private func handlePreHandshakeHello(_ frame: Frame) {
+        guard role == .display, let pairing = pairingConfig, let tls = tlsPeerInfo else { return }
+        if pairing.trustStore.pinned(for: tls.peerDeviceId) != nil {
+            beginApplicationHandshake()
+            handle(frame) // now process the HELLO through the normal path
+        } else {
+            coreLog.notice("session[display] unpinned Source skipped pairing → BYE(auth)")
+            closeSendingBye(SessionConstants.authFailureReason)
+        }
+    }
+
+    private func pinPeer(_ tls: TLSPeerInfo, trustStore: any TrustStoring) {
+        let peer = TrustedPeer(deviceId: tls.peerDeviceId, spkiHash: tls.peerSPKIHash.hexString,
+                               name: peerHello?.deviceName ?? "")
+        trustStore.pin(peer)
+        coreLog.info("session[\(self.role.rawValue, privacy: .public)] pinned peer \(tls.peerDeviceId, privacy: .public)")
+        onPaired?(peer)
+    }
+
+    /// Begin the application handshake (HELLO exchange). Called directly when no pairing is
+    /// required, or after a successful PIN proof / on a paired reconnect.
+    private func beginApplicationHandshake() {
+        guard !appHandshakeStarted else { return }
+        appHandshakeStarted = true
+        coreLog.info("session[\(self.role.rawValue, privacy: .public)] transport ready → sending HELLO")
+        startHeartbeat()
+        sendHello()
+        if role == .display, let info = provideDisplayInfo?() {
+            coreLog.info("session[display] sending DISPLAY_INFO \(info.width)x\(info.height)")
+            transport.send(type: .displayInfo, seq: nextSeq(), payload: JSONWire.encode(info))
+        }
+    }
+
+    private func sendBye(_ reason: String) {
+        transport.send(type: .bye, seq: nextSeq(), payload: JSONWire.encode(ReasonMessage(reason: reason)))
+    }
+
+    /// Send a BYE(reason) and close, letting the BYE flush so the peer sees the reason.
+    private func closeSendingBye(_ reason: String) {
+        sendBye(reason)
+        finishClose(reason, flushBye: true)
+    }
+
     private func handle(_ frame: Frame) {
         guard !closed else { return }
         lastInboundNanos = DispatchTime.now().uptimeNanoseconds // any inbound frame = peer is alive
         guard let type = frame.type else { return } // unknown/reserved type → skip (forward compatibility)
+
+        // Pre-handshake pairing gate: until the application handshake has begun on a pairing
+        // link, only pairing messages (and BYE) are processed.
+        if pairingConfig != nil, !appHandshakeStarted {
+            switch type {
+            case .pairProof: handlePairProof(frame.payload)
+            case .pairAck: handlePairAck()
+            case .hello, .helloAck: handlePreHandshakeHello(frame)
+            case .bye: finishClose(JSONWire.decode(ReasonMessage.self, from: frame.payload)?.reason)
+            default: break // ignore video/input/etc. until pairing completes
+            }
+            return
+        }
+
         switch type {
         case .hello, .helloAck:
             if let hello = JSONWire.decode(Hello.self, from: frame.payload) {
@@ -243,13 +416,18 @@ public final class Session: @unchecked Sendable {
         coreLog.info("session[\(self.role.rawValue, privacy: .public)] recv HELLO from \(hello.deviceName, privacy: .public) role=\(hello.role.rawValue, privacy: .public) ack=\(isAck)")
         if let rejection = hello.validate(againstLocalRole: role) {
             coreLog.error("session[\(self.role.rawValue, privacy: .public)] rejecting peer: \(rejection.rawValue, privacy: .public)")
-            transport.send(type: .bye, seq: nextSeq(),
-                           payload: JSONWire.encode(ReasonMessage(reason: rejection.rawValue)))
-            finishClose(rejection.rawValue)
+            closeSendingBye(rejection.rawValue)
             return
         }
         if peerHello == nil {
             peerHello = hello
+            // The peer was pinned during the proof before its HELLO (name unknown then); now that
+            // we have its human name, fill it in on the trust-store entry.
+            if let pairing = pairingConfig, let tls = tlsPeerInfo,
+               let pinned = pairing.trustStore.pinned(for: tls.peerDeviceId), pinned.name != hello.deviceName {
+                pairing.trustStore.pin(TrustedPeer(deviceId: pinned.deviceId, spkiHash: pinned.spkiHash,
+                                                   name: hello.deviceName, pairedAt: pinned.pairedAt))
+            }
             if !isAck {
                 // Reply with our HELLO_ACK so the peer has our capabilities regardless of order.
                 transport.send(type: .helloAck, seq: nextSeq(), payload: JSONWire.encode(localHello))
@@ -271,9 +449,7 @@ public final class Session: @unchecked Sendable {
                                        hiDPIOverride: preferredHiDPI) else {
             let reason = HelloRejection.protocolMismatch.rawValue
             coreLog.error("session[source] no common video codec with peer → BYE(\(reason, privacy: .public))")
-            transport.send(type: .bye, seq: nextSeq(),
-                           payload: JSONWire.encode(ReasonMessage(reason: reason)))
-            finishClose(reason)
+            closeSendingBye(reason)
             return
         }
         configSent = true
@@ -372,13 +548,20 @@ public final class Session: @unchecked Sendable {
         onPhaseChange?(p)
     }
 
-    private func finishClose(_ reason: String?) {
+    /// Tear down the session. When `flushBye` is true (a BYE was just sent), the transport cancel
+    /// is deferred briefly so the BYE flushes over TLS and the peer receives the reason instead of
+    /// a bare connection reset — this is what makes a wrong-PIN "auth" (etc.) reach the other Mac.
+    private func finishClose(_ reason: String?, flushBye: Bool = false) {
         guard !closed else { return }
         closed = true
         stopHeartbeat()
         cancelConnectTimeout()
         coreLog.notice("session[\(self.role.rawValue, privacy: .public)] CLOSED reason=\(reason ?? "nil", privacy: .public)")
-        transport.cancel()
+        if flushBye {
+            queue.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.transport.cancel() }
+        } else {
+            transport.cancel()
+        }
         setPhase(.closed(reason))
         onClosed?(reason)
     }

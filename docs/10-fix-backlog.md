@@ -79,10 +79,10 @@ All in [Sidewire/Settings/AppSettings.swift](../Sidewire/Settings/AppSettings.sw
 - **E2** LTR recovery reverted (commit `17a117a`); `ltrToken` in the video subheader is reserved/unused; recovery is IDR-only. Owner decision pending (doc 09 open question 3).
 - **E3** `FEEDBACK` (0x42) message defined but never sent/handled — adaptive bitrate is RTT-only (`SourceController.adaptBitrate`, 0.8× cut / 1.1× ramp). Re-land per docs/04 or delete from the catalog in protocol v2.
 - **E4** H.264 uses `kVTProfileLevel_H264_High_AutoLevel`; fine for FFmpeg-class decoders, but if decoder compatibility issues surface on old hardware, Main profile is the safer floor. Note only — no action unless Phase 8 testing hits it.
-- **E5** `Reconnector.fatalReasons = {user, protocol, role}` ([Packages/SidewireCore/Sources/SidewireCore/Reconnector.swift:29](../Packages/SidewireCore/Sources/SidewireCore/Reconnector.swift)) disagrees with docs/02 which also lists "error"; unknown reasons cause reconnect-against-a-peer-that-meant-stop. Align in Phase 7 (add "superseded" per B3).
+- **E5 — RESOLVED (Phase 7a).** `Reconnector.fatalReasons` now = `{user, protocol, role, error, auth, keyChanged, rateLimited, superseded}`, matching docs/02. (Making *unknown* reasons fatal-by-default rather than reconnecting is still open — a Phase 7b fail-loud item.)
 - **E6** DISPLAY_INFO is sent before peer HELLO validation (mild info leak to rejected peers) and docs/02 says "right after HELLO_ACK" while code sends it right after its own HELLO — fix ordering and the spec together in Phase 7.
-- **E7** `tls_ciphersuite_t(rawValue: UInt16(TLS_PSK_WITH_AES_128_GCM_SHA256))!` force-unwrap in `TLSPSK.swift:33` relies on Network.framework accepting a raw value outside its documented enum — fragile against OS updates; goes away with the D11 TLS 1.3 migration.
-- **E8** PSK `nil` ⇒ plaintext TCP is a valid code path in `TCPTransport`/`TCPListener` (used by loopback tests) with no protocol-level indication to the peer. Make encryption non-optional outside tests in protocol v2.
+- **E7 — RESOLVED (Phase 7a).** `TLSPSK.swift` and the `TLS_PSK_WITH_AES_128_GCM_SHA256` force-unwrap are deleted. The transport is now cert-based **TLS 1.3** with a device `SecIdentity` (`SidewireCore/TLS.swift`, `LocalIdentity.swift`); see [05](05-security-and-pairing.md).
+- **E8 — RESOLVED (Phase 7a).** Encryption is non-optional: `TCPTransport`/`TCPListener` require a `LocalIdentity` and always run TLS 1.3. There is no PSK-nil plaintext path; loopback/reliability tests now spin up real TLS with throwaway identities.
 
 ---
 
@@ -95,4 +95,4 @@ All in [Sidewire/Settings/AppSettings.swift](../Sidewire/Settings/AppSettings.sw
 ## G — Build/dev-loop parity
 
 - **G1 (P2)** Hardened runtime is applied only in `scripts/release.sh` (not in `project.yml`/Xcode configs), so hardened-runtime-only failures — especially around the `--vd-helper` self-re-exec — would surface first in a shipped build. Add a hardened local config or a periodic hardened build check.
-- **G2 (P2)** Docs drift to clean up when Phase 7 lands: docs/05 mandates "TLS 1.3 only" while code pins TLS 1.2.
+- **G2 — RESOLVED (Phase 7a).** Code now pins TLS 1.3 (min = max), matching docs/05. `A2`/`A4` wrong-PIN surfacing also carries over: a wrong PIN is now a `BYE("auth")` from the pairing proof (still fatal-for-reconnect, still "PIN incorrect" in the UI).

@@ -24,6 +24,10 @@ enum CloseReasonText {
             return String(localized: "The other Mac disconnected.")
         case SessionConstants.authFailureReason:
             return String(localized: "PIN incorrect — check the code shown on the other Mac.")
+        case SessionConstants.keyChangedReason:
+            return String(localized: "This Mac's identity changed — re-pair to trust it again.")
+        case SessionConstants.rateLimitedReason:
+            return String(localized: "Too many wrong PIN attempts — wait a minute and try again.")
         case SessionConstants.supersededReason:
             return String(localized: "Another Mac took over this display.")
         case "role":
@@ -42,6 +46,10 @@ enum CloseReasonText {
         switch reason {
         case SessionConstants.supersededReason:
             return String(localized: "Another Source took over.")
+        case SessionConstants.authFailureReason:
+            return String(localized: "A Mac tried to connect with the wrong PIN.")
+        case SessionConstants.rateLimitedReason:
+            return String(localized: "Too many wrong PIN attempts — pairing is paused for a minute.")
         case "user":
             return String(localized: "The other Mac disconnected.")
         case "role":

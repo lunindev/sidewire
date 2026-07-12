@@ -35,6 +35,11 @@ final class SourceController: ObservableObject {
     // when it dialed; when the live settings drift, Settings offers a reconnect. We keep the
     // transport factory so we can re-dial the same peer with a fresh settings snapshot.
     private var currentMakeTransport: (() -> TCPTransport)?
+    /// The peer device id this link expects (a paired peer, for keyChanged enforcement), or nil
+    /// for a first-time pairing / manual-IP connect. On a fatal auth/keyChanged we forget it so
+    /// the next connect re-pairs cleanly (avoids a skip-proof ↔ reject standoff after one side
+    /// forgets the pin).
+    private var currentExpectedPeerId: String?
     /// The quality settings the current link is using. nil when no link is up. When it differs
     /// from live AppSettings, the Settings pane shows "Changes apply on reconnect".
     @Published private(set) var activeQuality: QualitySnapshot?
@@ -204,18 +209,35 @@ final class SourceController: ObservableObject {
     func connect(to peer: DiscoveredPeer) {
         autoConnecting = false // an explicit user connect is unbounded
         let iface = selectedInterface
-        let psk = Pairing.credential(pin: pairingPIN)
-        startLink(peerName: peer.name) { TCPTransport(endpoint: peer.endpoint, interface: iface, psk: psk) }
+        let identity = LocalIdentity.shared
+        // If this peer is already paired, enforce public-key pinning against its advertised
+        // device id (a changed key → "keyChanged"). Unpaired ⇒ nil (accept any key, pair via PIN).
+        let expected = pinnedExpectation(for: peer.deviceId)
+        startLink(peerName: peer.name, expectedPeerId: expected) {
+            TCPTransport(endpoint: peer.endpoint, interface: iface, identity: identity,
+                         expectedPeerDeviceId: expected)
+        }
     }
 
     func connect(host: String, port: UInt16 = ProtocolConstants.fallbackPort) {
         autoConnecting = false // an explicit user connect is unbounded (maybeAutoConnect re-sets it)
         let iface = selectedInterface
-        let psk = Pairing.credential(pin: pairingPIN)
+        let identity = LocalIdentity.shared
+        // Manual IP has no advertised device id, so key pinning can't be pre-enforced here (the
+        // peer's key is still verified against the trust store post-handshake by the Session).
         // Remember the last IP dialed by hand so the field is pre-filled next launch — the
         // Thunderbolt link-local address is stable per cable and tedious to retype.
         UserDefaults.standard.set(host, forKey: SourceController.lastHostKey)
-        startLink(peerName: host) { TCPTransport(host: host, port: port, interface: iface, psk: psk) }
+        startLink(peerName: host, expectedPeerId: nil) {
+            TCPTransport(host: host, port: port, interface: iface, identity: identity)
+        }
+    }
+
+    /// The device id to enforce (keyChanged) for a discovered peer: its advertised id, but only
+    /// if we have already pinned it. nil for an unknown/unpaired peer (first-time pairing).
+    private func pinnedExpectation(for advertisedId: String?) -> String? {
+        guard let advertisedId, KeychainTrustStore.shared.pinned(for: advertisedId) != nil else { return nil }
+        return advertisedId
     }
 
     static let lastHostKey = "sidewire.lastHost"
@@ -230,6 +252,7 @@ final class SourceController: ObservableObject {
         pendingConfig = nil
         activeQuality = nil
         currentMakeTransport = nil
+        currentExpectedPeerId = nil
         isConnected = false
         isConnecting = false
         isStreaming = false
@@ -250,17 +273,20 @@ final class SourceController: ObservableObject {
     func reconnectWithCurrentSettings() {
         guard let make = currentMakeTransport else { return }
         let name = peerName ?? String(localized: "the last Mac")
+        let expected = currentExpectedPeerId
         Log.event(.source, "reconnecting to apply new quality settings")
         disconnect() // clears currentMakeTransport — hence the local capture above
-        startLink(peerName: name, makeTransport: make)
+        startLink(peerName: name, expectedPeerId: expected, makeTransport: make)
     }
 
     // MARK: - Connection
 
-    private func startLink(peerName: String, makeTransport: @escaping () -> TCPTransport) {
+    private func startLink(peerName: String, expectedPeerId: String?,
+                           makeTransport: @escaping () -> TCPTransport) {
         guard reconnector == nil else { return } // ignore re-entrant connects
         pinRejected = false // fresh attempt clears any prior wrong-PIN error
         self.peerName = peerName
+        self.currentExpectedPeerId = expectedPeerId
         // Remember the transport factory so D3's reconnect can re-dial the same peer.
         currentMakeTransport = makeTransport
         linkGeneration &+= 1
@@ -279,6 +305,8 @@ final class SourceController: ObservableObject {
         let maxBps = settings.maxBitrateBps
         let hiDPIPref = settings.virtualDisplayScale.forcedHiDPI
         maxBitrate = maxBps // ceiling for RTT-driven adaptation
+        // Pairing: the entered PIN + the Keychain trust store, snapshotted for the session queue.
+        let pin = pairingPIN
 
         let reconnector = Reconnector(makeSession: {
             let s = Session(transport: makeTransport(), role: .source, localHello: hello)
@@ -287,12 +315,19 @@ final class SourceController: ObservableObject {
             s.preferredMaxFps = fpsCap
             s.preferredMaxBitrateBps = maxBps
             s.preferredHiDPI = hiDPIPref
+            s.pairingConfig = PairingConfig(pin: pin, trustStore: KeychainTrustStore.shared)
             return s
         })
         self.reconnector = reconnector
 
         reconnector.onSession = { [weak self] session in
             // Called on the reconnector queue: wire media callbacks (they self-hop to main).
+            session.onPaired = { peer in
+                Task { @MainActor in
+                    Log.source.info("paired with Display \(peer.deviceId)")
+                    NotificationCenter.default.post(name: .sidewirePairedPeersChanged, object: nil)
+                }
+            }
             session.onReady = { [weak self, weak session] config in
                 Task { @MainActor in
                     guard let self, let session else { return }
@@ -360,12 +395,20 @@ final class SourceController: ObservableObject {
             Log.event(.source, "link: reconnecting (attempt \(attempt))")
             tearDownEncoderCapture()
         case .failed(let reason):
-            // Terminal (protocol/role mismatch, wrong PIN, or displaced by another Source):
-            // tear down and release the reconnector so a fresh connect() can proceed.
+            // Terminal (protocol/role mismatch, wrong PIN, key changed, rate-limited, or displaced
+            // by another Source): tear down and release the reconnector so a fresh connect() can
+            // proceed.
             isConnecting = false; isConnected = false
             // pinRejected drives a dedicated field-level hint; the human status copy for every
-            // reason (auth/superseded included) lives once in CloseReasonText (backlog C2).
+            // reason (auth/keyChanged/rateLimited/superseded included) lives once in CloseReasonText.
             if reason == SessionConstants.authFailureReason { pinRejected = true }
+            // On a wrong PIN or a changed key, drop any stale pin for the expected peer so the
+            // next connect runs a fresh PIN proof instead of skipping it and being refused again.
+            if reason == SessionConstants.authFailureReason || reason == SessionConstants.keyChangedReason,
+               let expected = currentExpectedPeerId {
+                KeychainTrustStore.shared.forget(expected)
+                NotificationCenter.default.post(name: .sidewirePairedPeersChanged, object: nil)
+            }
             statusText = CloseReasonText.source(reason)
             Log.event(.source, "link: failed (\(reason))", level: .notice)
             // Mirror disconnect(): a stale revocation banner (and disabled injection) must not
@@ -380,6 +423,7 @@ final class SourceController: ObservableObject {
             autoConnecting = false
             activeQuality = nil
             currentMakeTransport = nil
+            currentExpectedPeerId = nil
         case .stopped:
             isConnecting = false; isConnected = false; statusText = String(localized: "Disconnected")
         }

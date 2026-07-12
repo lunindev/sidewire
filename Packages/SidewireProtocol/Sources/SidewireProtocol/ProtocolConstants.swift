@@ -3,7 +3,10 @@ import Foundation
 /// Canonical wire-protocol constants. See docs/02-protocol.md.
 public enum ProtocolConstants {
     public static let magic = "SIDEWIRE"
-    public static let major: UInt16 = 1
+    /// Protocol v2: certificate-based TLS 1.3 + channel-bound PIN proof replaces the v1
+    /// PIN-derived TLS-PSK transport (docs/05, docs/09 §D11). A breaking wire change — v1
+    /// peers are rejected at HELLO. Nothing shipped on v1, so there is no dual-stack.
+    public static let major: UInt16 = 2
     public static let minor: UInt16 = 0
 
     /// Fixed frame header size in bytes: type(1) + flags(1) + reserved(2) + length(4) + seq(4).

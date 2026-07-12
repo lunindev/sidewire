@@ -10,6 +10,17 @@ public struct DiscoveredPeer: Identifiable, Hashable, Sendable {
     /// The peer's Thunderbolt link-local IP if it advertised one (TXT "tb"), so the Source
     /// can offer a one-click connect that forces the cable instead of Wi-Fi.
     public let thunderboltIP: String?
+    /// The peer's self-authenticating device id (TXT "did"), if advertised. Lets the Source
+    /// enforce public-key pinning ("keyChanged") when it dials a peer it has already paired with.
+    public let deviceId: String?
+
+    public init(id: String, name: String, endpoint: NWEndpoint, thunderboltIP: String?, deviceId: String? = nil) {
+        self.id = id
+        self.name = name
+        self.endpoint = endpoint
+        self.thunderboltIP = thunderboltIP
+        self.deviceId = deviceId
+    }
 
     public static func == (lhs: DiscoveredPeer, rhs: DiscoveredPeer) -> Bool { lhs.id == rhs.id }
     public func hash(into hasher: inout Hasher) { hasher.combine(id) }
@@ -63,7 +74,8 @@ public final class Discovery: @unchecked Sendable {
                 guard case let .service(name, _, _, _) = result.endpoint,
                       seen.insert(name).inserted else { return nil }
                 return DiscoveredPeer(id: name, name: name, endpoint: result.endpoint,
-                                      thunderboltIP: Self.thunderboltIP(from: result.metadata))
+                                      thunderboltIP: Self.txtValue(from: result.metadata, key: "tb"),
+                                      deviceId: Self.txtValue(from: result.metadata, key: "did"))
             }
             self?.onPeersChanged?(peers)
         }
@@ -77,10 +89,11 @@ public final class Discovery: @unchecked Sendable {
         browser = nil
     }
 
-    /// Pull the advertised Thunderbolt IP (TXT key "tb") out of a browse result's metadata.
-    private static func thunderboltIP(from metadata: NWBrowser.Result.Metadata) -> String? {
+    /// Pull a TXT string value (e.g. "tb" for the Thunderbolt IP, "did" for the device id) out of
+    /// a browse result's metadata.
+    private static func txtValue(from metadata: NWBrowser.Result.Metadata, key: String) -> String? {
         guard case let .bonjour(txt) = metadata,
-              case let .string(value) = txt.getEntry(for: "tb"),
+              case let .string(value) = txt.getEntry(for: key),
               !value.isEmpty else { return nil }
         return value
     }

@@ -8,6 +8,7 @@ private final class FakeTransport: Transport, @unchecked Sendable {
     var onFrame: ((Frame) -> Void)?
     var onState: ((TransportState) -> Void)?
     var onInterface: ((String) -> Void)?
+    var onSecurity: ((TLSPeerInfo) -> Void)? // never fired ⇒ Session skips the PIN proof
     weak var peer: FakeTransport?
 
     func start() { onState?(.ready) }

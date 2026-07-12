@@ -22,6 +22,11 @@ public protocol Transport: AnyObject {
     /// Reports a human-readable description of the network interface in use (e.g.
     /// "Thunderbolt (bridge0)", "Wi-Fi") once the connection is established.
     var onInterface: ((String) -> Void)? { get set }
+    /// Fired once, just before `.ready`, on a cert-based TLS transport: the peer's pinned-key
+    /// identity + the pairing channel binding. `nil`-firing (never called) for non-TLS fakes,
+    /// which makes the `Session` treat the link as already-trusted (no PIN proof) — the path
+    /// unit tests exercise. See `TLSPeerInfo` / docs/05.
+    var onSecurity: ((TLSPeerInfo) -> Void)? { get set }
 
     func start()
     /// Encode and send one frame. `seq` is chosen by the caller (`Session`).

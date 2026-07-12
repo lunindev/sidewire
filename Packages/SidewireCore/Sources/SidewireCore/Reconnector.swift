@@ -26,12 +26,17 @@ public final class Reconnector: @unchecked Sendable {
     public var onSession: ((Session) -> Void)?
 
     /// Reasons that must NOT trigger auto-reconnect (explicit teardown / fatal handshake).
-    /// "auth" = wrong PIN: re-dialing with the same wrong PSK can only fail again, so stop
-    /// and let the UI prompt for the correct PIN. "superseded" = another Source took the
-    /// Display; re-dialing would just fight the taker forever (newest-wins → steal loop).
+    /// "auth" = wrong PIN: re-dialing with the same wrong PIN can only fail again, so stop and
+    /// let the UI prompt for the correct PIN. "keyChanged" = the paired peer's key changed
+    /// (re-dialing can't fix it — the user must re-pair). "rateLimited" = the Display locked us
+    /// out after repeated wrong PINs (re-dialing immediately would just be refused again).
+    /// "superseded" = another Source took the Display; re-dialing would just fight the taker
+    /// forever (newest-wins → steal loop). "error" = a peer-signalled fatal error.
     private static let fatalReasons: Set<String> = [
-        "user", "protocol", "role",
+        "user", "protocol", "role", "error",
         SessionConstants.authFailureReason,
+        SessionConstants.keyChangedReason,
+        SessionConstants.rateLimitedReason,
         SessionConstants.supersededReason,
     ]
 

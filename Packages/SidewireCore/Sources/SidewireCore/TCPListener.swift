@@ -26,7 +26,7 @@ public final class TCPListener: @unchecked Sendable {
         let interface: NWInterface?
         let port: UInt16
         let advertise: Bool
-        let psk: PSKCredential?
+        let identity: LocalIdentity
         let txt: [String: String]?
     }
     /// All of the following are touched only on `queue`, so start/stop and a queue-scheduled
@@ -46,13 +46,14 @@ public final class TCPListener: @unchecked Sendable {
     }
 
     /// Start listening. `port == 0` binds an OS-assigned ephemeral port. `advertise`
-    /// controls Bonjour service advertisement (off for loopback tests).
+    /// controls Bonjour service advertisement (off for loopback tests). `identity` is this
+    /// device's TLS identity, presented to every accepted connection (encryption is mandatory).
     public func start(interface: NWInterface? = nil,
                       port: UInt16 = ProtocolConstants.fallbackPort,
                       advertise: Bool = true,
-                      psk: PSKCredential? = nil,
+                      identity: LocalIdentity,
                       txt: [String: String]? = nil) {
-        let p = StartParams(interface: interface, port: port, advertise: advertise, psk: psk, txt: txt)
+        let p = StartParams(interface: interface, port: port, advertise: advertise, identity: identity, txt: txt)
         queue.async {
             self.params = p
             self.stopped = false
@@ -75,7 +76,7 @@ public final class TCPListener: @unchecked Sendable {
         guard !stopped, gen == generation, let p = params else { return }
         teardown() // never leave a prior NWListener running
 
-        let nwParams = TCPTransport.tcpParameters(interface: p.interface, psk: p.psk)
+        let nwParams = TCPTransport.tcpParameters(interface: p.interface, identity: p.identity)
         // Tolerate a lingering socket in TIME_WAIT / a fast restart on the same port.
         nwParams.allowLocalEndpointReuse = true
 
@@ -134,7 +135,10 @@ public final class TCPListener: @unchecked Sendable {
         }
 
         newListener.newConnectionHandler = { [weak self] connection in
-            let transport = TCPTransport(connection: connection, label: "sidewire.transport.server")
+            // The accepted (Display/server) side: pass the identity for `ownSPKIHash` and mark
+            // `isServer` so the channel-binding order is computed correctly.
+            let transport = TCPTransport(connection: connection, label: "sidewire.transport.server",
+                                         identity: p.identity, isServer: true)
             self?.onConnection?(transport)
         }
 

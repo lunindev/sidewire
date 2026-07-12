@@ -5,6 +5,9 @@ import SidewireProtocol
 extension Notification.Name {
     /// Posted by the Settings pane / Help menu to re-present the Welcome screen (D8).
     static let sidewireShowWelcome = Notification.Name("sidewire.showWelcome")
+    /// Posted when the trust store changes (a new Mac paired, or one was forgotten) so the
+    /// "Paired Macs" settings section can refresh.
+    static let sidewirePairedPeersChanged = Notification.Name("sidewire.pairedPeersChanged")
 }
 
 /// Top-level app state: the chosen role (persisted) and the active role controller.

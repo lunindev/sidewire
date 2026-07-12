@@ -1,59 +1,124 @@
-# 05 — Security & Pairing
+# 05 — Security & Pairing (protocol v2)
 
-Implemented in Phase 3. Read [00 D6](00-review-and-decisions.md) for the decision. The threat this closes is specific and serious: because the Display forwards input that the Source injects with `CGEvent`, **an unauthenticated peer on the LAN gets remote *control* of the primary Mac**, not just a view of it. So this is not "encrypt the video" — it's "don't hand a stranger my keyboard."
+Implemented in Phase 7a (protocol v2). Read [00 D6](00-review-and-decisions.md) and [09 §D11](09-next-stage.md) for the decisions. The threat this closes is specific and serious: because the Display forwards input that the Source injects with `CGEvent`, **an unauthenticated peer on the LAN gets remote *control* of the primary Mac**, not just a view of it. So this is not "encrypt the video" — it's "don't hand a stranger my keyboard."
+
+This document is **normative for the wire** and precise enough to implement a non-Mac (Rust) client. Everything here is portable — no Apple-specific crypto is on the wire; the Apple-specific parts (Keychain, `SecIdentity`, Network.framework) are implementation notes for the Mac side only.
+
+> **What changed from v1.** v1 used TLS **1.2** with a plain external PSK derived from the PIN (`TLS_PSK_WITH_AES_128_GCM_SHA256`) — no forward secrecy, offline-brute-forceable from a passive capture, no trust store, no rate limiting. v2 replaces it with **certificate-based TLS 1.3 + a channel-bound PIN proof + a Keychain trust store**. Nothing shipped on v1, so there is no dual-stack: a v1 peer is rejected at HELLO (`protocol.major` bumped to **2**).
 
 ## Threat model
 
 In scope (must defend):
 - A rogue device on the same LAN/Wi-Fi connecting to a Source and injecting input.
-- A passive eavesdropper on the LAN reading screen contents.
+- A passive eavesdropper on the LAN reading screen contents (now also forward-secret).
 - An active MITM on the LAN during pairing.
 
-Out of scope (v1, acceptable):
-- A compromised endpoint (if the Mac itself is owned, the game is over).
-- Nation-state traffic analysis.
-- Physical access to either Mac.
+Out of scope (v1/v2, acceptable): a compromised endpoint; nation-state traffic analysis; physical access to either Mac.
 
 The direct Thunderbolt path is point-to-point and effectively private, but we do **not** special-case it — the same TLS + pairing applies on every transport so there is one code path and Wi-Fi is never the weak default.
 
-## Transport encryption — TLS 1.3
+## Device identity
 
-Wrap `NWConnection` in `NWProtocolTLS` (`sec_protocol_options_...`). No CA, no hostnames — this is peer-to-peer:
+Each install generates a long-lived **P-256** key pair and a minimal **self-signed X.509 certificate**, persisted (Mac: in the Keychain). The certificate is an opaque key carrier — there is no CA, no hostname, no chain to validate:
 
-- Each install generates a long-lived **self-signed certificate / key pair** (P-256), stored in the Keychain, identifying the device (`deviceId`).
-- Verify the peer with **public-key pinning** via `sec_protocol_options_set_verify_block`: on first pairing, record the peer's public key; on every later connection, require it to match the pinned key. A changed key → refuse + warn (possible MITM or reinstalled peer → re-pair explicitly).
-- TLS 1.3 only; strong cipher suites; disable renegotiation.
+- Curve **NIST P-256 (secp256r1)**, signature **ecdsa-with-SHA256**.
+- `version v3`, `subject == issuer == CN=Sidewire`, `notBefore = now − 1h`, `notAfter = now + 20y`, a random serial. Extensions are cosmetic (BasicConstraints CA:FALSE, KeyUsage digitalSignature). A client MAY present any self-signed P-256 leaf; **only the public key matters**.
+- **`spkiHash`** = `SHA-256` over the DER **SubjectPublicKeyInfo** (RFC 7469 "SPKI Fingerprint"). For P-256 the SPKI is the standard 91-byte `SEQUENCE { AlgorithmIdentifier(ecPublicKey, prime256v1), BIT STRING(0x04‖X‖Y) }` that OpenSSL `i2d_PUBKEY` and swift-crypto `P256.PublicKey.derRepresentation` both produce. This 32-byte value is what the trust store pins.
+- **`deviceId`** = the first **16 bytes** of `spkiHash`, lowercase hex (32 chars). The identity is therefore **self-authenticating**: a peer cannot claim a `deviceId` it doesn't hold the private key for, because the id is derived from the key. This is what lets the trust store be keyed by `deviceId` and advertised in HELLO / Bonjour without being spoofable.
 
-## Pairing — PIN that never crosses the wire
+*Mac implementation note:* the private key is generated in-place in the Keychain (`SecKeyCreateRandomKey`, `isPermanent`), the cert is signed through that `SecKey` (swift-certificates `Certificate.PrivateKey(_ secKey:)`), and a `SecIdentity` is recovered with `SecIdentityCreateWithCertificate` → `sec_identity_t`. No private API. A Rust client just keeps a PEM/DER key+cert on disk.
 
-First connection to a given peer requires pairing; the goal is to bind the two devices' pinned keys with human-verifiable proof, without ever transmitting the PIN or anything trivially derived from it (the exact Moonlight MITM CVE).
+## Transport — TLS 1.3, mutual auth
 
-Flow:
-1. The **Display** generates and shows a 6-digit PIN (and a QR encoding `deviceId`, host, port, and the PIN) on its idle/waiting screen.
-2. The user enters the PIN on the **Source** (or scans the QR).
-3. Both sides run a **PAKE (SPAKE2)** using the PIN as the shared low-entropy secret. The PAKE yields a shared high-entropy key **only if both used the same PIN**, and reveals nothing about the PIN to an eavesdropper or MITM. (Implementation: a maintained Swift SPAKE2, or CryptoKit primitives. **Fallback if no clean SPAKE2 is available:** TLS-PSK where the PSK is derived from the PIN via HKDF and used inside the already-established TLS channel, combined with cert pinning — weaker than SPAKE2 against an active MITM at pairing time but acceptable for a LAN v1; prefer SPAKE2.)
-4. On success, each side stores the other's **pinned public key + `deviceId` + a human label** in the Keychain trust store. Subsequent connections skip pairing entirely (pinned-key TLS is sufficient) and go straight through.
+Wrap the TCP connection in **TLS 1.3 (min = max = 1.3)**. Both peers present their device certificate (**mutual authentication** — the Display requests a client cert):
+
+- Mac: `NWProtocolTLS` with `sec_protocol_options_set_local_identity`, `set_min/max_tls_protocol_version(.TLSv13)`, `set_peer_authentication_required(true)`, and a **verify block that accepts any certificate** (`complete(true)`). There is no CA/hostname to check; trust is established at the app layer. Without a verify block Network.framework would reject the self-signed cert by default.
+- Rust: `rustls` with a **custom `ServerCertVerifier`/`ClientCertVerifier`** that returns `Ok` unconditionally (danger accepted — the PIN proof + pin are the real gate), or OpenSSL with `SSL_VERIFY_PEER` + a verify callback that always returns 1. Client must present its own cert (`set_certificate`/`set_private_key`).
+
+Any cipher suite TLS 1.3 negotiates is fine (all provide forward secrecy). Renegotiation does not exist in 1.3.
+
+### Public-key pinning ("keyChanged")
+
+After the handshake, each side reads the peer's **leaf certificate** and computes its `spkiHash` and `deviceId` (Mac: from the connection's TLS metadata via `sec_protocol_metadata_access_peer_certificate_chain`, uniformly on both accepted and dialed sides).
+
+- The **dialing** side (Source), when it dials a peer it has **already pinned** (it knows the expected `deviceId`, e.g. from the Bonjour `did` TXT record or the last host), **requires** the presented leaf's derived `deviceId` to equal the expected one. Mismatch → **fail the connection immediately, before any app data**, close reason **`keyChanged`** (fatal; UI: "This Mac's identity changed — re-pair to trust it again."). This catches a MITM presenting a substituted cert or a reinstalled peer.
+- A first-time (unpinned) connection accepts any key; identity is then established by the PIN proof.
+
+## Pairing — channel-bound PIN proof (before HELLO)
+
+The **Display** shows a 6-digit PIN (rotatable; only affects future pairings). On a **first-time** connection (neither side has the peer pinned), after TLS is ready and **before** HELLO, both sides run a mutual proof that binds the shared PIN to *this specific TLS channel*. An active MITM terminating TLS sees a different pair of leaf certificates than the honest endpoints, so its channel-binding value differs and the proof cannot verify across it.
+
+### Channel binding
+
+Let `clientSPKI` and `serverSPKI` be the 32-byte `spkiHash` of the **client** (dialing Source) and **server** (listening Display) leaf certs.
+
+```
+channelBinding = SHA-256( clientSPKI[32] ‖ serverSPKI[32] )        // 32 bytes
+```
+
+Order is always client-then-server, independent of who computes it. Both sides know their own role and both SPKIs (own + peer, from the handshake), so both derive the same value.
+
+> **Why cert-hash binding and not TLS exporter keying material (EKM)?** RFC 8446 EKM (`tls-exporter`) was the design target, but Network.framework does not reliably expose the exporter via public API at a point where *both* peers can run the proof: `sec_protocol_metadata_create_secret` inside the verify block (which runs mid-handshake) returns inconsistent/`nil` results, and there is no supported post-handshake metadata accessor on `NWConnection`. Channel binding over both leaf SPKIs is captured reliably and is equally MITM-binding for this threat model. **A Rust client interoperating with the Mac must use this cert-hash binding**, not EKM. (If EKM interop is ever added it will be a protocol-minor bump with a negotiated flag.)
+
+### Key + proofs (byte-exact)
+
+```
+K           = HKDF-SHA256( IKM  = utf8(PIN),
+                           salt = "sidewire-pairing-v2",     // 19 ASCII bytes, no NUL
+                           info = channelBinding,            // the 32 bytes above
+                           L    = 32 )
+clientProof = HMAC-SHA256( K, "sidewire-client-proof" )      // 32 bytes  (Source proves)
+serverProof = HMAC-SHA256( K, "sidewire-server-proof" )      // 32 bytes  (Display proves)
+```
+
+The HMAC message is the literal ASCII label (21 bytes, no NUL). The `deviceId` is `first16(SPKI)` and thus already bound into the proof through the channel binding, so it needs no separate HMAC input. Proof comparisons MUST be constant-time.
+
+### Exchange
+
+New message types (see [02](02-protocol.md)): `PAIR_PROOF = 0x04` (payload = 32-byte HMAC), `PAIR_ACK = 0x05` (empty). The proof runs on an unpaired connection; a **paired reconnect skips it entirely** (no `0x04`/`0x05` on the wire) and goes straight to HELLO.
+
+```
+Source (client)                         Display (server)
+  │ ── PAIR_PROOF(clientProof) ───────────▶ │  verify clientProof with own K
+  │                                          │   ├ fail → record failure; BYE("auth"); close
+  │                                          │   └ ok   → reset rate limiter; PIN the Source;
+  │ ◀───────────── PAIR_PROOF(serverProof) ─ │           reply serverProof
+  │ verify serverProof with own K            │
+  │   ├ fail → BYE("auth"); close            │
+  │   └ ok   → PIN the Display;              │
+  │ ── PAIR_ACK ──────────────────────────▶ │  proceed to application handshake
+  │            (both proceed to HELLO)       │
+```
+
+On mutual success **both sides pin the peer** (`deviceId → {spkiHash, name, pairedAt}`) and then run the normal HELLO handshake ([02](02-protocol.md)). The name is filled in from the peer's HELLO `deviceName` once it arrives (it was unknown at pin time). Any proof failure → **`BYE{reason:"auth"}`** + close (fatal-for-reconnect; the Source UI shows "PIN incorrect"). A BYE is flushed before the socket is torn down so the peer receives the reason rather than a bare reset.
 
 Rules:
-- **The PIN is never sent** as plaintext or as a derived salt/hash on the wire. Only PAKE messages travel.
-- A PIN is single-use and short-lived (rotate on each pairing attempt; expire after a few minutes).
-- Rate-limit PIN attempts (e.g. lock after 5 wrong entries for a cooldown) to bound online guessing of a 6-digit PIN.
+- **The PIN never crosses the wire**, nor anything an attacker could brute-force offline: only HMACs keyed by an HKDF of `(PIN, channelBinding)` travel, and the channel binding is not attacker-controllable without the honest certs.
+- A PIN is short-lived and rotatable; rotation only changes the code required for **future** pairings.
+
+## Rate limiting (Display / server side)
+
+The Display bounds online guessing of the 6-digit PIN. In-memory (a relaunch clears it — acceptable):
+
+- Track **consecutive failed proofs**. After **5** consecutive failures, impose a **lockout**: while locked, a new pairing attempt is refused **immediately** with **`BYE{reason:"rateLimited"}`** (fatal; UI: "Too many wrong PIN attempts — wait a minute and try again.") — the proof is not even evaluated.
+- Lockout duration starts at **60 s** and **doubles** on each repeated lockout (60 → 120 → 240 …), capped at **15 min**.
+- A **successful** proof resets the failure count and lockout state.
 
 ## Trust store
 
-`Pairing/TrustStore.swift`, Keychain-backed:
-- keyed by peer `deviceId`; stores pinned public key + label + last-seen.
-- `list()`, `isPaired(deviceId)`, `pin(deviceId, key)`, `forget(deviceId)`.
-- Surfaced in Settings as "Paired Macs" with a **Forget this Mac** action (revokes trust; next connection re-pairs).
+Keyed by peer `deviceId`; stores `{ spkiHash (hex), name, pairedAt (unix seconds) }`. Mac: Keychain `kSecClassGenericPassword`, service `com.kinocoder.sidewire.trust`, account = `deviceId`, value = JSON, fronted by an in-memory cache. API: `peers()`, `pinned(for:)`, `pin(_)`, `forget(_)`.
+
+- On a paired reconnect, both sides find the peer by `deviceId` (derived from the presented key) and **skip the proof**; the presented key necessarily matches the pin because `deviceId = first16(spkiHash)`.
+- Surfaced in Settings as **"Paired Macs"** with a **Forget** action per row (revokes trust; the next connection re-pairs). If one side forgets but the other doesn't, the mismatch surfaces as a `BYE("auth")`; the Source then drops its stale pin so the next manual connect re-pairs cleanly.
 
 ## Input-injection gate
 
-Independent of TLS: `InputInjector` refuses to post any `CGEvent` unless `TrustStore.isPaired(peerDeviceId)` is true for the active session. Even if a bug let an unpaired peer complete a handshake, it could not drive the keyboard/mouse. Video-only from an unpaired peer is likewise refused in v1 (no connection proceeds past `pairing` without success), but this gate is the defense-in-depth backstop specifically for the control channel.
+A session only reaches streaming **after** pairing (fresh proof) or a pinned-key reconnect, so "streaming ⇒ the peer is trusted" — the control channel is never driven by an unpaired peer. (`InputInjector` remains gated on Accessibility; the pairing gate is upstream of it.)
 
-## Optional second factor (owner decision, deferred)
+## Close reasons (fatal-for-reconnect)
 
-For a public release, an optional "**Allow this Mac?** [Deny] [Allow once] [Always allow]" confirmation on the Display when a *new* Source pairs adds a second, on-device factor. Not required for v1; the PIN already gates first contact. Left as a setting to enable.
+`auth` (wrong PIN), `keyChanged` (pinned peer presented a different key), `rateLimited` (locked out), plus the existing `user`, `protocol`, `role`, `error`, `superseded`. All are in `Reconnector.fatalReasons` — the Source stops and surfaces a human message rather than looping.
 
 ## What this is not
 
-No accounts, no cloud, no relay server, no telemetry. Everything is local and peer-to-peer. This is both a privacy selling point and the removal of an entire class of failure — but it is precisely why the LAN auth above is mandatory rather than optional.
+No accounts, no cloud, no relay server, no telemetry. Everything is local and peer-to-peer. SPAKE2/PAKE remains a possible future upgrade (stronger offline-guess resistance than a cert-hash-bound PIN proof if a maintained Swift + Rust implementation is practical); it is not required for v2.

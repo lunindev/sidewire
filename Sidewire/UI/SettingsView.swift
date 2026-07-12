@@ -1,4 +1,5 @@
 import SwiftUI
+import SidewireCore
 
 /// The ⌘, preferences pane: stream quality + connection preferences. Most values persist and
 /// take effect on the next connection; the "Reconnect to apply" row (D3) applies quality
@@ -42,6 +43,8 @@ struct SettingsView: View {
                 Text("Reconnects to the last IP you connected to, using the saved PIN.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+
+            PairedMacsSection()
 
             Section("General") {
                 Toggle("Launch Sidewire at login", isOn: $settings.launchAtLogin)
@@ -88,6 +91,49 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 460, height: 560)
+    }
+}
+
+/// The Keychain trust store's paired Macs, with a per-row "Forget" (revokes trust; that Mac must
+/// re-pair with the PIN on its next connection — docs/05). Refreshes when the store changes.
+private struct PairedMacsSection: View {
+    @State private var peers: [TrustedPeer] = []
+
+    var body: some View {
+        Section("Paired Macs") {
+            if peers.isEmpty {
+                Text("No paired Macs yet. Pair by entering the other Mac's PIN when you connect.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ForEach(peers, id: \.deviceId) { peer in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(peer.name.isEmpty ? "Unnamed Mac" : peer.name)
+                            Text("Paired \(Self.dateText(peer.pairedAt))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Forget") { forget(peer) }
+                    }
+                }
+                Text("Forgetting a Mac means it must re-pair with the PIN next time it connects.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .onAppear(perform: reload)
+        .onReceive(NotificationCenter.default.publisher(for: .sidewirePairedPeersChanged)) { _ in reload() }
+    }
+
+    private func reload() { peers = KeychainTrustStore.shared.peers() }
+
+    private func forget(_ peer: TrustedPeer) {
+        KeychainTrustStore.shared.forget(peer.deviceId)
+        reload()
+    }
+
+    private static func dateText(_ epoch: Double) -> String {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
+        return f.string(from: Date(timeIntervalSince1970: epoch))
     }
 }
 

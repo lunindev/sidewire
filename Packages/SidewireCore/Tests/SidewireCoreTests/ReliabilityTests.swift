@@ -8,6 +8,7 @@ private final class SilentTransport: Transport, @unchecked Sendable {
     var onFrame: ((Frame) -> Void)?
     var onState: ((TransportState) -> Void)?
     var onInterface: ((String) -> Void)?
+    var onSecurity: ((TLSPeerInfo) -> Void)?
     func start() { onState?(.ready) }
     func cancel() { onState?(.cancelled) }
     func send(rawType: UInt8, flags: UInt8, seq: UInt32, payload: Data) { /* swallowed */ }
@@ -19,6 +20,7 @@ private final class FailingTransport: Transport, @unchecked Sendable {
     var onFrame: ((Frame) -> Void)?
     var onState: ((TransportState) -> Void)?
     var onInterface: ((String) -> Void)?
+    var onSecurity: ((TLSPeerInfo) -> Void)?
     private let reason: String
     init(reason: String) { self.reason = reason }
     func start() { onState?(.failed(reason)) }
@@ -27,6 +29,10 @@ private final class FailingTransport: Transport, @unchecked Sendable {
 }
 
 final class ReliabilityTests: XCTestCase {
+
+    private var bag: IdentityBag!
+    override func setUp() { super.setUp(); bag = IdentityBag() }
+    override func tearDown() { bag.destroyAll(); super.tearDown() }
 
     private func caps() -> Capabilities {
         Capabilities(videoCodecs: ["hevc"], maxWidth: 3840, maxHeight: 2160, maxFps: 60,
@@ -116,15 +122,16 @@ final class ReliabilityTests: XCTestCase {
 
     /// A `.failed` listener must re-arm itself: after the OS drops the socket (modelled here
     /// by a forced port collision), the listener auto-restarts and eventually binds again.
-    func testListenerAutoRestartsAfterFailure() {
+    func testListenerAutoRestartsAfterFailure() throws {
         // Occupy an ephemeral port with a first listener, learn the port, then aim a second
         // listener at it: the second fails to bind, and its auto-restart must keep retrying.
         // Freeing the port (stopping the first) lets a later restart succeed.
+        let id = try bag.make()
         let first = TCPListener(serviceName: "sidewire-test-occupier")
         let firstReady = expectation(description: "occupier bound")
         var port: UInt16 = 0
         first.onReady = { p in if port == 0 { port = p; firstReady.fulfill() } }
-        first.start(port: 0, advertise: false)
+        first.start(port: 0, advertise: false, identity: id)
         wait(for: [firstReady], timeout: 5)
 
         let second = TCPListener(serviceName: "sidewire-test-restarter")
@@ -132,7 +139,7 @@ final class ReliabilityTests: XCTestCase {
         second.onReady = { _ in secondBound.fulfill() }
         // allowLocalEndpointReuse can let both share the port; if the second binds immediately
         // that's still a valid "it listens" outcome. Either way we must reach .ready.
-        second.start(port: port, advertise: false)
+        second.start(port: port, advertise: false, identity: id)
         // Free the port shortly after so a restart attempt (1s backoff) can succeed.
         DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { first.stop() }
 
@@ -142,7 +149,8 @@ final class ReliabilityTests: XCTestCase {
 
     /// The Reconnector must re-establish the session after a non-user drop, over the
     /// real TCP stack — this is auto-reconnect working in practice.
-    func testReconnectAfterDrop() {
+    func testReconnectAfterDrop() throws {
+        let displayID = try bag.make(), sourceID = try bag.make()
         let listener = TCPListener(serviceName: "sidewire-test")
         let portReady = expectation(description: "listener bound")
         var boundPort: UInt16 = 0
@@ -165,13 +173,13 @@ final class ReliabilityTests: XCTestCase {
             box.session = s
             s.start()
         }
-        listener.start(port: 0, advertise: false)
+        listener.start(port: 0, advertise: false, identity: displayID)
         wait(for: [portReady], timeout: 5)
 
         let sourceHello = Hello(role: .source, deviceId: "src", deviceName: "S",
                                 sessionId: "s", capabilities: caps())
         let reconnector = Reconnector(makeSession: {
-            Session(transport: TCPTransport(host: "127.0.0.1", port: boundPort),
+            Session(transport: TCPTransport(host: "127.0.0.1", port: boundPort, identity: sourceID),
                     role: .source, localHello: sourceHello)
         })
 

@@ -36,6 +36,8 @@ Every message is a fixed 12-byte header followed by a payload:
 | `0x01` | `HELLO` | both | JSON | no |
 | `0x02` | `HELLO_ACK` | both | JSON | no |
 | `0x03` | `CONFIG` | source→display | JSON | no |
+| `0x04` | `PAIR_PROOF` | both | binary (32 B HMAC-SHA256) | no |
+| `0x05` | `PAIR_ACK` | source→display | empty | no |
 | `0x10` | `VIDEO` | source→display | binary (Annex-B, +LTR subheader) | **yes** |
 | `0x11` | `AUDIO` | *reserved* | — | — |
 | `0x20` | `INPUT` | display→source | binary (32 B/event) | **yes** |
@@ -50,11 +52,15 @@ Every message is a fixed 12-byte header followed by a payload:
 | `0x6F` | `BYE` | both | JSON `{reason}` | no |
 | `0x70`–`0xFF` | *reserved* | — | — | must be skippable |
 
+### PAIR_PROOF (`0x04`) / PAIR_ACK (`0x05`)
+
+The channel-bound PIN proof, exchanged **before** HELLO on a first-time pairing connection (a paired reconnect skips these entirely). `PAIR_PROOF` payload is a bare **32-byte HMAC-SHA256**; `PAIR_ACK` is empty. Sequence: Source → `PAIR_PROOF(clientProof)`; Display verifies → `PAIR_PROOF(serverProof)`; Source verifies → `PAIR_ACK`; both then proceed to HELLO. The byte-exact key/proof derivation, channel binding, ordering, failure handling (`BYE("auth")`), and rate limiting (`BYE("rateLimited")`) are specified in [05 — Security & Pairing](05-security-and-pairing.md) (normative).
+
 ### Handshake
 
-Connection lifecycle: TCP connect → TLS handshake ([05](05-security-and-pairing.md)) → **application handshake** below → streaming.
+Connection lifecycle: TCP connect → **TLS 1.3 handshake (cert-based, mutual auth)** → **pairing proof** (first time only) → **application handshake** below → streaming. See [05](05-security-and-pairing.md).
 
-1. **Both peers send `HELLO`** immediately after TLS is ready.
+1. **Both peers send `HELLO`** immediately after pairing completes (or immediately after TLS on a paired reconnect).
 
 ```json
 {
@@ -75,7 +81,7 @@ Connection lifecycle: TCP connect → TLS handshake ([05](05-security-and-pairin
 }
 ```
 
-2. Each peer validates: `magic == "SIDEWIRE"`, `protocol.major == 1` (major mismatch → `BYE{reason:"protocol"}` + close), and that roles are complementary (one `source`, one `display`; two of the same → `BYE{reason:"role"}`). It replies **`HELLO_ACK`** with the same shape (no re-negotiation needed; `HELLO_ACK` mainly confirms receipt and carries the ack'ing peer's capabilities if it hadn't sent them yet).
+2. Each peer validates: `magic == "SIDEWIRE"`, `protocol.major == 2` (major mismatch → `BYE{reason:"protocol"}` + close; v1 peers are rejected here), and that roles are complementary (one `source`, one `display`; two of the same → `BYE{reason:"role"}`). It replies **`HELLO_ACK`** with the same shape (no re-negotiation needed; `HELLO_ACK` mainly confirms receipt and carries the ack'ing peer's capabilities if it hadn't sent them yet).
 
 3. The **source** computes the negotiated configuration = intersection of both capability sets, then sends **`CONFIG`**:
 
@@ -163,7 +169,7 @@ Payload is an 8-byte `UInt64`: the sender's **monotonic** clock in nanoseconds (
 `width/height` are the Display's native pixel dimensions; the source uses them to size the virtual display so the extended desktop matches the Display's panel 1:1 (or per the resolution the user picked).
 
 - **`PAUSE` (`0x60`) / `RESUME` (`0x61`)** — either peer announces it is about to sleep (`PAUSE{reason:"sleep"}`) so the other doesn't mistake the silence for death, then `RESUME` on wake. See [03 § Sleep/wake](03-reliability.md#sleepwake).
-- **`BYE` (`0x6F`)** — graceful close with a reason (`"user" | "protocol" | "role" | "error"`). The receiver of a BYE should not auto-reconnect if reason is `"user"`.
+- **`BYE` (`0x6F`)** — graceful close with a reason. Known reasons: `"user"`, `"protocol"`, `"role"`, `"error"`, `"superseded"`, and the pairing/security reasons `"auth"` (wrong PIN), `"keyChanged"` (pinned peer's key changed), `"rateLimited"` (too many wrong PINs) — see [05](05-security-and-pairing.md). All of these are fatal-for-reconnect (the receiver should not auto-reconnect); an unknown reason is treated conservatively as fatal too.
 
 ## Constants {#constants}
 
@@ -172,7 +178,7 @@ Defined once in `SidewireProtocol`; media/timing constants that belong to the se
 | name | value | meaning |
 |------|-------|---------|
 | `PROTOCOL_MAGIC` | `"SIDEWIRE"` | handshake magic |
-| `PROTOCOL_MAJOR` | `1` | breaking version |
+| `PROTOCOL_MAJOR` | `2` | breaking version (v2 = cert-TLS 1.3 + PIN proof, [05](05-security-and-pairing.md)) |
 | `PROTOCOL_MINOR` | `0` | additive version |
 | `FRAME_HEADER_BYTES` | `12` | fixed header size |
 | `MAX_FRAME_BYTES` | `16 * 1024 * 1024` | reject larger; guards allocation |

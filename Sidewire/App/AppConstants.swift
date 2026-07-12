@@ -1,18 +1,16 @@
 import Foundation
 import AppKit
 import SidewireProtocol
+import SidewireCore
 
 /// Stable per-install identity + local capability advertisement.
 enum DeviceIdentity {
-    private static let idKey = "sidewire.deviceId"
-
-    /// A stable UUID for this install (Phase 3 pairing keys on this).
-    static var deviceId: String {
-        if let existing = UserDefaults.standard.string(forKey: idKey) { return existing }
-        let new = UUID().uuidString
-        UserDefaults.standard.set(new, forKey: idKey)
-        return new
-    }
+    /// This install's self-authenticating device id, derived from its P-256 TLS identity
+    /// (`first16(SPKI-SHA256)` hex — see `SidewireCore.LocalIdentity`). It is bound to the
+    /// device's public key, so a peer cannot claim this id without holding the matching private
+    /// key; that binding is what lets the trust store pin by id. Advertised in HELLO and in the
+    /// Bonjour "did" TXT record.
+    static var deviceId: String { LocalIdentity.shared.deviceId }
 
     /// The name shown to the other Mac (in HELLO) and advertised over Bonjour. A non-empty
     /// override from Settings (D4) wins — trimmed and capped at 40 chars — otherwise the

@@ -13,6 +13,9 @@ final class DisplayController: ObservableObject {
     @Published private(set) var pairingPIN = Pairing.localPIN
 
     private let listener = TCPListener(serviceName: DeviceIdentity.deviceName)
+    /// Bounds online PIN guessing across successive pairing attempts (docs/05). One per Display;
+    /// in-memory, so a relaunch clears any lockout.
+    private let rateLimiter = PairingRateLimiter()
     private let inputCapture = InputCapture()
     private let interfaceMonitor = InterfaceMonitor()
     /// D2 — keeps this Mac's screen awake while a session is connected (gated by the setting).
@@ -124,20 +127,22 @@ final class DisplayController: ObservableObject {
         }
     }
 
-    /// Generate a fresh pairing PIN and re-arm the listener with the new PSK so subsequent
-    /// connections must use it. An in-progress session is left intact (it already handshook).
+    /// Generate a fresh pairing PIN. In protocol v2 the PIN is not baked into the transport
+    /// (TLS uses this Mac's certificate identity, not a PIN-derived key), so rotating it only
+    /// changes the code required to pair a NEW Source — no listener restart is needed, and any
+    /// already-paired Source keeps working via the stored trust-store key.
     func rotatePIN() {
         pairingPIN = Pairing.rotateLocalPIN()
-        listener.stop()
-        startListener()
-        Log.source.info("pairing PIN rotated")
+        Log.source.info("pairing PIN rotated (applies to future pairings)")
     }
 
-    /// Start (or re-arm) the listener with the current PSK, advertising this Mac's Thunderbolt
-    /// link-local IP over Bonjour TXT so a Source can offer a one-click cable connect.
+    /// Start (or re-arm) the listener with this Mac's TLS identity, advertising its device id
+    /// ("did", so a paired Source can enforce key pinning) and its Thunderbolt link-local IP
+    /// ("tb", for a one-click cable connect) over Bonjour TXT.
     private func startListener() {
-        let txt = InterfaceMonitor.localThunderboltIP().map { ["tb": $0] }
-        listener.start(psk: Pairing.credential(pin: pairingPIN), txt: txt)
+        var txt: [String: String] = ["did": DeviceIdentity.deviceId]
+        if let tb = InterfaceMonitor.localThunderboltIP() { txt["tb"] = tb }
+        listener.start(identity: LocalIdentity.shared, txt: txt)
     }
 
     func stop() {
@@ -185,11 +190,21 @@ final class DisplayController: ObservableObject {
         let snapshot = currentDisplayInfo()
         let hello = DeviceIdentity.makeHello(role: .display, sessionId: UUID().uuidString)
         let session = Session(transport: transport, role: .display, localHello: hello)
+        // Pairing: a first-time Source must complete the channel-bound PIN proof against the PIN
+        // shown here; a Source we've already pinned skips it (Session checks the trust store).
+        session.pairingConfig = PairingConfig(pin: pairingPIN, trustStore: KeychainTrustStore.shared,
+                                              rateLimiter: rateLimiter)
         self.session = session
         firstVideoLogged = false
         firstDecodedLogged = false
 
         session.provideDisplayInfo = { snapshot }
+        session.onPaired = { peer in
+            Task { @MainActor in
+                Log.display.info("paired with Source \(peer.deviceId)")
+                NotificationCenter.default.post(name: .sidewirePairedPeersChanged, object: nil)
+            }
+        }
         // Identity-guard every queue-hopped callback so a superseded session can't
         // drive state that now belongs to a newer one.
         session.onPhaseChange = { [weak self, weak session] phase in
