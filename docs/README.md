@@ -5,6 +5,8 @@
 This directory is the implementation specification. It is the source of truth for the rebuild of the app previously called *MacDisplay*. It was produced from a research pass (competitive landscape, macOS capture/virtual-display tech, transport & reconnection, video pipeline, reliability, distribution, UX) plus a 2026 verification pass, then an independent critical review that made the final decisions recorded here.
 
 > **Status:** implemented. Phases 0–5 are all built (Developer ID signing + hardened runtime + a scripted notarized-DMG pipeline; notarization itself is a one-time credential step the owner runs). These documents remain the design source of truth / rationale; for the current shipped state, the build & run instructions, and the notarization steps, see the top-level [README](../README.md).
+>
+> **Next stage (decided 2026-07-12):** see [09-next-stage.md](09-next-stage.md) — decisions D9–D14 (Developer-ID-only distribution, a native **Rust** Windows/Linux Display client, TLS 1.3 migration, direct Wi-Fi dropped) and the Phase 6–9 roadmap — and [10-fix-backlog.md](10-fix-backlog.md), the file-referenced bug/UX backlog for Phase 6. **Anyone picking up work should start with those two documents.**
 
 ## How to read this
 
@@ -21,6 +23,8 @@ Read in order. Each document assumes you've read the ones before it.
 | 06 | [UX & Onboarding](06-ux-and-onboarding.md) | Role picker, permission onboarding (Screen Recording / Accessibility / Local Network + the relaunch trap), menu-bar surface, immersive receiver, HUD, reconnection storytelling. |
 | 07 | [Roadmap & Phases](07-roadmap-and-phases.md) | Phases 0–5 with goals, task checklists, **acceptance criteria**, and verification steps on the real M4 Max ↔ i9 pair. **Implement in this order.** |
 | 08 | [Build & Distribution](08-build-and-distribution.md) | Universal 2 build, Developer ID signing, notarization, stapling, Sparkle auto-update, CI. |
+| 09 | [Next Stage: Decisions & Roadmap v2](09-next-stage.md) | Post-implementation decisions D9–D14 (distribution channel, Rust Windows/Linux client, TLS 1.3, no direct Wi-Fi, localization) + Phases 6–9. |
+| 10 | [Fix Backlog](10-fix-backlog.md) | Verified, file-referenced backlog: correctness bugs, resilience gaps, onboarding/help, missing settings, protocol debt. Phase 6 work list. |
 
 ## The one-paragraph summary
 
