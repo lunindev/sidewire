@@ -25,7 +25,7 @@ struct WelcomeView: View {
                 WelcomeRow(icon: "lock.shield", title: "Paired & encrypted",
                            text: "Enter the 6-digit PIN shown on the display Mac. The stream is TLS-encrypted end to end.")
                 WelcomeRow(icon: "checkmark.shield", title: "Two permissions",
-                           text: "The sharing Mac needs Screen Recording; the display Mac needs Accessibility to forward input. Sidewire walks you through both.")
+                           text: "The sharing Mac needs Screen Recording (to capture the screen) and Accessibility (to forward keyboard & mouse). The display Mac needs neither. Sidewire walks you through both.")
             }
             .frame(maxWidth: 480)
 

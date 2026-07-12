@@ -13,6 +13,19 @@ private final class SilentTransport: Transport, @unchecked Sendable {
     func send(rawType: UInt8, flags: UInt8, seq: UInt32, payload: Data) { /* swallowed */ }
 }
 
+/// A transport that fails immediately with a fixed reason — models a fatal handshake
+/// outcome (e.g. a wrong-PIN "auth" failure surfaced by TCPTransport).
+private final class FailingTransport: Transport, @unchecked Sendable {
+    var onFrame: ((Frame) -> Void)?
+    var onState: ((TransportState) -> Void)?
+    var onInterface: ((String) -> Void)?
+    private let reason: String
+    init(reason: String) { self.reason = reason }
+    func start() { onState?(.failed(reason)) }
+    func cancel() { onState?(.cancelled) }
+    func send(rawType: UInt8, flags: UInt8, seq: UInt32, payload: Data) {}
+}
+
 final class ReliabilityTests: XCTestCase {
 
     private func caps() -> Capabilities {
@@ -36,6 +49,37 @@ final class ReliabilityTests: XCTestCase {
         session.start()
         // heartbeatTimeout is 2.5s; allow margin.
         wait(for: [closed], timeout: 6.0)
+    }
+
+    /// A wrong-PIN "auth" failure is fatal: the Reconnector must surface it and NOT re-dial
+    /// (re-dialing with the same wrong PSK could only fail again → the silent reconnect loop).
+    func testReconnectorDoesNotRetryOnAuthFailure() {
+        let hello = Hello(role: .source, deviceId: "src", deviceName: "S",
+                          sessionId: "s", capabilities: caps())
+        let lock = NSLock()
+        var makeCount = 0
+        let reconnector = Reconnector(makeSession: {
+            lock.lock(); makeCount += 1; lock.unlock()
+            return Session(transport: FailingTransport(reason: "auth"),
+                           role: .source, localHello: hello)
+        })
+
+        let failed = expectation(description: "link reports auth failure")
+        failed.assertForOverFulfill = false
+        reconnector.onState = { state in
+            if case .failed(let reason) = state {
+                XCTAssertEqual(reason, "auth")
+                failed.fulfill()
+            }
+        }
+        reconnector.start()
+        wait(for: [failed], timeout: 5)
+
+        // Give any (incorrect) backoff dial time to fire, then confirm we dialed exactly once.
+        Thread.sleep(forTimeInterval: 1.0)
+        lock.lock(); let count = makeCount; lock.unlock()
+        XCTAssertEqual(count, 1, "auth is fatal → the Reconnector must not re-dial")
+        reconnector.stop()
     }
 
     /// The Reconnector must re-establish the session after a non-user drop, over the

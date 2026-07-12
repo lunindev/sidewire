@@ -12,6 +12,11 @@ public enum SessionConstants {
     // this ensures a Source dialing a down peer eventually fails → the Reconnector re-dials.
     public static let connectTimeout: TimeInterval = 10.0
 
+    // Close reason emitted when the TLS-PSK handshake fails (wrong PIN → wrong pre-shared
+    // key). Fatal-for-reconnect so the user sees a clear error instead of an endless
+    // reconnect loop. Distinct from a plain network refusal ("timeout"/"error").
+    public static let authFailureReason = "auth"
+
     // TCP options
     public static let tcpKeepaliveIdle = 2       // seconds
     public static let tcpKeepaliveInterval = 1   // seconds

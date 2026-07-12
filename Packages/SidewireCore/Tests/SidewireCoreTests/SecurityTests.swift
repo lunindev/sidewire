@@ -85,12 +85,16 @@ final class SecurityTests: XCTestCase {
         let source = Session(transport: clientTransport, role: .source, localHello: sourceHello())
         let closed = expectation(description: "handshake fails / session closes")
         closed.assertForOverFulfill = false
+        final class ReasonBox: @unchecked Sendable { var reason: String? }
+        let closeReason = ReasonBox()
         source.onReady = { _ in XCTFail("must not reach streaming with a wrong PSK") }
-        source.onClosed = { _ in closed.fulfill() }
+        source.onClosed = { reason in closeReason.reason = reason; closed.fulfill() }
         source.start()
 
-        // TLS failure surfaces as .failed quickly; the connect timeout (10s) is the backstop.
+        // A wrong PSK is a TLS handshake failure → classified as "auth" (fatal for reconnect,
+        // shown to the user as "PIN incorrect"), not a generic network timeout.
         wait(for: [closed], timeout: 13)
+        XCTAssertEqual(closeReason.reason, "auth", "wrong PSK must classify as an auth failure")
         listener.stop()
     }
 }

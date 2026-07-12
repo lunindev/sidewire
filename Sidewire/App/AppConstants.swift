@@ -18,14 +18,16 @@ enum DeviceIdentity {
         Host.current().localizedName ?? "Mac"
     }
 
-    /// Local capabilities. HEVC is the default (listed first, so negotiation prefers it);
-    /// H.264 is advertised as a selectable fallback (encoder + decoder both support it).
+    /// Local capabilities. `videoCodecs` is probed from VideoToolbox (HEVC first when this
+    /// machine can encode it, then H.264) rather than hardcoded — an Intel Mac with no HEVC
+    /// hardware encoder advertises only h264, so negotiation never picks a codec it can't
+    /// produce. Preference order (HEVC-then-H264) is preserved when both are available.
     static func capabilities() -> Capabilities {
         let screen = NSScreen.main
         let scale = screen?.backingScaleFactor ?? 2.0
         let frame = screen?.frame ?? CGRect(x: 0, y: 0, width: 2560, height: 1600)
         return Capabilities(
-            videoCodecs: ["hevc", "h264"],
+            videoCodecs: VideoEncoder.supportedCodecs.map(\.rawValue),
             maxWidth: Int(frame.width * scale),
             maxHeight: Int(frame.height * scale),
             maxFps: 60,

@@ -55,6 +55,10 @@ final class SourceController: ObservableObject {
     }
     @Published var peers: [DiscoveredPeer] = []
     @Published var statusText = "Idle"
+    /// Set when the last connect attempt failed the TLS-PSK handshake (wrong PIN). Drives a
+    /// clear message in the UI instead of an endless silent "Reconnecting…". Cleared on the
+    /// next connect attempt / disconnect.
+    @Published var pinRejected = false
     @Published var isConnected = false
     @Published var isStreaming = false
     @Published var isConnecting = false
@@ -153,6 +157,7 @@ final class SourceController: ObservableObject {
         isConnected = false
         isConnecting = false
         isStreaming = false
+        pinRejected = false
         statusText = "Disconnected"
         peerName = nil
         rttMs = 0
@@ -163,6 +168,7 @@ final class SourceController: ObservableObject {
 
     private func startLink(peerName: String, makeTransport: @escaping () -> TCPTransport) {
         guard reconnector == nil else { return } // ignore re-entrant connects
+        pinRejected = false // fresh attempt clears any prior wrong-PIN error
         self.peerName = peerName
 
         // One stable HELLO (and sessionId) reused across reconnect attempts — idempotent
@@ -233,10 +239,15 @@ final class SourceController: ObservableObject {
             statusText = "Reconnecting (\(attempt))…"
             tearDownEncoderCapture()
         case .failed(let reason):
-            // Terminal (protocol/role mismatch): tear down and release the reconnector so
-            // a fresh connect() can proceed.
+            // Terminal (protocol/role mismatch, or wrong PIN): tear down and release the
+            // reconnector so a fresh connect() can proceed.
             isConnecting = false; isConnected = false
-            statusText = "Failed: \(reason)"
+            if reason == SessionConstants.authFailureReason {
+                pinRejected = true
+                statusText = "PIN incorrect — check the code shown on the other Mac."
+            } else {
+                statusText = "Failed: \(reason)"
+            }
             tearDownEncoderCapture()
             virtualDisplay.destroy()
             activeSession = nil

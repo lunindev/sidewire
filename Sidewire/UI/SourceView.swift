@@ -16,19 +16,31 @@ struct SourceView: View {
             PermissionsView(model: permissions)
 
             GroupBox("Pairing PIN (shown on the Display)") {
-                HStack {
-                    TextField("6-digit PIN", text: $controller.pairingPIN)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 140)
-                        .disabled(controller.isConnected || controller.isConnecting)
-                    if controller.pairingPIN.count == 6 {
-                        Label("Encrypted (TLS)", systemImage: "lock.fill")
-                            .font(.caption).foregroundStyle(.green)
-                    } else {
-                        Text("Enter the PIN shown on the other Mac.")
-                            .font(.caption2).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        TextField("6-digit PIN", text: $controller.pairingPIN)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 140)
+                            .disabled(controller.isConnected || controller.isConnecting)
+                            .onChange(of: controller.pairingPIN) { _, newValue in
+                                // Digits only, capped at 6 — the PIN is a 6-digit code.
+                                let filtered = String(newValue.filter(\.isNumber).prefix(6))
+                                if filtered != newValue { controller.pairingPIN = filtered }
+                            }
+                        if controller.pairingPIN.count == 6 {
+                            Label("Encrypted (TLS)", systemImage: "lock.fill")
+                                .font(.caption).foregroundStyle(.green)
+                        } else {
+                            Text("Enter the PIN shown on the other Mac.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
                     }
-                    Spacer()
+                    if controller.pinRejected {
+                        Label("PIN incorrect — check the code shown on the other Mac.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.red)
+                    }
                 }
             }
 

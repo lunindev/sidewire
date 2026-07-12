@@ -27,8 +27,10 @@ DD="$ROOT/build/release-dd"
 STAGE="$OUT/stage"
 APP="$OUT/$APP_NAME.app"
 
-VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Sidewire/Resources/Info.plist 2>/dev/null || echo 1.0)"
-[ "$VERSION" = '$(MARKETING_VERSION)' ] && VERSION="1.0"
+# The source Info.plist holds the literal $(MARKETING_VERSION), so read the real version
+# from project.yml (single source of truth) instead.
+VERSION="$(grep -E '^[[:space:]]*MARKETING_VERSION:' project.yml | head -1 | sed -E 's/.*MARKETING_VERSION:[[:space:]]*"?([^"]+)"?.*/\1/')"
+[ -n "$VERSION" ] || { echo "✗ Could not read MARKETING_VERSION from project.yml"; exit 1; }
 DMG="$OUT/$APP_NAME-$VERSION.dmg"
 
 echo "▸ Sidewire $VERSION → $DMG"
@@ -46,6 +48,13 @@ xcodebuild -project Sidewire.xcodeproj -scheme "$SCHEME" -configuration Release 
   OTHER_CODE_SIGN_FLAGS="--timestamp" \
   build >/dev/null
 cp -R "$DD/Build/Products/Release/$APP_NAME.app" "$APP"
+
+# ---- 1b. assert a universal (arm64 + x86_64) binary — a broken slice must not ship ----
+BIN="$APP/Contents/MacOS/$APP_NAME"
+ARCHS_OUT="$(lipo -archs "$BIN" 2>/dev/null || true)"
+[[ "$ARCHS_OUT" == *x86_64* && "$ARCHS_OUT" == *arm64* ]] \
+  || { echo "✗ App binary is not universal (lipo -archs: '${ARCHS_OUT:-none}'); expected x86_64 + arm64"; exit 1; }
+echo "  ✓ Universal binary ($ARCHS_OUT)"
 
 # ---- 2. verify signature + hardened runtime ----
 echo "▸ Verifying signature…"

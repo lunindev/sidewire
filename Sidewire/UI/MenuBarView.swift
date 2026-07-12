@@ -46,6 +46,12 @@ private struct SourceMenu: View {
         VStack(alignment: .leading, spacing: 8) {
             Label(controller.statusText, systemImage: "dot.radiowaves.left.and.right")
                 .font(.callout)
+            // Match the main window: connecting requires the full 6-digit PIN (an empty PIN
+            // derives an empty PSK and silently fails the handshake).
+            if !controller.isConnected && controller.pairingPIN.count != 6 {
+                Text("Enter the 6-digit PIN in the main window to connect.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             if controller.peers.isEmpty {
                 Text("Searching for displays…").font(.caption).foregroundStyle(.secondary)
             } else {
@@ -57,7 +63,7 @@ private struct SourceMenu: View {
                             controller.isConnected ? controller.disconnect() : controller.connect(to: peer)
                         }
                         .font(.caption)
-                        .disabled(controller.isConnecting)
+                        .disabled(controller.isConnecting || (!controller.isConnected && controller.pairingPIN.count != 6))
                     }
                 }
             }

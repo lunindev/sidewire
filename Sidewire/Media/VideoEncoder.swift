@@ -25,12 +25,33 @@ final class VideoEncoder {
     /// path (currently always 0 — recovery is keyframe-based; see docs/04 § Encoder).
     var onEncodedFrame: ((Data, Bool, UInt16) -> Void)?
 
+    /// Codecs this machine can actually create an encode session for, in preference order
+    /// (HEVC first, then H.264). Probed once via a cheap trial VTCompressionSessionCreate —
+    /// an Intel Mac with no HEVC hardware encoder reports only h264. Cached (static let is
+    /// lazy + thread-safe). Advertised in HELLO via AppConstants so we never negotiate a
+    /// codec this machine can't produce.
+    static let supportedCodecs: [VideoCodec] = {
+        let probed = [VideoCodec.hevc, .h264].filter { canCreateSession(for: $0) }
+        return probed.isEmpty ? [.h264] : probed // defensive: never advertise nothing
+    }()
+
+    private static func canCreateSession(for codec: VideoCodec) -> Bool {
+        let codecType: CMVideoCodecType = codec == .hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
+        var session: VTCompressionSession?
+        // Small trial size, no low-latency spec (that's tried per-session at real init): this
+        // only asks "does a usable encoder for this codec exist on this Mac?".
+        let status = VTCompressionSessionCreate(
+            allocator: nil, width: 640, height: 480, codecType: codecType,
+            encoderSpecification: nil, imageBufferAttributes: nil,
+            compressedDataAllocator: nil, outputCallback: nil, refcon: nil,
+            compressionSessionOut: &session)
+        if let session { VTCompressionSessionInvalidate(session) }
+        return status == noErr && session != nil
+    }
+
     init(width: Int32, height: Int32, codec: VideoCodec = .hevc, fps: Int = 60, bitrate: Int = 30_000_000) {
         self.codec = codec
 
-        let encoderSpec: [CFString: Any] = [
-            kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true
-        ]
         let codecType: CMVideoCodecType = codec == .hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
 
         let callback: VTCompressionOutputCallback = { refcon, _, status, flags, sampleBuffer in
@@ -39,18 +60,35 @@ final class VideoEncoder {
             encoder.handleEncodedFrame(status: status, flags: flags, sampleBuffer: sampleBuffer)
         }
 
+        // Low-latency rate control is Apple-Silicon-only. Passing it on an Intel Mac makes
+        // VTCompressionSessionCreate find no matching encoder — for BOTH codecs — so the
+        // session stays nil and encode() silently no-ops forever. Try it, then fall back to
+        // a plain session (still RealTime) so Intel Macs can encode.
+        let lowLatencySpec: [CFString: Any] = [
+            kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true
+        ]
         var sessionOut: VTCompressionSession?
-        let status = VTCompressionSessionCreate(
+        var status = VTCompressionSessionCreate(
             allocator: nil, width: width, height: height, codecType: codecType,
-            encoderSpecification: encoderSpec as CFDictionary, imageBufferAttributes: nil,
+            encoderSpecification: lowLatencySpec as CFDictionary, imageBufferAttributes: nil,
             compressedDataAllocator: nil, outputCallback: callback,
             refcon: Unmanaged.passUnretained(self).toOpaque(), compressionSessionOut: &sessionOut)
+        var lowLatency = true
+        if status != noErr || sessionOut == nil {
+            lowLatency = false
+            status = VTCompressionSessionCreate(
+                allocator: nil, width: width, height: height, codecType: codecType,
+                encoderSpecification: nil, imageBufferAttributes: nil,
+                compressedDataAllocator: nil, outputCallback: callback,
+                refcon: Unmanaged.passUnretained(self).toOpaque(), compressionSessionOut: &sessionOut)
+        }
 
         guard status == noErr, let session = sessionOut else {
-            print("[Encoder] Failed to create session: \(status)")
+            print("[Encoder] Failed to create \(codec.rawValue) session: \(status)")
             return
         }
         self.session = session
+        print("[Encoder] \(codec.rawValue) session created (low-latency rate control: \(lowLatency ? "on" : "off"))")
 
         let profile: CFString = codec == .hevc ? kVTProfileLevel_HEVC_Main_AutoLevel
                                                : kVTProfileLevel_H264_High_AutoLevel
