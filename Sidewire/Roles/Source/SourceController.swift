@@ -28,6 +28,10 @@ final class SourceController: ObservableObject {
     private var encoder: VideoEncoder?
     private var reconnector: Reconnector?
     private weak var activeSession: Session?
+    /// The current link's session (set as soon as it's created, before it's ready), so an
+    /// auth/keyChanged failure can drop the stale pin by the peer's TLS-observed device id even
+    /// on a manual-IP connect that carries no expected-peer id.
+    private weak var currentSession: Session?
     private var pendingConfig: Config?
     private var firstEncodedLogged = false
 
@@ -322,6 +326,7 @@ final class SourceController: ObservableObject {
 
         reconnector.onSession = { [weak self] session in
             // Called on the reconnector queue: wire media callbacks (they self-hop to main).
+            Task { @MainActor in self?.currentSession = session }
             session.onPaired = { peer in
                 Task { @MainActor in
                     Log.source.info("paired with Display \(peer.deviceId)")
@@ -402,11 +407,13 @@ final class SourceController: ObservableObject {
             // pinRejected drives a dedicated field-level hint; the human status copy for every
             // reason (auth/keyChanged/rateLimited/superseded included) lives once in CloseReasonText.
             if reason == SessionConstants.authFailureReason { pinRejected = true }
-            // On a wrong PIN or a changed key, drop any stale pin for the expected peer so the
-            // next connect runs a fresh PIN proof instead of skipping it and being refused again.
+            // On a wrong PIN or a changed key, drop any stale pin so the next connect runs a fresh
+            // PIN proof instead of skipping it and being refused again. Prefer the expected-peer id
+            // (discovery path); fall back to the peer's TLS-observed id so a manual-IP connect
+            // heals too (it carries no expected id).
             if reason == SessionConstants.authFailureReason || reason == SessionConstants.keyChangedReason,
-               let expected = currentExpectedPeerId {
-                KeychainTrustStore.shared.forget(expected)
+               let stale = currentExpectedPeerId ?? currentSession?.peerDeviceId {
+                KeychainTrustStore.shared.forget(stale)
                 NotificationCenter.default.post(name: .sidewirePairedPeersChanged, object: nil)
             }
             statusText = CloseReasonText.source(reason)

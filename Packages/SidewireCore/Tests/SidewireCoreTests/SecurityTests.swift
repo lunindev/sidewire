@@ -149,6 +149,33 @@ final class SecurityTests: XCTestCase {
         listener.stop()
     }
 
+    /// Asymmetric pin state: the Source forgot the Display but the Display still trusts the
+    /// Source (same keys). The Source must lead with a PIN proof and the paired Display must
+    /// re-run the proof (not deadlock by eagerly sending HELLO) — healing back to a paired state.
+    func testSourceForgotDisplayStillPairedRepairsCleanly() throws {
+        let displayID = try bag.make(), sourceID = try bag.make()
+        let displayTrust = InMemoryTrustStore(), sourceTrust = InMemoryTrustStore()
+        displayTrust.pin(pin(for: sourceID, name: "S")) // Display remembers; Source's store is empty.
+
+        let displayReady = expectation(description: "display ready")
+        let (listener, port) = startDisplay(identity: displayID, trust: displayTrust, pin: "123456") { s, _ in
+            s.onReady = { _ in displayReady.fulfill() }
+        }
+        // Source forgot ⇒ no expected peer id, so it re-pairs like a first-time connect.
+        let (source, sourceTap) = makeSource(port: port, identity: sourceID, pin: "123456", trust: sourceTrust)
+        let sourceReady = expectation(description: "source ready")
+        source.onReady = { _ in sourceReady.fulfill() }
+        source.start()
+
+        wait(for: [sourceReady, displayReady], timeout: 15)
+        // A fresh proof healed the asymmetry, and both sides are pinned again.
+        XCTAssertGreaterThan(sourceTap.sentCount(of: .pairProof), 0, "the Source must re-prove")
+        XCTAssertNotNil(sourceTrust.pinned(for: displayID.deviceId), "source re-pins the display")
+        XCTAssertNotNil(displayTrust.pinned(for: sourceID.deviceId), "display keeps the source pinned")
+        source.close(reason: "user")
+        listener.stop()
+    }
+
     // MARK: - Key change
 
     func testKeyChangeIsRejected() throws {

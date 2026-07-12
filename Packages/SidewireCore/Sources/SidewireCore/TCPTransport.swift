@@ -126,10 +126,19 @@ public final class TCPTransport: Transport, @unchecked Sendable {
     /// must not proceed to `.ready` in that case. On a non-TLS connection (should not happen for
     /// a real transport) it simply proceeds with no security context.
     private func publishSecurityContext() -> Bool {
-        guard let identity, let peerSPKI = TLS.peerLeafSPKIHash(of: connection) else {
-            // No TLS metadata / identity: nothing to publish. Real connections always have both;
-            // this only guards against an unexpected plaintext path.
-            return true
+        // No local identity ⇒ this is a test/loopback plaintext transport (real app transports
+        // always carry one). Nothing to pin or prove; proceed.
+        guard let identity else { return true }
+        // A real TLS transport reached `.ready` with mutual auth required, so the peer DID present
+        // a leaf certificate. If we can't read its public key (e.g. a non-P256 key we don't
+        // support — or a stripped chain), we must FAIL CLOSED: falling through would skip the PIN
+        // proof AND key pinning entirely, handing an unpaired, unpinned session to whatever
+        // presented that cert. "protocol" is fatal-for-reconnect (incompatible/foreign peer).
+        guard let peerSPKI = TLS.peerLeafSPKIHash(of: connection) else {
+            coreLog.error("transport: peer leaf public key unreadable (unsupported cert?) → failing closed")
+            onState?(.failed("protocol"))
+            connection.cancel()
+            return false
         }
         let peerDeviceId = LocalIdentity.deviceId(fromSPKIHash: peerSPKI)
         if let expected = expectedPeerDeviceId, expected != peerDeviceId {

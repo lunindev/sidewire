@@ -118,6 +118,11 @@ public final class Session: @unchecked Sendable {
     }
 
     public var peerName: String? { peerHello?.deviceName }
+    /// The peer's TLS-derived device id (once TLS is ready), independent of how the link was
+    /// dialed. Lets the Source drop a stale pin on an auth/keyChanged failure even for a
+    /// manual-IP connect (which has no expected-peer id). Same cross-queue read pattern as
+    /// `peerName`; used only for a best-effort trust-store cleanup.
+    public var peerDeviceId: String? { tlsPeerInfo?.peerDeviceId }
 
     public func start() {
         transport.onState = { [weak self] state in
@@ -243,25 +248,30 @@ public final class Session: @unchecked Sendable {
             beginApplicationHandshake()
             return
         }
-        // Already paired with exactly this key? Skip the proof (paired reconnect).
-        if let pinned = pairing.trustStore.pinned(for: tls.peerDeviceId),
-           pinned.spkiHash == tls.peerSPKIHash.hexString {
-            coreLog.info("session[\(self.role.rawValue, privacy: .public)] peer \(tls.peerDeviceId, privacy: .public) already paired → skipping proof")
-            beginApplicationHandshake()
-            return
-        }
-        // Unpaired → derive the pairing key. The Source proves first; the Display waits for the
-        // Source's proof (its own decision to skip is impossible here — it has no pin — so it can
-        // only pair). See handlePairProof.
+        let alreadyPaired = pairing.trustStore.pinned(for: tls.peerDeviceId)?.spkiHash == tls.peerSPKIHash.hexString
+        // Always derive the pairing key — even a paired Display needs it in case the Source lost
+        // its pin and re-initiates a proof (the "Source forgot" heal path). HKDF is cheap.
         pairingKey = PairingProof.deriveKey(pin: pairing.pin, channelBinding: tls.channelBinding)
+
+        // The SOURCE always leads. The Display never sends first — it reacts to whatever the
+        // Source leads with (see the pre-handshake gate in handle()):
+        //   • Source leads with HELLO      → Source considers itself paired → accept iff pinned.
+        //   • Source leads with PAIR_PROOF → Source is (re)pairing         → verify + pin + reply.
+        // Letting the Display lead created a deadlock when pin state was asymmetric (a paired
+        // Display sent HELLO while an unpaired Source waited for the Display's proof → both timed
+        // out → infinite reconnect). Reacting instead heals every combination.
         if role == .source {
-            let proof = PairingProof.proof(key: pairingKey!, label: PairingProof.clientLabel)
-            coreLog.info("session[source] sending PIN proof (pairing \(tls.peerDeviceId, privacy: .public))")
-            awaitingServerProof = true
-            transport.send(type: .pairProof, seq: nextSeq(), payload: proof)
+            if alreadyPaired {
+                coreLog.info("session[source] peer \(tls.peerDeviceId, privacy: .public) already paired → leading with HELLO")
+                beginApplicationHandshake()
+            } else {
+                let proof = PairingProof.proof(key: pairingKey!, label: PairingProof.clientLabel)
+                coreLog.info("session[source] sending PIN proof (pairing \(tls.peerDeviceId, privacy: .public))")
+                awaitingServerProof = true
+                transport.send(type: .pairProof, seq: nextSeq(), payload: proof)
+            }
         } else {
-            // Display waits for the Source's proof; rate-limit checked when it arrives.
-            coreLog.info("session[display] awaiting PIN proof (pairing \(tls.peerDeviceId, privacy: .public))")
+            coreLog.info("session[display] TLS ready, awaiting the Source's lead (paired=\(alreadyPaired))")
         }
     }
 

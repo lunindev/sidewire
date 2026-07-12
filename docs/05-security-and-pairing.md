@@ -9,11 +9,14 @@ This document is **normative for the wire** and precise enough to implement a no
 ## Threat model
 
 In scope (must defend):
-- A rogue device on the same LAN/Wi-Fi connecting to a Source and injecting input.
+- A rogue device on the same LAN/Wi-Fi connecting to a Source and injecting input **without the PIN**.
 - A passive eavesdropper on the LAN reading screen contents (now also forward-secret).
-- An active MITM on the LAN during pairing.
+- A **passive** attacker or an **off-path** attacker during pairing: cannot recover the PIN or impersonate a peer.
 
-Out of scope (v1/v2, acceptable): a compromised endpoint; nation-state traffic analysis; physical access to either Mac.
+Partially defended (known residual risk — see [§ What this is not](#what-this-is-not)):
+- An **active MITM that terminates TLS toward the Source at pairing time** cannot *relay* a proof (the channel binding stops that), but it CAN offline-brute-force the 6-digit PIN from the Source's first proof, because the proof is an HMAC of `HKDF(PIN, channelBinding)` and the MITM knows its own `channelBinding`. A 6-digit PIN has ~20 bits of entropy — crackable in well under a second. **The robust fix is a PAKE (SPAKE2+/CPace); it is deliberately deferred** (docs/09 open question), and this residual risk is acceptable only for a trusted LAN / Thunderbolt link. Do not represent Sidewire as safe against an on-path attacker during pairing until a PAKE lands.
+
+Out of scope (v1/v2, acceptable): a compromised endpoint; nation-state traffic analysis; physical access to either Mac; an active on-path attacker during the pairing handshake (see above).
 
 The direct Thunderbolt path is point-to-point and effectively private, but we do **not** special-case it — the same TLS + pairing applies on every transport so there is one code path and Wi-Fi is never the weak default.
 
@@ -46,7 +49,7 @@ After the handshake, each side reads the peer's **leaf certificate** and compute
 
 ## Pairing — channel-bound PIN proof (before HELLO)
 
-The **Display** shows a 6-digit PIN (rotatable; only affects future pairings). On a **first-time** connection (neither side has the peer pinned), after TLS is ready and **before** HELLO, both sides run a mutual proof that binds the shared PIN to *this specific TLS channel*. An active MITM terminating TLS sees a different pair of leaf certificates than the honest endpoints, so its channel-binding value differs and the proof cannot verify across it.
+The **Display** shows a 6-digit PIN (rotatable; only affects future pairings). On a **first-time** connection (neither side has the peer pinned), after TLS is ready and **before** HELLO, both sides run a mutual proof that binds the shared PIN to *this specific TLS channel*. An active MITM terminating TLS sees a different pair of leaf certificates than the honest endpoints, so its channel-binding value differs and it **cannot relay a captured proof** to the other side. It can, however, offline-guess the low-entropy PIN from a proof captured on its own channel (see the threat model's residual-risk note) — the channel binding defeats relay, not offline guessing of a weak secret. A PAKE would close that gap.
 
 ### Channel binding
 
@@ -58,7 +61,7 @@ channelBinding = SHA-256( clientSPKI[32] ‖ serverSPKI[32] )        // 32 bytes
 
 Order is always client-then-server, independent of who computes it. Both sides know their own role and both SPKIs (own + peer, from the handshake), so both derive the same value.
 
-> **Why cert-hash binding and not TLS exporter keying material (EKM)?** RFC 8446 EKM (`tls-exporter`) was the design target, but Network.framework does not reliably expose the exporter via public API at a point where *both* peers can run the proof: `sec_protocol_metadata_create_secret` inside the verify block (which runs mid-handshake) returns inconsistent/`nil` results, and there is no supported post-handshake metadata accessor on `NWConnection`. Channel binding over both leaf SPKIs is captured reliably and is equally MITM-binding for this threat model. **A Rust client interoperating with the Mac must use this cert-hash binding**, not EKM. (If EKM interop is ever added it will be a protocol-minor bump with a negotiated flag.)
+> **Why cert-hash binding and not TLS exporter keying material (EKM)?** RFC 8446 EKM (`tls-exporter`) was the design target, but Network.framework does not reliably expose the exporter via public API at a point where *both* peers can run the proof: `sec_protocol_metadata_create_secret` inside the verify block (which runs mid-handshake) returns inconsistent/`nil` results, and there is no supported post-handshake metadata accessor on `NWConnection`. Channel binding over both leaf SPKIs is captured reliably and, like EKM, prevents a MITM from *relaying* a proof between channels (it does not, on its own, protect a low-entropy PIN from offline guessing — a PAKE is what would). **A Rust client interoperating with the Mac must use this cert-hash binding**, not EKM. (If EKM interop is ever added it will be a protocol-minor bump with a negotiated flag.)
 
 ### Key + proofs (byte-exact)
 
@@ -93,7 +96,7 @@ Source (client)                         Display (server)
 On mutual success **both sides pin the peer** (`deviceId → {spkiHash, name, pairedAt}`) and then run the normal HELLO handshake ([02](02-protocol.md)). The name is filled in from the peer's HELLO `deviceName` once it arrives (it was unknown at pin time). Any proof failure → **`BYE{reason:"auth"}`** + close (fatal-for-reconnect; the Source UI shows "PIN incorrect"). A BYE is flushed before the socket is torn down so the peer receives the reason rather than a bare reset.
 
 Rules:
-- **The PIN never crosses the wire**, nor anything an attacker could brute-force offline: only HMACs keyed by an HKDF of `(PIN, channelBinding)` travel, and the channel binding is not attacker-controllable without the honest certs.
+- **The PIN never crosses the wire**: only HMACs keyed by `HKDF(PIN, channelBinding)` travel, and the channel binding prevents a MITM from relaying those HMACs between channels. Caveat (do not overclaim): a proof captured on the attacker's *own* channel is offline-guessable against the 6-digit PIN — a passive/off-path attacker never obtains such a capture, but an active on-path attacker at pairing time does (see the threat model). This is the gap a PAKE would close.
 - A PIN is short-lived and rotatable; rotation only changes the code required for **future** pairings.
 
 ## Rate limiting (Display / server side)
@@ -121,4 +124,6 @@ A session only reaches streaming **after** pairing (fresh proof) or a pinned-key
 
 ## What this is not
 
-No accounts, no cloud, no relay server, no telemetry. Everything is local and peer-to-peer. SPAKE2/PAKE remains a possible future upgrade (stronger offline-guess resistance than a cert-hash-bound PIN proof if a maintained Swift + Rust implementation is practical); it is not required for v2.
+No accounts, no cloud, no relay server, no telemetry. Everything is local and peer-to-peer.
+
+**Not (yet) resistant to an active on-path attacker at pairing time.** The channel-bound PIN proof stops proof *relay* but not *offline PIN guessing* by an attacker that terminates TLS toward the Source during pairing (§ Threat model). Closing this needs an augmented **PAKE** (SPAKE2+ or CPace), where each PIN guess costs an online interaction — the same low-entropy PIN then resists offline attack. This is a real crypto undertaking (correct group generators, key confirmation, matching Swift + Rust implementations) and is a **tracked decision for the owner** (docs/09), not a silent TODO. Until it lands, treat first-time pairing as safe on a trusted LAN / Thunderbolt link, not on a hostile network.
