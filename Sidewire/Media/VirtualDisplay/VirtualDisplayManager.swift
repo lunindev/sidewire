@@ -13,6 +13,9 @@ final class VirtualDisplayManager: ObservableObject {
     @Published var virtualDisplayID: CGDirectDisplayID?
     @Published var width: UInt = 2560
     @Published var height: UInt = 1600
+    /// HiDPI (2×) vs standard 1×, as negotiated. Callers compare this to decide whether an
+    /// existing display can be reused or must be rebuilt.
+    @Published var hiDPI: Bool = true
 
     var onActivated: ((CGDirectDisplayID) -> Void)?
 
@@ -34,16 +37,17 @@ final class VirtualDisplayManager: ObservableObject {
 
     private let helperTimeout: TimeInterval = 3.0
 
-    func create() { recreate(width: width, height: height) }
+    func create() { recreate(width: width, height: height, hiDPI: hiDPI) }
 
-    func recreate(width: UInt, height: UInt) {
+    func recreate(width: UInt, height: UInt, hiDPI: Bool) {
         self.width = width
         self.height = height
+        self.hiDPI = hiDPI
         destroy()
         if preferHelper && helperUsable {
-            spawnHelper(width: width, height: height)
+            spawnHelper(width: width, height: height, hiDPI: hiDPI)
         } else {
-            fallbackInProcess(width: width, height: height)
+            fallbackInProcess(width: width, height: height, hiDPI: hiDPI)
         }
     }
 
@@ -70,13 +74,14 @@ final class VirtualDisplayManager: ObservableObject {
 
     // MARK: - Helper path
 
-    private func spawnHelper(width: UInt, height: UInt) {
+    private func spawnHelper(width: UInt, height: UInt, hiDPI: Bool) {
         guard let exe = Bundle.main.executableURL else {
-            fallbackInProcess(width: width, height: height); return
+            fallbackInProcess(width: width, height: height, hiDPI: hiDPI); return
         }
         let p = Process()
         p.executableURL = exe
-        p.arguments = ["--vd-helper", "--width", "\(width)", "--height", "\(height)"]
+        p.arguments = ["--vd-helper", "--width", "\(width)", "--height", "\(height)",
+                       "--hidpi", hiDPI ? "1" : "0"]
         let out = Pipe(), inp = Pipe()
         p.standardOutput = out
         p.standardInput = inp
@@ -107,7 +112,7 @@ final class VirtualDisplayManager: ObservableObject {
             }
         } catch {
             Log.media.error("failed to spawn vd helper: \(error.localizedDescription, privacy: .public) — in-process fallback")
-            fallbackInProcess(width: width, height: height)
+            fallbackInProcess(width: width, height: height, hiDPI: hiDPI)
         }
     }
 
@@ -127,12 +132,12 @@ final class VirtualDisplayManager: ObservableObject {
         guard !activated else { return }
         Log.media.notice("vd helper didn't activate in \(Int(self.helperTimeout))s → in-process fallback (helper disabled this session)")
         helperUsable = false
-        let (w, h) = (width, height)
+        let (w, h, dpi) = (width, height, hiDPI)
         teardownHelperIO()
         stdinHandle?.closeFile(); stdinHandle = nil
         process?.terminationHandler = nil
         process?.terminate(); process = nil
-        fallbackInProcess(width: w, height: h)
+        fallbackInProcess(width: w, height: h, hiDPI: dpi)
     }
 
     private func helperExited() {
@@ -146,21 +151,22 @@ final class VirtualDisplayManager: ObservableObject {
             activated = false
             isActive = false
             virtualDisplayID = nil
-            fallbackInProcess(width: width, height: height)
+            fallbackInProcess(width: width, height: height, hiDPI: hiDPI)
         } else {
             helperUsable = false
-            fallbackInProcess(width: width, height: height)
+            fallbackInProcess(width: width, height: height, hiDPI: hiDPI)
         }
     }
 
     // MARK: - In-process fallback
 
-    private func fallbackInProcess(width: UInt, height: UInt) {
+    private func fallbackInProcess(width: UInt, height: UInt, hiDPI: Bool) {
         guard inProcess == nil else { return }
         activationTimer?.invalidate(); activationTimer = nil
         let vd = VirtualDisplayController()
         vd.width = width
         vd.height = height
+        vd.hiDPI = hiDPI
         vd.onActivated = { [weak self, weak vd] id in
             Task { @MainActor in
                 guard let self, self.inProcess === vd else { return } // ignore after destroy/replace

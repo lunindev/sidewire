@@ -16,6 +16,8 @@ final class VirtualDisplayController: ObservableObject {
     @Published var virtualDisplayID: CGDirectDisplayID?
     @Published var width: UInt = 2560
     @Published var height: UInt = 1600
+    /// HiDPI (2×, logical size = pixels/2) vs standard 1× (logical size = pixels). Set before create().
+    var hiDPI: Bool = true
 
     /// Fired on the main queue once the display has a valid ID (ready to capture).
     var onActivated: ((CGDirectDisplayID) -> Void)?
@@ -23,7 +25,7 @@ final class VirtualDisplayController: ObservableObject {
 
     func create() {
         guard display == nil else { return }
-        Log.media.info("creating virtual display \(self.width)x\(self.height)")
+        Log.media.info("creating virtual display \(self.width)x\(self.height) hiDPI=\(self.hiDPI)")
 
         let descriptor = CGVirtualDisplayDescriptor()
         descriptor.setDispatchQueue(DispatchQueue.main)
@@ -46,10 +48,13 @@ final class VirtualDisplayController: ObservableObject {
         let vd = CGVirtualDisplay(descriptor: descriptor)
 
         let settings = CGVirtualDisplaySettings()
-        settings.hiDPI = 1
-        // Minimal mode list, 60 Hz cap — see guardrail note above.
+        settings.hiDPI = hiDPI ? 1 : 0
+        // Minimal mode list, 60 Hz cap — see guardrail note above. HiDPI advertises the mode
+        // at half the pixel size (macOS doubles it back); 1× advertises the native pixel size.
+        let modeW = hiDPI ? width / 2 : width
+        let modeH = hiDPI ? height / 2 : height
         settings.modes = [
-            CGVirtualDisplayMode(width: width / 2, height: height / 2, refreshRate: 60)
+            CGVirtualDisplayMode(width: modeW, height: modeH, refreshRate: 60)
         ]
         vd.apply(settings)
         self.display = vd
@@ -60,7 +65,7 @@ final class VirtualDisplayController: ObservableObject {
                 self.virtualDisplayID = did
                 self.isActive = true
                 self.statusMessage = "Active (ID: \(did))"
-                self.forceHiDPIMode(displayID: did)
+                self.forceScaledMode(displayID: did)
                 self.reportActivation(did)
             }
         } else {
@@ -100,7 +105,7 @@ final class VirtualDisplayController: ObservableObject {
             virtualDisplayID = did
             isActive = true
             statusMessage = "Active (ID: \(did))"
-            forceHiDPIMode(displayID: did)
+            forceScaledMode(displayID: did)
             reportActivation(did)
         } else {
             statusMessage = "Waiting for system recognition..."
@@ -109,16 +114,18 @@ final class VirtualDisplayController: ObservableObject {
         }
     }
 
-    private func forceHiDPIMode(displayID: CGDirectDisplayID) {
-        let targetW = Int(width / 2)
-        let targetH = Int(height / 2)
+    /// Pin the display to the intended mode after activation. HiDPI targets the half-size
+    /// (point) mode whose backing pixels are doubled; 1× targets the native-pixel mode.
+    private func forceScaledMode(displayID: CGDirectDisplayID) {
+        let targetW = hiDPI ? Int(width / 2) : Int(width)
+        let targetH = hiDPI ? Int(height / 2) : Int(height)
         let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue!] as CFDictionary
         guard let modes = CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode] else { return }
-        if let hiDPI = modes.first(where: { $0.width == targetW && $0.height == targetH && $0.pixelWidth > $0.width }) {
-            CGDisplaySetDisplayMode(displayID, hiDPI, nil)
-            return
+        let preferred = modes.first {
+            $0.width == targetW && $0.height == targetH &&
+            (hiDPI ? $0.pixelWidth > $0.width : $0.pixelWidth == $0.width)
         }
-        if let mode = modes.first(where: { $0.width == targetW && $0.height == targetH }) {
+        if let mode = preferred ?? modes.first(where: { $0.width == targetW && $0.height == targetH }) {
             CGDisplaySetDisplayMode(displayID, mode, nil)
         }
     }

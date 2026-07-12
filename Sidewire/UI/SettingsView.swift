@@ -14,6 +14,9 @@ struct SettingsView: View {
                 Picker("Resolution", selection: $settings.resolutionPreset) {
                     ForEach(ResolutionPreset.allCases) { Text($0.label).tag($0) }
                 }
+                Picker("Virtual display scale", selection: $settings.virtualDisplayScale) {
+                    ForEach(AppSettings.VirtualDisplayScale.allCases) { Text($0.label).tag($0) }
+                }
                 Picker("Max frame rate", selection: $settings.maxFps) {
                     ForEach(AppSettings.fpsOptions, id: \.self) { fps in
                         Text(fps == 0 ? "Unlimited" : "\(fps) fps").tag(fps)

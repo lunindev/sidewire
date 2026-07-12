@@ -48,6 +48,28 @@ final class AppSettings: ObservableObject {
         var forced: String? { self == .auto ? nil : rawValue }
     }
 
+    /// Virtual-display scale. Auto follows the Display's negotiated scaleFactor; the others
+    /// force it (e.g. a 1× desktop on a Retina Display, or vice-versa).
+    enum VirtualDisplayScale: String, CaseIterable, Identifiable {
+        case auto, hiDPI, standard
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .auto: return "Auto (match Display)"
+            case .hiDPI: return "HiDPI (2×)"
+            case .standard: return "Standard (1×)"
+            }
+        }
+        /// nil = auto (use the Display's scaleFactor); true/false force HiDPI/standard.
+        var forcedHiDPI: Bool? {
+            switch self {
+            case .auto: return nil
+            case .hiDPI: return true
+            case .standard: return false
+            }
+        }
+    }
+
     /// fps cap. 0 = no cap (use the negotiated maximum).
     static let fpsOptions = [0, 30, 60, 120]
     /// Bitrate ceiling options (Mbps).
@@ -57,6 +79,7 @@ final class AppSettings: ObservableObject {
     @Published var maxFps: Int { didSet { d.set(maxFps, forKey: Keys.maxFps) } }
     @Published var maxBitrateMbps: Int { didSet { d.set(maxBitrateMbps, forKey: Keys.maxBitrate) } }
     @Published var resolutionPreset: ResolutionPreset { didSet { d.set(resolutionPreset.rawValue, forKey: Keys.resolution) } }
+    @Published var virtualDisplayScale: VirtualDisplayScale { didSet { d.set(virtualDisplayScale.rawValue, forKey: Keys.virtualDisplayScale) } }
     @Published var autoConnectLastPeer: Bool { didSet { d.set(autoConnectLastPeer, forKey: Keys.autoConnect) } }
     /// Run without a Dock icon, living in the menu bar. Applied live via the activation policy.
     @Published var menuBarOnly: Bool {
@@ -71,6 +94,7 @@ final class AppSettings: ObservableObject {
         static let maxFps = "sidewire.maxFps"
         static let maxBitrate = "sidewire.maxBitrateMbps"
         static let resolution = "sidewire.resolution"
+        static let virtualDisplayScale = "sidewire.virtualDisplayScale"
         static let autoConnect = "sidewire.autoConnect"
         static let menuBarOnly = "sidewire.menuBarOnly"
         static let hasSeenWelcome = "sidewire.hasSeenWelcome"
@@ -81,6 +105,7 @@ final class AppSettings: ObservableObject {
         maxFps = (d.object(forKey: Keys.maxFps) as? Int) ?? 0
         maxBitrateMbps = (d.object(forKey: Keys.maxBitrate) as? Int) ?? 50
         resolutionPreset = ResolutionPreset(rawValue: d.string(forKey: Keys.resolution) ?? "") ?? .matchDisplay
+        virtualDisplayScale = VirtualDisplayScale(rawValue: d.string(forKey: Keys.virtualDisplayScale) ?? "") ?? .auto
         autoConnectLastPeer = d.bool(forKey: Keys.autoConnect)
         menuBarOnly = d.bool(forKey: Keys.menuBarOnly)
         hasSeenWelcome = d.bool(forKey: Keys.hasSeenWelcome)

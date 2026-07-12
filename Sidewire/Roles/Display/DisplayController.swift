@@ -51,6 +51,8 @@ final class DisplayController: ObservableObject {
         inputCapture.onInputEvent = { [weak self] rec in
             MainActor.assumeIsolated { self?.session?.sendInput(rec) }
         }
+        // So captured coordinates map into the aspect-fit video rect, not the whole view.
+        inputCapture.presenter = presenter
     }
 
     func start() {
@@ -114,7 +116,7 @@ final class DisplayController: ObservableObject {
         // Newest connection wins (Phase 0). Phase 1 adds proper multi-peer/reconnect logic.
         session?.close(reason: "superseded")
 
-        let snapshot = Self.currentDisplayInfo()
+        let snapshot = currentDisplayInfo()
         let hello = DeviceIdentity.makeHello(role: .display, sessionId: UUID().uuidString)
         let session = Session(transport: transport, role: .display, localHello: hello)
         self.session = session
@@ -184,6 +186,7 @@ final class DisplayController: ObservableObject {
         sourceName = session?.peerName
         statusText = "Connected"
         streamResolution = "\(config.width)×\(config.height) @\(config.fps) · \(config.codec.uppercased())"
+        presenter.videoSize = CGSize(width: config.width, height: config.height)
         inputCapture.isEnabled = true
         enterImmersive()
         startFpsCounter()
@@ -327,6 +330,7 @@ final class DisplayController: ObservableObject {
         decoder?.invalidate()
         decoder = nil
         presenter.flush()
+        presenter.videoSize = .zero
         exitImmersive()
         statusText = reason.map { "Closed: \($0)" } ?? "Waiting for a Source…"
         session = nil
@@ -354,14 +358,20 @@ final class DisplayController: ObservableObject {
         window.toggleFullScreen(nil)
     }
 
-    private static func currentDisplayInfo() -> DisplayInfo {
-        guard let screen = NSScreen.main else {
+    /// Snapshot the real panel hosting the video window (falling back to the main screen if
+    /// there's no window yet, e.g. menu-bar-only). Uses the actual refresh rate and backing
+    /// scale so the Source sizes and paces the stream correctly. This is a one-time snapshot at
+    /// accept time; mid-session monitor changes (DISPLAY_INFO resend) are Phase 7 work.
+    private func currentDisplayInfo() -> DisplayInfo {
+        guard let screen = presenter.window?.screen ?? NSScreen.main else {
             return DisplayInfo(width: 2560, height: 1600, scaleFactor: 2.0, refreshRate: 60, name: "Display")
         }
         let scale = screen.backingScaleFactor
+        let refresh = screen.maximumFramesPerSecond
         return DisplayInfo(width: Int(screen.frame.width * scale),
                            height: Int(screen.frame.height * scale),
-                           scaleFactor: Double(scale), refreshRate: 60,
+                           scaleFactor: Double(scale),
+                           refreshRate: refresh > 0 ? Double(refresh) : 60,
                            name: screen.localizedName)
     }
 }

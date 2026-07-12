@@ -17,10 +17,12 @@ enum VirtualDisplayHelper {
         }
         let width = UInt(value("--width") ?? "") ?? 2560
         let height = UInt(value("--height") ?? "") ?? 1600
+        let hiDPI = (value("--hidpi") ?? "1") != "0"
 
         let vd = VirtualDisplayController()
         vd.width = width
         vd.height = height
+        vd.hiDPI = hiDPI
         vd.onActivated = { did in
             // The ONLY thing written to stdout — the parent parses "ACTIVATED <id>".
             FileHandle.standardOutput.write(Data("ACTIVATED \(did)\n".utf8))

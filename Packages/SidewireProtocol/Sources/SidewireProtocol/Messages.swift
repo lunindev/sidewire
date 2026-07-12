@@ -79,9 +79,15 @@ public struct Config: Codable, Sendable, Equatable {
     public var bitrateStartBps: Int
     public var bitrateMinBps: Int
     public var bitrateMaxBps: Int
+    /// Whether the source should create the virtual display HiDPI (2×, logical size = pixels/2)
+    /// vs standard 1× (logical size = pixels). Derived from the Display's `scaleFactor`.
+    /// Optional-with-default per the protocol evolution policy: absent in old JSON ⇒ HiDPI
+    /// (the pre-6.2 always-HiDPI behavior). Read it as `config.hiDPI ?? true`.
+    public var hiDPI: Bool?
 
     public init(codec: String, width: Int, height: Int, fps: Int, ltr: Bool,
-                bitrateStartBps: Int, bitrateMinBps: Int, bitrateMaxBps: Int) {
+                bitrateStartBps: Int, bitrateMinBps: Int, bitrateMaxBps: Int,
+                hiDPI: Bool? = true) {
         self.codec = codec
         self.width = width
         self.height = height
@@ -90,6 +96,7 @@ public struct Config: Codable, Sendable, Equatable {
         self.bitrateStartBps = bitrateStartBps
         self.bitrateMinBps = bitrateMinBps
         self.bitrateMaxBps = bitrateMaxBps
+        self.hiDPI = hiDPI
     }
 }
 

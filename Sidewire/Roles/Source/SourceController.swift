@@ -180,6 +180,7 @@ final class SourceController: ObservableObject {
         let codecPref = settings.codec.forced
         let fpsCap = settings.maxFps
         let maxBps = settings.maxBitrateBps
+        let hiDPIPref = settings.virtualDisplayScale.forcedHiDPI
         maxBitrate = maxBps // ceiling for RTT-driven adaptation
 
         let reconnector = Reconnector(makeSession: {
@@ -188,6 +189,7 @@ final class SourceController: ObservableObject {
             s.preferredCodec = codecPref
             s.preferredMaxFps = fpsCap
             s.preferredMaxBitrateBps = maxBps
+            s.preferredHiDPI = hiDPIPref
             return s
         })
         self.reconnector = reconnector
@@ -267,15 +269,17 @@ final class SourceController: ObservableObject {
     }
 
     private func prepareStreaming(config: Config) {
-        // Keep the virtual display alive if it already matches the negotiated size.
+        let hiDPI = config.hiDPI ?? true
+        // Keep the virtual display alive if it already matches the negotiated size AND scale.
         if virtualDisplay.isActive,
            virtualDisplay.width == UInt(config.width),
            virtualDisplay.height == UInt(config.height),
+           virtualDisplay.hiDPI == hiDPI,
            let did = virtualDisplay.virtualDisplayID {
             beginStreaming(displayID: did)
         } else {
             statusText = "Creating display…"
-            virtualDisplay.recreate(width: UInt(config.width), height: UInt(config.height))
+            virtualDisplay.recreate(width: UInt(config.width), height: UInt(config.height), hiDPI: hiDPI)
         }
     }
 

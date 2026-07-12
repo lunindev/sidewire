@@ -84,6 +84,44 @@ final class SessionHandshakeTests: XCTestCase {
         wait(for: [gotVideo, gotInput], timeout: 2.0)
     }
 
+    func testNoCommonCodecClosesProtocol() {
+        let sourceT = FakeTransport(), displayT = FakeTransport()
+        sourceT.peer = displayT
+        displayT.peer = sourceT
+
+        // Disjoint codec sets: source speaks only HEVC, display only H.264.
+        let sourceHello = Hello(role: .source, deviceId: "src", deviceName: "M4 Max",
+                                sessionId: "s1", capabilities: caps(["hevc"]))
+        let displayHello = Hello(role: .display, deviceId: "dsp", deviceName: "i9",
+                                 sessionId: "s1", capabilities: caps(["h264"]))
+
+        let source = Session(transport: sourceT, role: .source, localHello: sourceHello)
+        let display = Session(transport: displayT, role: .display, localHello: displayHello)
+        display.provideDisplayInfo = {
+            DisplayInfo(width: 1920, height: 1200, scaleFactor: 2.0, refreshRate: 60, name: "i9 Panel")
+        }
+
+        source.onReady = { _ in XCTFail("must not reach ready with no common codec") }
+        display.onReady = { _ in XCTFail("must not reach ready with no common codec") }
+
+        let sourceClosed = expectation(description: "source closed protocol")
+        let displayClosed = expectation(description: "display closed protocol")
+        sourceClosed.assertForOverFulfill = false
+        displayClosed.assertForOverFulfill = false
+        source.onClosed = { reason in
+            XCTAssertEqual(reason, HelloRejection.protocolMismatch.rawValue)
+            sourceClosed.fulfill()
+        }
+        display.onClosed = { reason in
+            XCTAssertEqual(reason, HelloRejection.protocolMismatch.rawValue)
+            displayClosed.fulfill()
+        }
+
+        display.start()
+        source.start()
+        wait(for: [sourceClosed, displayClosed], timeout: 2.0)
+    }
+
     func testRoleConflictIsRejected() {
         let aT = FakeTransport(), bT = FakeTransport()
         aT.peer = bT; bT.peer = aT

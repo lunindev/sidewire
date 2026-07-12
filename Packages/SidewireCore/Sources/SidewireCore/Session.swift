@@ -51,6 +51,9 @@ public final class Session: @unchecked Sendable {
     public var preferredCodec: String?
     public var preferredMaxFps: Int?
     public var preferredMaxBitrateBps: Int?
+    /// Source override for virtual-display scale: nil = auto (derive from the Display's
+    /// scaleFactor), true = force HiDPI (2×), false = force standard (1×). Set before start().
+    public var preferredHiDPI: Bool?
 
     private var seq: UInt32 = 0
     private var peerHello: Hello?
@@ -260,9 +263,19 @@ public final class Session: @unchecked Sendable {
         guard role == .source, !configSent, let peer = peerHello else { return }
         // We need the display info to size the virtual display exactly.
         guard let info = peerDisplayInfo else { return }
-        let cfg = Self.negotiate(local: localHello, peer: peer, displayInfo: info,
-                                 override: preferredDimensions, codecOverride: preferredCodec,
-                                 fpsCap: preferredMaxFps, maxBitrateBps: preferredMaxBitrateBps)
+        // No shared video codec ⇒ fail the handshake loudly (BYE "protocol") rather than
+        // silently streaming a codec the peer can't decode. Mirrors Hello.validate rejections.
+        guard let cfg = Self.negotiate(local: localHello, peer: peer, displayInfo: info,
+                                       override: preferredDimensions, codecOverride: preferredCodec,
+                                       fpsCap: preferredMaxFps, maxBitrateBps: preferredMaxBitrateBps,
+                                       hiDPIOverride: preferredHiDPI) else {
+            let reason = HelloRejection.protocolMismatch.rawValue
+            coreLog.error("session[source] no common video codec with peer → BYE(\(reason, privacy: .public))")
+            transport.send(type: .bye, seq: nextSeq(),
+                           payload: JSONWire.encode(ReasonMessage(reason: reason)))
+            finishClose(reason)
+            return
+        }
         configSent = true
         coreLog.info("session[source] sending CONFIG codec=\(cfg.codec, privacy: .public) \(cfg.width)x\(cfg.height)@\(cfg.fps)")
         transport.send(type: .config, seq: nextSeq(), payload: JSONWire.encode(cfg))
@@ -280,12 +293,17 @@ public final class Session: @unchecked Sendable {
 
     // MARK: - Helpers
 
+    /// Returns nil when the peers share no video codec, so the caller fails the handshake
+    /// (BYE "protocol") instead of streaming an undecodable codec.
     static func negotiate(local: Hello, peer: Hello, displayInfo: DisplayInfo?,
                           override: (width: Int, height: Int)? = nil,
                           codecOverride: String? = nil,
                           fpsCap: Int? = nil,
-                          maxBitrateBps: Int? = nil) -> Config {
-        let common = local.capabilities.videoCodecs.first { peer.capabilities.videoCodecs.contains($0) } ?? "h264"
+                          maxBitrateBps: Int? = nil,
+                          hiDPIOverride: Bool? = nil) -> Config? {
+        guard let common = local.capabilities.videoCodecs.first(where: {
+            peer.capabilities.videoCodecs.contains($0)
+        }) else { return nil }
         // Honor a codec override only if BOTH peers actually support it.
         let codec: String
         if let c = codecOverride,
@@ -299,11 +317,14 @@ public final class Session: @unchecked Sendable {
         var fps = min(local.capabilities.maxFps, peer.capabilities.maxFps)
         if let cap = fpsCap, cap > 0 { fps = min(fps, cap) }
         let ltr = local.capabilities.ltr && peer.capabilities.ltr
+        // Match the Display's scale unless overridden: scaleFactor >= 2 ⇒ HiDPI, == 1 ⇒ 1×.
+        let hiDPI = hiDPIOverride ?? ((displayInfo?.scaleFactor ?? 2.0) >= 2.0)
         let maxBps = maxBitrateBps ?? 50_000_000
         let startBps = min(30_000_000, maxBps)
         let minBps = min(5_000_000, maxBps)
         return Config(codec: codec, width: width, height: height, fps: fps, ltr: ltr,
-                      bitrateStartBps: startBps, bitrateMinBps: minBps, bitrateMaxBps: maxBps)
+                      bitrateStartBps: startBps, bitrateMinBps: minBps, bitrateMaxBps: maxBps,
+                      hiDPI: hiDPI)
     }
 
     private func sendHello() {

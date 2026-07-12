@@ -2,12 +2,15 @@ import AppKit
 import SidewireProtocol
 
 /// Captures keyboard/mouse on the Display and emits binary `InputEventRecord`s.
-/// Ported from the previous app; coordinates are normalized 0..1 within the content
-/// view. Cmd-combos and Esc are intentionally NOT forwarded so the user always keeps
-/// control of the Display Mac and can exit immersive mode.
+/// Pointer coordinates are normalized 0..1 within the *rendered video rect* (the aspect-fit
+/// letterbox of the presenter), so clicks land on-target even when the stream's aspect ratio
+/// differs from the panel. Cmd-combos and Esc are intentionally NOT forwarded so the user
+/// always keeps control of the Display Mac and can exit immersive mode.
 final class InputCapture {
     var onInputEvent: ((InputEventRecord) -> Void)?
     var isEnabled = false
+    /// The view whose aspect-fit video rect input maps into. Weak — owned by DisplayController.
+    weak var presenter: VideoPresenterView?
 
     private var localMonitor: Any?
 
@@ -59,22 +62,34 @@ final class InputCapture {
         default: return
         }
 
-        var nx: Float = 0
-        var ny: Float = 0
-        if let window = event.window {
-            let contentSize = window.contentView?.bounds.size ?? window.frame.size
-            let loc = event.locationInWindow
-            if contentSize.width > 0, contentSize.height > 0 {
-                nx = Float((loc.x / contentSize.width).clamped(0, 1))
-                ny = Float((1.0 - loc.y / contentSize.height).clamped(0, 1))
-            }
-        }
+        let (nx, ny) = normalizedLocation(for: event)
 
         let record = InputEventRecord(
             type: type, buttonNumber: bn, clickCount: cc,
             modifierFlags: UInt64(event.modifierFlags.rawValue),
             x: nx, y: ny, deltaX: dx, deltaY: dy, keyCode: kc)
         onInputEvent?(record)
+    }
+
+    /// Normalize the pointer into the rendered video rect (0..1). A point inside the view but
+    /// outside the letterboxed video clamps to the nearest edge. Falls back to the full content
+    /// view before the video size is known (or if the presenter is detached).
+    private func normalizedLocation(for event: NSEvent) -> (Float, Float) {
+        guard let window = event.window else { return (0, 0) }
+        if let presenter, presenter.window === window, presenter.bounds.width > 0 {
+            let rect = presenter.videoRect
+            if rect.width > 0, rect.height > 0 {
+                let loc = presenter.convert(event.locationInWindow, from: nil)
+                let nx = ((loc.x - rect.minX) / rect.width).clamped(0, 1)
+                let ny = (1.0 - (loc.y - rect.minY) / rect.height).clamped(0, 1)
+                return (Float(nx), Float(ny))
+            }
+        }
+        let contentSize = window.contentView?.bounds.size ?? window.frame.size
+        guard contentSize.width > 0, contentSize.height > 0 else { return (0, 0) }
+        let loc = event.locationInWindow
+        return (Float((loc.x / contentSize.width).clamped(0, 1)),
+                Float((1.0 - loc.y / contentSize.height).clamped(0, 1)))
     }
 
     deinit { stop() }
