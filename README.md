@@ -21,7 +21,7 @@ Additional polish landed on top: **instant local cursor** (the pointer no longer
 
 The distribution build is signed + hardened but **not yet notarized** — notarization is a one-time credential step you run yourself (below).
 
-**Next stage** (decided 2026-07-12): fix backlog → protocol v2 + TLS 1.3 → a native **Rust** Windows/Linux Display client → distribution hardening. See [docs/09-next-stage.md](docs/09-next-stage.md) (decisions + roadmap) and [docs/10-fix-backlog.md](docs/10-fix-backlog.md) (verified bug/UX work list).
+**Next stage** (decided 2026-07-12): fix backlog → protocol v2 + TLS 1.3 → a native **Rust** Windows/Linux Display client → distribution hardening. Phases 6 and 7 (incl. the **CPace** pairing PAKE) are done; the Rust client (Phase 8) is next and not yet started. **Current state is tracked in [docs/11-status-and-gaps.md](docs/11-status-and-gaps.md).** See also [docs/09-next-stage.md](docs/09-next-stage.md) (decisions + roadmap) and [docs/10-fix-backlog.md](docs/10-fix-backlog.md).
 
 ## Project layout
 

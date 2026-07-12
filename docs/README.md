@@ -25,6 +25,7 @@ Read in order. Each document assumes you've read the ones before it.
 | 08 | [Build & Distribution](08-build-and-distribution.md) | Universal 2 build, Developer ID signing, notarization, stapling, Sparkle auto-update, CI. |
 | 09 | [Next Stage: Decisions & Roadmap v2](09-next-stage.md) | Post-implementation decisions D9–D14 (distribution channel, Rust Windows/Linux client, TLS 1.3, no direct Wi-Fi, localization) + Phases 6–9. |
 | 10 | [Fix Backlog](10-fix-backlog.md) | Verified, file-referenced backlog: correctness bugs, resilience gaps, onboarding/help, missing settings, protocol debt. Phase 6 work list. |
+| 11 | [Status & known gaps](11-status-and-gaps.md) | **Start here for current state.** What is implemented, what is verified, commit history, build/test commands, the Rust-client plan, and the remaining gaps. |
 
 ## The one-paragraph summary
 
