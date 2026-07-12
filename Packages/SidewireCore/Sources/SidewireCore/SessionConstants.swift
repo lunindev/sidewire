@@ -17,6 +17,11 @@ public enum SessionConstants {
     // reconnect loop. Distinct from a plain network refusal ("timeout"/"error").
     public static let authFailureReason = "auth"
 
+    // Close reason the Display emits when a newer Source connects and displaces the current
+    // one ("newest wins"). Fatal-for-reconnect: the ousted Source must NOT auto-redial, or
+    // two Sources would steal the Display from each other forever.
+    public static let supersededReason = "superseded"
+
     // TCP options
     public static let tcpKeepaliveIdle = 2       // seconds
     public static let tcpKeepaliveInterval = 1   // seconds

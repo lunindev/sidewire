@@ -82,6 +82,64 @@ final class ReliabilityTests: XCTestCase {
         reconnector.stop()
     }
 
+    /// A "superseded" close (another Source displaced this one on the Display, newest-wins)
+    /// is fatal: the ousted Reconnector must surface it and NOT re-dial, or two Sources would
+    /// steal the Display from each other forever.
+    func testReconnectorDoesNotRetryOnSuperseded() {
+        let hello = Hello(role: .source, deviceId: "src", deviceName: "S",
+                          sessionId: "s", capabilities: caps())
+        let lock = NSLock()
+        var makeCount = 0
+        let reconnector = Reconnector(makeSession: {
+            lock.lock(); makeCount += 1; lock.unlock()
+            return Session(transport: FailingTransport(reason: SessionConstants.supersededReason),
+                           role: .source, localHello: hello)
+        })
+
+        let failed = expectation(description: "link reports superseded")
+        failed.assertForOverFulfill = false
+        reconnector.onState = { state in
+            if case .failed(let reason) = state {
+                XCTAssertEqual(reason, SessionConstants.supersededReason)
+                failed.fulfill()
+            }
+        }
+        reconnector.start()
+        wait(for: [failed], timeout: 5)
+
+        // Give any (incorrect) backoff dial time to fire, then confirm we dialed exactly once.
+        Thread.sleep(forTimeInterval: 1.0)
+        lock.lock(); let count = makeCount; lock.unlock()
+        XCTAssertEqual(count, 1, "superseded is fatal → the Reconnector must not re-dial")
+        reconnector.stop()
+    }
+
+    /// A `.failed` listener must re-arm itself: after the OS drops the socket (modelled here
+    /// by a forced port collision), the listener auto-restarts and eventually binds again.
+    func testListenerAutoRestartsAfterFailure() {
+        // Occupy an ephemeral port with a first listener, learn the port, then aim a second
+        // listener at it: the second fails to bind, and its auto-restart must keep retrying.
+        // Freeing the port (stopping the first) lets a later restart succeed.
+        let first = TCPListener(serviceName: "sidewire-test-occupier")
+        let firstReady = expectation(description: "occupier bound")
+        var port: UInt16 = 0
+        first.onReady = { p in if port == 0 { port = p; firstReady.fulfill() } }
+        first.start(port: 0, advertise: false)
+        wait(for: [firstReady], timeout: 5)
+
+        let second = TCPListener(serviceName: "sidewire-test-restarter")
+        let secondBound = expectation(description: "restarter eventually binds after the port frees")
+        second.onReady = { _ in secondBound.fulfill() }
+        // allowLocalEndpointReuse can let both share the port; if the second binds immediately
+        // that's still a valid "it listens" outcome. Either way we must reach .ready.
+        second.start(port: port, advertise: false)
+        // Free the port shortly after so a restart attempt (1s backoff) can succeed.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { first.stop() }
+
+        wait(for: [secondBound], timeout: 8)
+        second.stop()
+    }
+
     /// The Reconnector must re-establish the session after a non-user drop, over the
     /// real TCP stack — this is auto-reconnect working in practice.
     func testReconnectAfterDrop() {

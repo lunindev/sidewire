@@ -9,8 +9,14 @@ import SidewireProtocol
 /// injects whatever the connected Display sends.
 final class InputInjector {
     var virtualDisplayID: CGDirectDisplayID?
+    /// When false, incoming input is dropped instead of injected (e.g. Accessibility was
+    /// revoked mid-session, so CGEvent posts would silently no-op). Toggled from the main
+    /// actor; the benign read/write race on a Bool matches the existing `virtualDisplayID`
+    /// pattern and is acceptable for a best-effort gate.
+    var injectionEnabled = true
 
     func inject(event: InputEventRecord) {
+        guard injectionEnabled else { return }
         let point = mapToDisplay(x: Double(event.x), y: Double(event.y))
 
         switch event.type {

@@ -15,6 +15,10 @@ struct SourceView: View {
 
             PermissionsView(model: permissions)
 
+            if controller.accessibilityRevoked {
+                accessibilityBanner
+            }
+
             GroupBox("Pairing PIN (shown on the Display)") {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -167,8 +171,25 @@ struct SourceView: View {
                 }
             }
             Spacer()
+            if controller.isConnecting {
+                Button("Cancel") { controller.disconnect() }
+            }
             Button("Switch role") { model.switchRole() }
         }
+    }
+
+    private var accessibilityBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Text("Accessibility permission revoked — remote input disabled. Re-grant in System Settings › Privacy & Security.")
+                .font(.caption)
+            Spacer()
+            Button("Open Settings") { Permissions.openAccessibilitySettings() }
+                .font(.caption)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

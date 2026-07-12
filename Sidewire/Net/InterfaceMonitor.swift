@@ -28,6 +28,14 @@ struct AvailableInterface: Identifiable, Hashable {
 final class InterfaceMonitor: ObservableObject {
     @Published var interfaces: [AvailableInterface] = []
 
+    /// Fired on the main actor whenever the interface list changes — the Source uses it to
+    /// validate a persisted interface selection that may have gone away.
+    var onInterfacesChanged: (() -> Void)?
+    /// Fired on the main actor when this Mac's Thunderbolt-bridge IP appears, disappears, or
+    /// changes — the Source refreshes its cable hint and the Display re-advertises its TXT.
+    var onThunderboltIPChanged: ((String?) -> Void)?
+    private var lastThunderboltIP: String?
+
     private var monitor: NWPathMonitor?
     private let queue = DispatchQueue(label: "com.kinocoder.sidewire.ifmonitor")
 
@@ -43,7 +51,18 @@ final class InterfaceMonitor: ObservableObject {
                     return nil
                 }
             }
-            Task { @MainActor in self?.interfaces = ifaces }
+            // The Thunderbolt bridge is link-local-only and read directly from the BSD list;
+            // a path change is our best signal that a cable was plugged/unplugged.
+            let tb = InterfaceMonitor.localThunderboltIP()
+            Task { @MainActor in
+                guard let self else { return }
+                self.interfaces = ifaces
+                self.onInterfacesChanged?()
+                if tb != self.lastThunderboltIP {
+                    self.lastThunderboltIP = tb
+                    self.onThunderboltIPChanged?(tb)
+                }
+            }
         }
         m.start(queue: queue)
         monitor = m
@@ -57,7 +76,9 @@ final class InterfaceMonitor: ObservableObject {
     /// This Mac's own Thunderbolt Bridge IPv4 address (e.g. "169.254.36.98"), if the
     /// cable is connected. NWPathMonitor omits this link-local-only interface, so we read
     /// it directly from the BSD interface list. Used to hint the Connect-by-IP flow.
-    static func localThunderboltIP() -> String? {
+    /// `nonisolated`: a pure BSD read touching no actor state, so the path-update handler can
+    /// call it off the main actor.
+    nonisolated static func localThunderboltIP() -> String? {
         var head: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&head) == 0, let first = head else { return nil }
         defer { freeifaddrs(head) }

@@ -36,6 +36,9 @@ struct MenuBarView: View {
         }
         .padding(14)
         .frame(width: 300)
+        // Fallback capture of the window opener (RootView captures it too) so a menu-bar-only
+        // Display can resurface the main window when a Source connects.
+        .onAppear { MainWindowOpener.open = { openWindow(id: "main") } }
     }
 }
 
@@ -46,6 +49,11 @@ private struct SourceMenu: View {
         VStack(alignment: .leading, spacing: 8) {
             Label(controller.statusText, systemImage: "dot.radiowaves.left.and.right")
                 .font(.callout)
+            if controller.accessibilityRevoked {
+                Label("Accessibility revoked — remote input disabled.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
             // Match the main window: connecting requires the full 6-digit PIN (an empty PIN
             // derives an empty PSK and silently fails the handshake).
             if !controller.isConnected && controller.pairingPIN.count != 6 {
@@ -80,6 +88,20 @@ private struct DisplayMenu: View {
                 .font(.callout)
             if let src = controller.sourceName {
                 Text("Connected to \(src)").font(.caption).foregroundStyle(.secondary)
+            } else if controller.isListening {
+                // Pairable: show the PIN here so menu-bar-only users can pair without opening
+                // the main window.
+                HStack(spacing: 6) {
+                    Text("Pairing PIN").font(.caption).foregroundStyle(.secondary)
+                    Text(controller.pairingPIN)
+                        .font(.system(.callout, design: .monospaced)).fontWeight(.semibold)
+                    Spacer()
+                    Button("New PIN") { controller.rotatePIN() }
+                        .font(.caption2)
+                }
+            } else {
+                Text("Not accepting connections — open Sidewire to retry.")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
         }
     }

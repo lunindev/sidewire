@@ -13,8 +13,11 @@ struct SidewireApp: App {
         }
         .defaultSize(width: 760, height: 520)
 
-        MenuBarExtra("Sidewire", systemImage: "rectangle.on.rectangle") {
+        MenuBarExtra {
             MenuBarView()
+                .environmentObject(model)
+        } label: {
+            MenuBarLabel()
                 .environmentObject(model)
         }
         .menuBarExtraStyle(.window)
@@ -22,6 +25,50 @@ struct SidewireApp: App {
         Settings {
             SettingsView()
         }
+    }
+}
+
+/// The menu-bar status icon. Reflects connection state (filled when a stream is live) so
+/// menu-bar-only users can tell at a glance. Kept a plain template SF Symbol — no color —
+/// per menu-bar conventions.
+private struct MenuBarLabel: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        if let source = model.source {
+            SourceStatusIcon(controller: source)
+        } else if let display = model.display {
+            DisplayStatusIcon(controller: display)
+        } else {
+            Image(systemName: "rectangle.on.rectangle")
+        }
+    }
+}
+
+/// Thin observers so the menu-bar icon re-renders when the active role's live @Published
+/// `isConnected` flips. Filled symbol = a stream is up.
+private struct SourceStatusIcon: View {
+    @ObservedObject var controller: SourceController
+    var body: some View {
+        Image(systemName: controller.isConnected ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+    }
+}
+
+private struct DisplayStatusIcon: View {
+    @ObservedObject var controller: DisplayController
+    var body: some View {
+        Image(systemName: controller.isConnected ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+    }
+}
+
+/// Bridges non-View code (the DisplayController) to SwiftUI's window opening, which lives only
+/// in the environment. RootView stashes the action on appear so a menu-bar-only Display can
+/// surface the window when a Source connects into an otherwise windowless app.
+@MainActor
+enum MainWindowOpener {
+    static var open: (() -> Void)?
+    static func show() {
+        NSApp.activate(ignoringOtherApps: true)
+        open?()
     }
 }
 
@@ -35,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct RootView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject private var settings = AppSettings.shared
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Group {
@@ -51,5 +99,8 @@ struct RootView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 460)
+        // Stash the window opener so non-View code (a menu-bar-only DisplayController) can
+        // resurface this window when a Source connects. Captured while the window is alive.
+        .onAppear { MainWindowOpener.open = { openWindow(id: "main") } }
     }
 }

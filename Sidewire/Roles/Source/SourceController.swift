@@ -37,6 +37,18 @@ final class SourceController: ObservableObject {
     private var ticksSinceEncoded = 0
     private var lastKeyframe: Data?
     private var encoderStallStrikes = 0
+    /// Counts monitor ticks so the Accessibility poll runs ~every 5s (10 × keepAliveInterval),
+    /// not on every 0.5s keep-alive tick.
+    private var axCheckTicks = 0
+
+    // Reconnect give-up thresholds. We never truly stop reconnecting (the peer may come back),
+    // but after enough attempts the message becomes a stronger "is it even running?" hint.
+    private let reconnectHintAfter = 10
+    /// A launch-time auto-connect to a stale lastHost must not loop forever; give up after this
+    /// many attempts (the setting itself stays on — a manual connect still works).
+    static let maxAutoConnectAttempts = 3
+    /// True while the current link was started by launch auto-connect (bounded retries).
+    private var autoConnecting = false
 
     // Adaptive bitrate (RTT-driven congestion control).
     private var currentBitrate = 30_000_000
@@ -47,6 +59,9 @@ final class SourceController: ObservableObject {
     @Published var currentBitrateMbps: Double = 0
 
     @Published var needsScreenRecording = false
+    /// Set when Accessibility is revoked mid-session: video keeps streaming but remote input
+    /// is disabled until the grant returns (polled while streaming, recovers automatically).
+    @Published var accessibilityRevoked = false
     @Published var localThunderboltIP: String?
     /// The PIN shown on the Display, entered here to derive the TLS-PSK key. Persisted so
     /// it's entered once.
@@ -103,6 +118,11 @@ final class SourceController: ObservableObject {
     }
 
     func startDiscovery() {
+        // React to interface changes live: drop a persisted selection that has gone away, and
+        // refresh the Thunderbolt hint the instant a cable is plugged/unplugged (previously
+        // only a manual Refresh updated it).
+        interfaceMonitor.onInterfacesChanged = { [weak self] in self?.validateSelectedInterface() }
+        interfaceMonitor.onThunderboltIPChanged = { [weak self] ip in self?.localThunderboltIP = ip }
         interfaceMonitor.start()
         localThunderboltIP = InterfaceMonitor.localThunderboltIP()
         discovery.start()
@@ -117,6 +137,17 @@ final class SourceController: ObservableObject {
         discovery.start()
     }
 
+    /// If the persisted interface selection no longer exists among the current interfaces,
+    /// revert to Auto and persist the clearing so the Picker doesn't show a dangling choice.
+    /// Guarded on a non-empty list so a transient empty update at startup can't wrongly clear.
+    private func validateSelectedInterface() {
+        guard !selectedInterfaceName.isEmpty, !interfaceMonitor.interfaces.isEmpty else { return }
+        if !interfaceMonitor.interfaces.contains(where: { $0.name == selectedInterfaceName }) {
+            Log.source.notice("persisted interface '\(self.selectedInterfaceName, privacy: .public)' no longer present → reverting to Auto")
+            selectedInterfaceName = "" // didSet persists the clearing
+        }
+    }
+
     /// If enabled in Settings, dial the last IP on launch (using the saved PIN). No-op if
     /// disabled, already connecting, missing a PIN, or without a remembered address.
     func maybeAutoConnect() {
@@ -127,15 +158,18 @@ final class SourceController: ObservableObject {
         guard !host.isEmpty else { return }
         Log.source.info("auto-connecting to last peer \(host, privacy: .public)")
         connect(host: host)
+        autoConnecting = true // connect() cleared it; mark this link as the bounded auto-attempt
     }
 
     func connect(to peer: DiscoveredPeer) {
+        autoConnecting = false // an explicit user connect is unbounded
         let iface = selectedInterface
         let psk = Pairing.credential(pin: pairingPIN)
         startLink(peerName: peer.name) { TCPTransport(endpoint: peer.endpoint, interface: iface, psk: psk) }
     }
 
     func connect(host: String, port: UInt16 = ProtocolConstants.fallbackPort) {
+        autoConnecting = false // an explicit user connect is unbounded (maybeAutoConnect re-sets it)
         let iface = selectedInterface
         let psk = Pairing.credential(pin: pairingPIN)
         // Remember the last IP dialed by hand so the field is pre-filled next launch — the
@@ -158,6 +192,9 @@ final class SourceController: ObservableObject {
         isConnecting = false
         isStreaming = false
         pinRejected = false
+        autoConnecting = false
+        accessibilityRevoked = false
+        injector.injectionEnabled = true
         statusText = "Disconnected"
         peerName = nil
         rttMs = 0
@@ -234,19 +271,35 @@ final class SourceController: ObservableObject {
             isConnecting = true; isConnected = false; statusText = "Connecting…"
         case .streaming:
             isConnecting = false; isConnected = true; statusText = "Connected"
+            autoConnecting = false // reached a live stream → the auto-attempt succeeded
         case .reconnecting(let attempt):
+            // A launch auto-connect to a stale lastHost must not loop forever on every launch:
+            // after a few attempts, give up this attempt (the setting stays on for next time).
+            if autoConnecting && attempt >= Self.maxAutoConnectAttempts {
+                Log.source.notice("auto-connect gave up after \(attempt) attempts")
+                let name = peerName ?? "the last Mac"
+                disconnect()
+                statusText = "Couldn't reach \(name). Connect manually."
+                return
+            }
             // The session died; drop the encoder/capture but KEEP the virtual display so
             // window layout survives and reconnection is fast.
             isConnected = false; isConnecting = true; isStreaming = false
-            statusText = "Reconnecting (\(attempt))…"
+            // After many attempts, swap the counter for a "is it even running?" hint (still
+            // retrying); a Cancel affordance in SourceView maps to the disconnect path.
+            statusText = attempt >= reconnectHintAfter
+                ? "Still trying — is Sidewire running on the other Mac?"
+                : "Reconnecting (\(attempt))…"
             tearDownEncoderCapture()
         case .failed(let reason):
-            // Terminal (protocol/role mismatch, or wrong PIN): tear down and release the
-            // reconnector so a fresh connect() can proceed.
+            // Terminal (protocol/role mismatch, wrong PIN, or displaced by another Source):
+            // tear down and release the reconnector so a fresh connect() can proceed.
             isConnecting = false; isConnected = false
             if reason == SessionConstants.authFailureReason {
                 pinRejected = true
                 statusText = "PIN incorrect — check the code shown on the other Mac."
+            } else if reason == SessionConstants.supersededReason {
+                statusText = "Another Mac took over this display."
             } else {
                 statusText = "Failed: \(reason)"
             }
@@ -255,6 +308,7 @@ final class SourceController: ObservableObject {
             activeSession = nil
             pendingConfig = nil
             reconnector = nil
+            autoConnecting = false
         case .stopped:
             isConnecting = false; isConnected = false; statusText = "Disconnected"
         }
@@ -364,6 +418,7 @@ final class SourceController: ObservableObject {
         encodedSinceCheck = 0
         encoderStallStrikes = 0
         ticksSinceEncoded = 0
+        axCheckTicks = 0
         monitorTimer = Timer.scheduledTimer(withTimeInterval: SessionConstants.keepAliveInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.monitorTick() }
         }
@@ -379,6 +434,12 @@ final class SourceController: ObservableObject {
     /// from a wedged encoder (capture is delivering but no output for ~1s → recreate;
     /// escalate to reconnect if it recurs).
     private func monitorTick() {
+        // Poll Accessibility ~every 5s (10 × keepAliveInterval). Revocation silently kills
+        // CGEvent injection, so we detect it and surface it; done before the streaming guard
+        // so it ticks throughout the session.
+        axCheckTicks += 1
+        if axCheckTicks >= 10 { axCheckTicks = 0; checkAccessibilityGrant() }
+
         guard isStreaming, let config = pendingConfig, let session = activeSession else { return }
         adaptBitrate()
         let encoded = encodedSinceCheck
@@ -417,6 +478,22 @@ final class SourceController: ObservableObject {
             }
         } else {
             encoderStallStrikes = 0 // truly static (capture idle) → not a stall
+        }
+    }
+
+    /// Detect Accessibility being revoked (or restored) mid-session. On revocation, disable
+    /// injection — CGEvent posts would silently no-op — and surface a message while video keeps
+    /// streaming; when the grant returns, re-enable automatically.
+    private func checkAccessibilityGrant() {
+        let trusted = Permissions.hasAccessibility
+        if !trusted && !accessibilityRevoked {
+            accessibilityRevoked = true
+            injector.injectionEnabled = false
+            Log.source.error("Accessibility revoked mid-session → remote input disabled (video continues)")
+        } else if trusted && accessibilityRevoked {
+            accessibilityRevoked = false
+            injector.injectionEnabled = true
+            Log.source.notice("Accessibility restored → remote input re-enabled")
         }
     }
 

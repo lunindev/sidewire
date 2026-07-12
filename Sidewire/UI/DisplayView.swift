@@ -76,28 +76,42 @@ struct DisplayView: View {
 
     private var waitingOverlay: some View {
         VStack(spacing: 14) {
-            Image(systemName: "display.trianglebadge.exclamationmark")
+            Image(systemName: controller.isListening ? "display.trianglebadge.exclamationmark" : "exclamationmark.triangle")
                 .font(.system(size: 44)).foregroundStyle(.gray)
-            Text(controller.isListening ? "Waiting for a Source…" : "Not listening")
+            Text(controller.isListening ? "Waiting for a Source…" : "Not accepting connections")
                 .font(.title3).foregroundStyle(.gray)
-            VStack(spacing: 4) {
-                Text("PAIRING PIN").font(.caption).tracking(2).foregroundStyle(.gray)
-                Text(controller.pairingPIN)
-                    .font(.system(size: 44, weight: .semibold, design: .monospaced))
-                    .tracking(6).foregroundStyle(.white)
-                Text("Enter this on the other Mac to connect")
-                    .font(.caption2).foregroundStyle(.gray)
-                Button {
-                    controller.rotatePIN()
-                } label: {
-                    Label("New PIN", systemImage: "arrow.triangle.2.circlepath")
+
+            if controller.isListening {
+                VStack(spacing: 4) {
+                    Text("PAIRING PIN").font(.caption).tracking(2).foregroundStyle(.gray)
+                    Text(controller.pairingPIN)
+                        .font(.system(size: 44, weight: .semibold, design: .monospaced))
+                        .tracking(6).foregroundStyle(.white)
+                    Text("Enter this on the other Mac to connect")
+                        .font(.caption2).foregroundStyle(.gray)
+                    Button {
+                        controller.rotatePIN()
+                    } label: {
+                        Label("New PIN", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .foregroundStyle(.gray)
+                    .padding(.top, 2)
                 }
-                .buttonStyle(.borderless)
-                .font(.caption)
-                .foregroundStyle(.gray)
+                .padding(.top, 4)
+            } else {
+                // The listener is down (e.g. a bind failure, or a stall after sleep). Show the
+                // real state and a manual Retry instead of dangling a PIN as if pairable.
+                Button {
+                    controller.restartListener()
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent)
                 .padding(.top, 2)
             }
-            .padding(.top, 4)
+
             Text(controller.statusText).font(.caption).foregroundStyle(.gray.opacity(0.7))
         }
     }

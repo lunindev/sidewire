@@ -14,9 +14,13 @@ final class DisplayController: ObservableObject {
 
     private let listener = TCPListener(serviceName: DeviceIdentity.deviceName)
     private let inputCapture = InputCapture()
+    private let interfaceMonitor = InterfaceMonitor()
     private var decoder: VideoDecoder?
     private var session: Session?
     private var escMonitor: Any?
+    private var wakeObserver: Any?
+    /// Bounds the enterImmersive retry loop when the window is still opening (menu-bar-only).
+    private var immersiveRetries = 0
 
     private var firstVideoLogged = false
     private var firstDecodedLogged = false
@@ -65,9 +69,30 @@ final class DisplayController: ObservableObject {
         listener.onConnection = { [weak self] transport in
             Task { @MainActor in self?.accept(transport) }
         }
+        // A Thunderbolt cable plugged/unplugged while idle changes the "tb" TXT record we
+        // advertise; re-arm the listener to readvertise. Never churn during an active session
+        // (the accepted connection is unaffected, but the refresh isn't worth the noise).
+        interfaceMonitor.onThunderboltIPChanged = { [weak self] _ in
+            guard let self, self.session == nil else { return }
+            Log.display.info("Thunderbolt interface changed → re-advertising listener TXT")
+            self.restartListener()
+        }
+        interfaceMonitor.start()
+
         inputCapture.start()
         startListener()
         statusText = "Listening…"
+
+        // The listener socket can die silently across sleep with no `.failed` state, so re-arm
+        // on wake (mirrors the Source's wake handling). Harmless to an already-accepted session.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                Log.display.notice("woke from sleep → re-arming listener")
+                self.restartListener()
+            }
+        }
 
         // Esc exits the immersive fullscreen (the InputCapture monitor deliberately
         // does NOT forward Esc to the Source, so this never leaks into the stream).
@@ -77,6 +102,20 @@ final class DisplayController: ObservableObject {
                 return nil
             }
             return event
+        }
+    }
+
+    /// Re-arm the listener with the current PSK + a fresh Thunderbolt TXT record. Used by the
+    /// waiting-overlay Retry, on wake, and on a Thunderbolt interface change. Does not disturb
+    /// an already-accepted session — only the passive accept socket is rebuilt.
+    func restartListener() {
+        listener.stop()
+        startListener()
+    }
+
+    deinit {
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
     }
 
@@ -100,6 +139,11 @@ final class DisplayController: ObservableObject {
         session?.close(reason: "user")
         session = nil
         listener.stop()
+        interfaceMonitor.stop()
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
+        }
         inputCapture.isEnabled = false
         stopVideoWatchdog()
         stopFpsCounter()
@@ -113,8 +157,16 @@ final class DisplayController: ObservableObject {
     // MARK: - Private
 
     private func accept(_ transport: TCPTransport) {
+        // Menu-bar-only: with the main window closed, there's no view to present into, so video
+        // would decode into a void and input capture would arm invisibly. Surface the window
+        // now (enterImmersive retries until it mounts).
+        if presenter.window == nil {
+            Log.display.notice("accepting with no presenter window (menu-bar-only) → opening main window")
+            MainWindowOpener.show()
+        }
+
         // Newest connection wins (Phase 0). Phase 1 adds proper multi-peer/reconnect logic.
-        session?.close(reason: "superseded")
+        session?.close(reason: SessionConstants.supersededReason)
 
         let snapshot = currentDisplayInfo()
         let hello = DeviceIdentity.makeHello(role: .display, sessionId: UUID().uuidString)
@@ -191,6 +243,7 @@ final class DisplayController: ObservableObject {
         enterImmersive()
         startFpsCounter()
         hasFirstFrame = false
+        immersiveRetries = 0
         let now = DispatchTime.now().uptimeNanoseconds
         lastPresentedNanos = now
         streamStartNanos = now
@@ -341,9 +394,23 @@ final class DisplayController: ObservableObject {
     /// remote cursor wouldn't move (the reason mouse control appeared dead).
     private func enterImmersive() {
         guard let window = presenter.window else {
-            Log.media.notice("enterImmersive: presenter has no window yet")
+            // The window may still be opening (menu-bar-only just asked SwiftUI to open it).
+            // Nudge it and retry briefly rather than give up, so the stream isn't invisible.
+            if immersiveRetries < 20 {
+                immersiveRetries += 1
+                MainWindowOpener.show()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    Task { @MainActor in
+                        guard let self, self.isConnected else { return }
+                        self.enterImmersive()
+                    }
+                }
+            } else {
+                Log.media.notice("enterImmersive: no window after retries — video will appear once a window mounts")
+            }
             return
         }
+        immersiveRetries = 0
         NSApp.activate(ignoringOtherApps: true)
         window.acceptsMouseMovedEvents = true
         window.makeKeyAndOrderFront(nil)

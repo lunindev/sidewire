@@ -27,8 +27,13 @@ public final class Reconnector: @unchecked Sendable {
 
     /// Reasons that must NOT trigger auto-reconnect (explicit teardown / fatal handshake).
     /// "auth" = wrong PIN: re-dialing with the same wrong PSK can only fail again, so stop
-    /// and let the UI prompt for the correct PIN.
-    private static let fatalReasons: Set<String> = ["user", "protocol", "role", SessionConstants.authFailureReason]
+    /// and let the UI prompt for the correct PIN. "superseded" = another Source took the
+    /// Display; re-dialing would just fight the taker forever (newest-wins → steal loop).
+    private static let fatalReasons: Set<String> = [
+        "user", "protocol", "role",
+        SessionConstants.authFailureReason,
+        SessionConstants.supersededReason,
+    ]
 
     private let makeSession: () -> Session
     private let queue = DispatchQueue(label: "sidewire.reconnector")
