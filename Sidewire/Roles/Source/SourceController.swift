@@ -408,7 +408,7 @@ final class SourceController: ObservableObject {
             // reason (auth/keyChanged/rateLimited/superseded included) lives once in CloseReasonText.
             if reason == SessionConstants.authFailureReason { pinRejected = true }
             // On a wrong PIN or a changed key, drop any stale pin so the next connect runs a fresh
-            // PIN proof instead of skipping it and being refused again. Prefer the expected-peer id
+            // CPace pairing instead of skipping it and being refused again. Prefer the expected-peer id
             // (discovery path); fall back to the peer's TLS-observed id so a manual-IP connect
             // heals too (it carries no expected id).
             if reason == SessionConstants.authFailureReason || reason == SessionConstants.keyChangedReason,

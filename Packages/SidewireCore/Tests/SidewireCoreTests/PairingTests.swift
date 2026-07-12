@@ -9,50 +9,87 @@ final class PairingTests: XCTestCase {
 
     private func spki(_ byte: UInt8) -> Data { Data(repeating: byte, count: 32) }
 
-    // MARK: - Channel binding + proof
-
-    func testBothSidesDeriveTheSameKeyAndProofs() {
-        let clientSPKI = spki(0xAA), serverSPKI = spki(0xBB)
-        // Both peers order client-then-server regardless of who computes it.
-        let cbClient = PairingProof.channelBinding(clientSPKI: clientSPKI, serverSPKI: serverSPKI)
-        let cbServer = PairingProof.channelBinding(clientSPKI: clientSPKI, serverSPKI: serverSPKI)
-        XCTAssertEqual(cbClient, cbServer)
-        XCTAssertEqual(cbClient.count, 32)
-
-        let kClient = PairingProof.deriveKey(pin: "123456", channelBinding: cbClient)
-        let kServer = PairingProof.deriveKey(pin: "123456", channelBinding: cbServer)
-
-        let clientProof = PairingProof.proof(key: kClient, label: PairingProof.clientLabel)
-        let serverProof = PairingProof.proof(key: kServer, label: PairingProof.serverLabel)
-        XCTAssertEqual(clientProof.count, 32)
-        // The receiver verifies the *other* side's proof with its own derived key.
-        XCTAssertTrue(PairingProof.verify(clientProof, key: kServer, label: PairingProof.clientLabel))
-        XCTAssertTrue(PairingProof.verify(serverProof, key: kClient, label: PairingProof.serverLabel))
-        // Cross-label must not verify.
-        XCTAssertFalse(PairingProof.verify(clientProof, key: kServer, label: PairingProof.serverLabel))
+    /// Run a full honest CPace exchange for a given PIN + channel binding with injected scalars,
+    /// returning both sides' ISK + confirmation tags. Source is the initiator (A), Display the
+    /// responder (B).
+    private func runCPace(pin: String, cb: Data, ya: [UInt8], yb: [UInt8])
+        -> (iskA: Data, iskB: Data, taA: Data, tbA: Data, taB: Data, tbB: Data)? {
+        let sid = CPace.sid(channelBinding: cb)
+        let g = CPace.calculateGenerator(pin: pin, ci: cb, sid: sid)
+        guard let Ya = CPace.scalarMult(scalar: ya, u: g),
+              let Yb = CPace.scalarMult(scalar: yb, u: g),
+              let Ka = CPace.scalarMultVfy(scalar: ya, peerShare: Yb),
+              let Kb = CPace.scalarMultVfy(scalar: yb, peerShare: Ya) else { return nil }
+        let iskA = CPace.deriveISK(sid: sid, k: Ka, initiatorShare: Ya, initiatorAD: Data(),
+                                   responderShare: Yb, responderAD: Data())
+        let iskB = CPace.deriveISK(sid: sid, k: Kb, initiatorShare: Ya, initiatorAD: Data(),
+                                   responderShare: Yb, responderAD: Data())
+        let mkA = CPace.deriveMacKey(sid: sid, isk: iskA)
+        let mkB = CPace.deriveMacKey(sid: sid, isk: iskB)
+        // Each side MACs its own share; verifies the peer's.
+        return (iskA, iskB,
+                taA: CPace.confirmationTag(macKey: mkA, share: Ya, ad: Data()),
+                tbA: CPace.confirmationTag(macKey: mkA, share: Yb, ad: Data()),
+                taB: CPace.confirmationTag(macKey: mkB, share: Ya, ad: Data()),
+                tbB: CPace.confirmationTag(macKey: mkB, share: Yb, ad: Data()))
     }
 
-    func testWrongPINProducesNonMatchingProof() {
-        let cb = PairingProof.channelBinding(clientSPKI: spki(1), serverSPKI: spki(2))
-        let right = PairingProof.deriveKey(pin: "123456", channelBinding: cb)
-        let wrong = PairingProof.deriveKey(pin: "654321", channelBinding: cb)
-        let proof = PairingProof.proof(key: wrong, label: PairingProof.clientLabel)
-        XCTAssertFalse(PairingProof.verify(proof, key: right, label: PairingProof.clientLabel))
+    // MARK: - Channel binding + CPace exchange
+
+    func testBothSidesDeriveTheSameISKAndConfirm() {
+        let cb = CPace.channelBinding(clientSPKI: spki(0xAA), serverSPKI: spki(0xBB))
+        let ya = CPace.sampleScalar(), yb = CPace.sampleScalar()
+        guard let r = runCPace(pin: "123456", cb: cb, ya: ya, yb: yb) else { return XCTFail("CPace failed") }
+        // Both sides derive the identical ISK, hence identical mac key and matching tags.
+        XCTAssertEqual(r.iskA, r.iskB)
+        XCTAssertEqual(r.iskA.count, 64)
+        // The Source verifies the Display's tag (tbA) against what the Display sent (tbB), and
+        // vice-versa. Matching keys ⇒ these are equal.
+        XCTAssertTrue(CPace.constantTimeEquals(r.tbA, r.tbB))
+        XCTAssertTrue(CPace.constantTimeEquals(r.taB, r.taA))
     }
 
-    func testDifferentChannelBindingProducesNonMatchingProof() {
-        // Same PIN but a MITM-substituted server cert ⇒ different channel binding ⇒ proof fails.
-        let honest = PairingProof.channelBinding(clientSPKI: spki(1), serverSPKI: spki(2))
-        let mitm = PairingProof.channelBinding(clientSPKI: spki(1), serverSPKI: spki(0x99))
-        let kHonest = PairingProof.deriveKey(pin: "123456", channelBinding: honest)
-        let kMitm = PairingProof.deriveKey(pin: "123456", channelBinding: mitm)
-        let proof = PairingProof.proof(key: kMitm, label: PairingProof.clientLabel)
-        XCTAssertFalse(PairingProof.verify(proof, key: kHonest, label: PairingProof.clientLabel))
+    func testWrongPINFailsConfirmation() {
+        // The Source uses PIN 123456, the Display 654321: same channel binding, different generator
+        // ⇒ different ISK ⇒ the confirmation tags do not match (this is the online PIN check).
+        let cb = CPace.channelBinding(clientSPKI: spki(1), serverSPKI: spki(2))
+        let sid = CPace.sid(channelBinding: cb)
+        let ya = CPace.sampleScalar(), yb = CPace.sampleScalar()
+        let gSource = CPace.calculateGenerator(pin: "123456", ci: cb, sid: sid)
+        let gDisplay = CPace.calculateGenerator(pin: "654321", ci: cb, sid: sid)
+        XCTAssertNotEqual(Data(gSource), Data(gDisplay), "different PINs ⇒ different generator")
+        let Ya = CPace.scalarMult(scalar: ya, u: gSource)!
+        let Yb = CPace.scalarMult(scalar: yb, u: gDisplay)!
+        // Each side computes K against its own generator's scalar and the peer's share.
+        let Ka = CPace.scalarMultVfy(scalar: ya, peerShare: Yb)!
+        let Kb = CPace.scalarMultVfy(scalar: yb, peerShare: Ya)!
+        let iskA = CPace.deriveISK(sid: sid, k: Ka, initiatorShare: Ya, initiatorAD: Data(),
+                                   responderShare: Yb, responderAD: Data())
+        let iskB = CPace.deriveISK(sid: sid, k: Kb, initiatorShare: Ya, initiatorAD: Data(),
+                                   responderShare: Yb, responderAD: Data())
+        XCTAssertNotEqual(iskA, iskB, "mismatched PIN ⇒ mismatched ISK")
+        let mkA = CPace.deriveMacKey(sid: sid, isk: iskA)
+        let mkB = CPace.deriveMacKey(sid: sid, isk: iskB)
+        // The Source expects the Display's tag over Yb under mkA; the Display actually sent it
+        // under mkB. They differ ⇒ confirmation fails.
+        let expectedBySource = CPace.confirmationTag(macKey: mkA, share: Yb, ad: Data())
+        let sentByDisplay = CPace.confirmationTag(macKey: mkB, share: Yb, ad: Data())
+        XCTAssertFalse(CPace.constantTimeEquals(expectedBySource, sentByDisplay))
+    }
+
+    func testDifferentChannelBindingProducesDifferentGenerator() {
+        // Same PIN but a MITM-substituted server cert ⇒ different channel binding ⇒ different
+        // generator ⇒ the exchange cannot converge (relay defence, now via the CI binding).
+        let honest = CPace.channelBinding(clientSPKI: spki(1), serverSPKI: spki(2))
+        let mitm = CPace.channelBinding(clientSPKI: spki(1), serverSPKI: spki(0x99))
+        let gHonest = CPace.calculateGenerator(pin: "123456", ci: honest, sid: CPace.sid(channelBinding: honest))
+        let gMitm = CPace.calculateGenerator(pin: "123456", ci: mitm, sid: CPace.sid(channelBinding: mitm))
+        XCTAssertNotEqual(Data(gHonest), Data(gMitm))
     }
 
     func testChannelBindingOrderMatters() {
-        let a = PairingProof.channelBinding(clientSPKI: spki(1), serverSPKI: spki(2))
-        let b = PairingProof.channelBinding(clientSPKI: spki(2), serverSPKI: spki(1))
+        let a = CPace.channelBinding(clientSPKI: spki(1), serverSPKI: spki(2))
+        let b = CPace.channelBinding(clientSPKI: spki(2), serverSPKI: spki(1))
         XCTAssertNotEqual(a, b, "client/server order must be significant")
     }
 

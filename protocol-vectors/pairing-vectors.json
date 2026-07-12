@@ -1,33 +1,44 @@
 {
-  "note" : "Channel-bound PIN proof (docs/05). channelBinding = SHA256(clientSPKI(32) ‖ serverSPKI(32)); K = HKDF-SHA256(IKM=utf8(PIN), salt=saltAscii, info=channelBinding, L=32); clientProof = HMAC-SHA256(K, clientLabelAscii); serverProof = HMAC-SHA256(K, serverLabelAscii). On the wire: PAIR_PROOF (type 0x04) carries the 32-byte proof; PAIR_ACK (type 0x05) is empty. Proof comparisons MUST be constant-time. clientSPKI/serverSPKI here are fixed test patterns, not real certificates.",
+  "ciphersuite" : "CPACE-X25519-SHA512-ELLIGATOR2 (draft-irtf-cfrg-cpace-21)",
+  "note" : "CPace pairing exchange (docs/05). CI = SHA256(clientSPKI(32) ‖ serverSPKI(32)); sid = SHA256(CI); PRS = utf8(PIN); ADa = ADb = \"\" (empty). g = calculate_generator(PRS, CI, sid) [SHA512 gen-string → first 32 bytes → decodeUCoordinate → Elligator2]. Source is initiator A (ya, Ya), Display is responder B (yb, Yb). K = X25519(ya,Yb) = X25519(yb,Ya) (abort if all-zero). ISK = SHA512(lv_cat(\"CPace255_ISK\", sid, K) ‖ lv_cat(Ya,ADa) ‖ lv_cat(Yb,ADb)). mac_key = SHA512(\"CPaceMac\" ‖ sid ‖ ISK). confirmA/B = HMAC-SHA512(mac_key, lv_cat(share, AD)); compared constant-time. On the wire: PAIR_MSG (type 0x04) carries the 32-byte share; PAIR_CONFIRM (type 0x05) carries the 64-byte tag. Scalars here are fixed test values (SHA256 of a label); a live session uses fresh random scalars. clientSPKI/serverSPKI are fixed patterns, not real certs.",
   "vectors" : [
     {
       "channelBindingHex" : "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
-      "clientLabelAscii" : "sidewire-client-proof",
-      "clientProofHex" : "e33b454301d7d3ab5839ffdd155686d06f29a3b3b73941679120d567e6dc8ee5",
       "clientSPKIHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "confirmAHex" : "b8cdd45189255ec1777657307ed6b4a7be916068fec7ce4bfc7b76588d4f0a665ea1a804e63310dc5b1fd1bb5e36e0867f5825ea563e29612f82591f9efeb2a6",
+      "confirmBHex" : "8089d0efa4fa055aaf84c4e946ba378cd37d99884b776ebfebbc1530b86ac9c4b31ca250ea11e48bfc29c2bb2c6552b92d7ff81014be692630058ea37a81807d",
       "description" : "Reference vector with PIN 314159.",
-      "keyHex" : "9dbb5fba4e036a835892903393a0025f157e629bdce84a49be3c2389a1003926",
+      "generatorHex" : "35540c59d9ffa3ecff227ee67ca8cb9db50854a91c58f4fe9e45b6ced79b2f2e",
+      "iskHex" : "7afa726edcd27b2c8b7c32db8cc2cef2348bda6fb567bfbd731e17a4763b57ac16091cde690605222da4bff1a3fe9a80a34e51048d4ff7de4041e6dd6f4f45ed",
+      "kHex" : "a31e52aa27f75729a55738ce6c16d531c2bbf17e8c69f7e42a996742f14d9105",
+      "macKeyHex" : "ffcb5076c9125b0e3afe2cad6fa74d30b0105255bfcf7f34cf8f4c5ca9f2558cb6a0f102fa63b6d2af60159a4fec7919318e247efbe20ec8e09b8997ed454f92",
       "name" : "pin_314159",
       "pin" : "314159",
-      "saltAscii" : "sidewire-pairing-v2",
-      "serverLabelAscii" : "sidewire-server-proof",
-      "serverProofHex" : "1597acd072b76870f9e13b4b5de997bac115cb1fa8f19534e2e776554acfe898",
-      "serverSPKIHex" : "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      "scalarAHex" : "2d3cb45bfe88a051a232bae99d85ff61249f0f62579e1cb75b393655c568f283",
+      "scalarBHex" : "91cff47989db6937f56532a7bc09154c578ff03fe765f50c93955a427ef65e13",
+      "serverSPKIHex" : "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "shareAHex" : "d3767a4207837572b9c455ba5bd792e12bf17445bd8f05a5cd53d60294c5ff5f",
+      "shareBHex" : "2d59b7659b854e5704934d4637ad76b783b83c0f9ad5e3c681104433e1d34d75",
+      "sidHex" : "01c9f464780a1b6af4eb400fe2f2896cfb2169f5a65701439e4c2c4e213903ef"
     },
     {
       "channelBindingHex" : "fdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
-      "clientLabelAscii" : "sidewire-client-proof",
-      "clientProofHex" : "0cb307da702e895cd96354e2763fa14d3528924139787bcc9173578ee481d83f",
       "clientSPKIHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "confirmAHex" : "79ad45ead287538d519ba3963b8ec898ead93a140a2c31153092f76304fa38411f826f18d84aa2b6aba3601245444b46c0f4784df1652c60ffded7b0dfd45c96",
+      "confirmBHex" : "392393217e5bab246f2db034edc9357947fb579f37f48b9968668b5966b57236e3aa82742eae14a81945dc53866e389b87f07f4ab469a3ae8d14ec9c0d1ee2b4",
       "description" : "Same channel binding, PIN 000000 — proves PIN sensitivity.",
-      "keyHex" : "5db753809e1253311d42d658635f9443023d5ba41a8788e1df3835b923fb70dc",
+      "generatorHex" : "de1d920e394c7b5f3d8ac8c639b4f05f55af7268fa83a413c42ad13832189c00",
+      "iskHex" : "ada750f212f75c30ecf70ca206d7870e784687afa29baeeab3b9be90fd8f68cab1ece0fce8f68dfd274ea167b49faaadfb14777619e03b6f683a98aeec7106fc",
+      "kHex" : "7dd1ea86003fd2494773db3acc10eef0fc972b1e96ab3cb18afadc7e31e1a954",
+      "macKeyHex" : "d7329a0fe43c6beb6c948a9be27e6a2208eb14c39bb564425af5ba7249430bcaf0f2774aac3e5cca0f97d0801cd2609f23f20e30ef0d9f621ac4db773ddd2da4",
       "name" : "pin_000000",
       "pin" : "000000",
-      "saltAscii" : "sidewire-pairing-v2",
-      "serverLabelAscii" : "sidewire-server-proof",
-      "serverProofHex" : "7179cbd8f3a83aa09d5d1fa3aad3e53ca872b293827a3a755156f440253ab98f",
-      "serverSPKIHex" : "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      "scalarAHex" : "2d3cb45bfe88a051a232bae99d85ff61249f0f62579e1cb75b393655c568f283",
+      "scalarBHex" : "91cff47989db6937f56532a7bc09154c578ff03fe765f50c93955a427ef65e13",
+      "serverSPKIHex" : "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "shareAHex" : "fd03d9deb2e705eae5e74fc0020a45dcbe17dc155d14107ba0299ef06146c129",
+      "shareBHex" : "f48efdd50fdf67b57d8669c971495d7375b259e4d43c594d947cbc8e158f563e",
+      "sidHex" : "01c9f464780a1b6af4eb400fe2f2896cfb2169f5a65701439e4c2c4e213903ef"
     }
   ]
 }

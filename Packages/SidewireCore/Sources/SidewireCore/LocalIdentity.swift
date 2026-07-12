@@ -14,7 +14,7 @@ import SwiftASN1
 /// - The certificate is self-signed and effectively an opaque key carrier: no CA, no
 ///   hostname, `notBefore = now-1h`, `notAfter = now+20y`, subject == issuer == `CN=Sidewire`.
 ///   Peers never validate the chain at the TLS layer — trust comes from the pinned public key
-///   + the PIN proof (see `TLS.swift` / `PairingProof.swift`).
+///   + the CPace PAKE (see `TLS.swift` / `CPace.swift`).
 /// - `spkiHash` = **SHA-256 over the DER `SubjectPublicKeyInfo`** (RFC 7469 "SPKI Fingerprint";
 ///   for P-256 the SPKI is the standard 91-byte `SEQUENCE { AlgorithmIdentifier, BIT STRING }`
 ///   that swift-crypto's `P256.Signing.PublicKey.derRepresentation` and OpenSSL `i2d_PUBKEY`

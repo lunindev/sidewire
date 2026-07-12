@@ -1,5 +1,4 @@
 import Foundation
-import Crypto
 import SidewireProtocol
 
 /// Coarse session phase. Phase 0 is intentionally minimal; the full reconnect state
@@ -84,15 +83,28 @@ public final class Session: @unchecked Sendable {
     /// (fake-transport unit tests, or a link with no TLS security context). Set before start().
     public var pairingConfig: PairingConfig?
 
-    // Pairing (channel-bound PIN proof) state.
+    // Pairing (CPace PAKE) state. See docs/05 and CPace.swift.
     private var tlsPeerInfo: TLSPeerInfo?
-    private var pairingKey: SymmetricKey?
+    /// Our CPace secret scalar (ya on the Source/initiator, yb on the Display/responder). Never
+    /// leaves this process; cleared once the exchange completes.
+    private var cpaceScalar: [UInt8]?
+    /// Our CPace public share (Ya/Yb) — the 32 bytes we put in PAIR_MSG.
+    private var cpaceOwnShare: [UInt8]?
+    /// The key-confirmation MAC key derived from ISK, set once we've computed K.
+    private var cpaceMacKey: Data?
+    /// The peer's expected confirmation tag, to verify constant-time when PAIR_CONFIRM arrives.
+    private var cpaceExpectedPeerTag: Data?
     /// Set once the application handshake (HELLO exchange) has begun, i.e. pairing is done or
     /// was not required. Until then only pairing/BYE messages are processed.
     private var appHandshakeStarted = false
-    /// Source: we sent our proof and are waiting for the Display's proof.
-    private var awaitingServerProof = false
-    /// Display: we verified the Source's proof and replied with ours (waiting for pairAck).
+    /// Guards `beginPairingOrHandshake` against a second `.ready` (NWConnection fires it once, so
+    /// this is belt-and-suspenders): re-entry would mint a fresh scalar and re-send our share,
+    /// corrupting the exchange.
+    private var pairingDecided = false
+    /// Source: we sent our share and are waiting for the Display's share.
+    private var awaitingPeerShare = false
+    /// Display: we processed the Source's share and replied (share + confirm); waiting for the
+    /// Source's confirmation tag. (One CPace responder run per connection.)
     private var pairingReplied = false
 
     private var seq: UInt32 = 0
@@ -238,87 +250,168 @@ public final class Session: @unchecked Sendable {
         }
     }
 
-    // MARK: - Pairing (channel-bound PIN proof, pre-HELLO)
+    // MARK: - Pairing (CPace PAKE, pre-HELLO)
 
-    /// Decide, once TLS is ready, whether to run the PIN proof or go straight to the application
-    /// handshake. See docs/05 and PairingProof for the byte-exact scheme.
+    /// Decide, once TLS is ready, whether to run CPace or go straight to the application handshake.
+    /// See docs/05 and CPace.swift for the byte-exact scheme.
     private func beginPairingOrHandshake() {
+        guard !pairingDecided else { return } // one entry per connection (see pairingDecided)
+        pairingDecided = true
         // No pairing config (unit tests) or no TLS security context ⇒ trust the link as-is.
         guard let pairing = pairingConfig, let tls = tlsPeerInfo else {
             beginApplicationHandshake()
             return
         }
         let alreadyPaired = pairing.trustStore.pinned(for: tls.peerDeviceId)?.spkiHash == tls.peerSPKIHash.hexString
-        // Always derive the pairing key — even a paired Display needs it in case the Source lost
-        // its pin and re-initiates a proof (the "Source forgot" heal path). HKDF is cheap.
-        pairingKey = PairingProof.deriveKey(pin: pairing.pin, channelBinding: tls.channelBinding)
 
         // The SOURCE always leads. The Display never sends first — it reacts to whatever the
         // Source leads with (see the pre-handshake gate in handle()):
-        //   • Source leads with HELLO      → Source considers itself paired → accept iff pinned.
-        //   • Source leads with PAIR_PROOF → Source is (re)pairing         → verify + pin + reply.
+        //   • Source leads with HELLO    → Source considers itself paired → accept iff pinned.
+        //   • Source leads with PAIR_MSG  → Source is (re)pairing          → run CPace responder.
         // Letting the Display lead created a deadlock when pin state was asymmetric (a paired
-        // Display sent HELLO while an unpaired Source waited for the Display's proof → both timed
-        // out → infinite reconnect). Reacting instead heals every combination.
+        // Display sent HELLO while an unpaired Source waited → both timed out → infinite
+        // reconnect). Reacting instead heals every combination.
         if role == .source {
             if alreadyPaired {
                 coreLog.info("session[source] peer \(tls.peerDeviceId, privacy: .public) already paired → leading with HELLO")
                 beginApplicationHandshake()
             } else {
-                let proof = PairingProof.proof(key: pairingKey!, label: PairingProof.clientLabel)
-                coreLog.info("session[source] sending PIN proof (pairing \(tls.peerDeviceId, privacy: .public))")
-                awaitingServerProof = true
-                transport.send(type: .pairProof, seq: nextSeq(), payload: proof)
+                guard let (scalar, share) = makeCPaceShare(pairing: pairing, tls: tls) else {
+                    coreLog.error("session[source] CPace generator/share failed → BYE(auth)")
+                    closeSendingBye(SessionConstants.authFailureReason)
+                    return
+                }
+                cpaceScalar = scalar
+                cpaceOwnShare = share
+                awaitingPeerShare = true
+                coreLog.info("session[source] sending CPace share (pairing \(tls.peerDeviceId, privacy: .public))")
+                transport.send(type: .pairMsg, seq: nextSeq(), payload: Data(share))
             }
         } else {
             coreLog.info("session[display] TLS ready, awaiting the Source's lead (paired=\(alreadyPaired))")
         }
     }
 
-    private func handlePairProof(_ payload: Data) {
-        guard let pairing = pairingConfig, let tls = tlsPeerInfo, let key = pairingKey else { return }
+    /// Compute the generator `g` from PIN + channel binding and derive our CPace scalar/share.
+    private func makeCPaceShare(pairing: PairingConfig, tls: TLSPeerInfo) -> (scalar: [UInt8], share: [UInt8])? {
+        let sid = CPace.sid(channelBinding: tls.channelBinding)
+        let g = CPace.calculateGenerator(pin: pairing.pin, ci: tls.channelBinding, sid: sid)
+        let scalar = CPace.sampleScalar()
+        guard let share = CPace.scalarMult(scalar: scalar, u: g) else { return nil }
+        return (scalar, share)
+    }
+
+    /// A PAIR_MSG (peer CPace share) arrived. Source: finish the exchange, send our confirmation.
+    /// Display: run the responder — reply with our share + confirmation, await the Source's tag.
+    private func handlePairMsg(_ payload: Data) {
+        guard let pairing = pairingConfig, let tls = tlsPeerInfo else { return }
+        let peerShare = [UInt8](payload)
+        guard peerShare.count == CPace.elementBytes else {
+            coreLog.notice("session[\(self.role.rawValue, privacy: .public)] malformed CPace share → BYE(auth)")
+            closeSendingBye(SessionConstants.authFailureReason)
+            return
+        }
+        let sid = CPace.sid(channelBinding: tls.channelBinding)
+
         if role == .display {
-            guard !pairingReplied else { return } // one proof per attempt
-            // Rate-limit online guessing before doing any work.
+            guard !pairingReplied else { return } // one responder run per attempt
+            // Rate-limit online guessing before doing the (comparatively costly) CPace work.
             if let limiter = pairing.rateLimiter, !limiter.allowAttempt() {
                 coreLog.notice("session[display] pairing locked out → BYE(rateLimited)")
                 closeSendingBye(SessionConstants.rateLimitedReason)
                 return
             }
-            if PairingProof.verify(payload, key: key, label: PairingProof.clientLabel) {
-                pairing.rateLimiter?.recordSuccess()
-                pinPeer(tls, trustStore: pairing.trustStore)
-                pairingReplied = true
-                let serverProof = PairingProof.proof(key: key, label: PairingProof.serverLabel)
-                coreLog.info("session[display] Source PIN proof OK → replying, awaiting ack")
-                transport.send(type: .pairProof, seq: nextSeq(), payload: serverProof)
-            } else {
+            guard let (yb, ownShare) = makeCPaceShare(pairing: pairing, tls: tls),
+                  let k = CPace.scalarMultVfy(scalar: yb, peerShare: peerShare) else {
+                // A low-order Source share (or generator failure) → abort per the draft.
                 pairing.rateLimiter?.recordFailure()
-                coreLog.notice("session[display] Source PIN proof MISMATCH → BYE(auth)")
+                coreLog.notice("session[display] CPace K abort → BYE(auth)")
                 closeSendingBye(SessionConstants.authFailureReason)
+                return
             }
-        } else { // .source: this is the Display's proof
-            guard awaitingServerProof else { return }
-            awaitingServerProof = false
-            if PairingProof.verify(payload, key: key, label: PairingProof.serverLabel) {
+            // Transcript is initiator(Source=Ya) first, responder(Display=Yb) second.
+            let isk = CPace.deriveISK(sid: sid, k: k,
+                                      initiatorShare: peerShare, initiatorAD: Data(),
+                                      responderShare: ownShare, responderAD: Data())
+            let macKey = CPace.deriveMacKey(sid: sid, isk: isk)
+            cpaceMacKey = macKey
+            cpaceOwnShare = ownShare
+            cpaceExpectedPeerTag = CPace.confirmationTag(macKey: macKey, share: peerShare, ad: Data())
+            pairingReplied = true
+            // Send ONLY our share now. Our confirmation tag (Tb) is WITHHELD until the Source's tag
+            // (Ta) verifies (handlePairConfirm). Otherwise an attacker could send a single guess
+            // share, harvest Tb, verify the guess offline, and disconnect without ever sending Ta —
+            // never tripping the rate limiter (which only charges a *received* wrong tag). Holding
+            // Tb back forces every guess to cost one rate-limited, on-the-wire Ta.
+            coreLog.info("session[display] CPace responder → sending share, awaiting the Source's tag")
+            transport.send(type: .pairMsg, seq: nextSeq(), payload: Data(ownShare))
+        } else { // .source: this is the Display's share (Yb)
+            guard awaitingPeerShare, let ya = cpaceScalar, let ownShare = cpaceOwnShare else { return }
+            awaitingPeerShare = false
+            guard let k = CPace.scalarMultVfy(scalar: ya, peerShare: peerShare) else {
+                coreLog.notice("session[source] CPace K abort → BYE(auth)")
+                closeSendingBye(SessionConstants.authFailureReason)
+                return
+            }
+            let isk = CPace.deriveISK(sid: sid, k: k,
+                                      initiatorShare: ownShare, initiatorAD: Data(),
+                                      responderShare: peerShare, responderAD: Data())
+            let macKey = CPace.deriveMacKey(sid: sid, isk: isk)
+            cpaceMacKey = macKey
+            cpaceExpectedPeerTag = CPace.confirmationTag(macKey: macKey, share: peerShare, ad: Data())
+            let ta = CPace.confirmationTag(macKey: macKey, share: ownShare, ad: Data())
+            coreLog.info("session[source] CPace K OK → sending confirm, awaiting Display tag")
+            transport.send(type: .pairConfirm, seq: nextSeq(), payload: ta)
+        }
+    }
+
+    /// A PAIR_CONFIRM (peer key-confirmation tag) arrived. Verify it constant-time. Success is the
+    /// point at which the peer is pinned and the application handshake begins; a mismatch is a
+    /// wrong PIN → BYE("auth").
+    private func handlePairConfirm(_ payload: Data) {
+        guard let pairing = pairingConfig, let tls = tlsPeerInfo,
+              let expected = cpaceExpectedPeerTag else { return }
+        cpaceExpectedPeerTag = nil // consume: one confirmation per attempt
+        let ok = CPace.constantTimeEquals(payload, expected)
+        if role == .display {
+            if ok {
+                pairing.rateLimiter?.recordSuccess()
+                // The Source's tag verified — only NOW release our own (Tb) and pin the peer.
+                if let macKey = cpaceMacKey, let ownShare = cpaceOwnShare {
+                    let tb = CPace.confirmationTag(macKey: macKey, share: ownShare, ad: Data())
+                    transport.send(type: .pairConfirm, seq: nextSeq(), payload: tb)
+                }
                 pinPeer(tls, trustStore: pairing.trustStore)
-                coreLog.info("session[source] Display PIN proof OK → ack + handshake")
-                transport.send(type: .pairAck, seq: nextSeq(), payload: Data())
+                coreLog.info("session[display] CPace confirm OK → sent our tag, pinned, handshake")
+                clearCPaceState()
                 beginApplicationHandshake()
             } else {
-                coreLog.notice("session[source] Display PIN proof MISMATCH → BYE(auth)")
+                pairing.rateLimiter?.recordFailure()
+                coreLog.notice("session[display] CPace confirm MISMATCH (wrong PIN) → BYE(auth)")
+                closeSendingBye(SessionConstants.authFailureReason)
+            }
+        } else { // .source
+            if ok {
+                pinPeer(tls, trustStore: pairing.trustStore)
+                coreLog.info("session[source] CPace confirm OK → pinned, handshake")
+                clearCPaceState()
+                beginApplicationHandshake()
+            } else {
+                coreLog.notice("session[source] CPace confirm MISMATCH (wrong PIN) → BYE(auth)")
                 closeSendingBye(SessionConstants.authFailureReason)
             }
         }
     }
 
-    private func handlePairAck() {
-        guard role == .display, pairingReplied, !appHandshakeStarted else { return }
-        coreLog.info("session[display] pairing ack received → handshake")
-        beginApplicationHandshake()
+    /// Zeroize/drop the CPace secret scalar and derived material once pairing succeeds.
+    private func clearCPaceState() {
+        cpaceScalar = nil
+        cpaceOwnShare = nil
+        cpaceMacKey = nil
+        cpaceExpectedPeerTag = nil
     }
 
-    /// The Display received a HELLO before pairing completed: the Source skipped the proof, so it
+    /// The Display received a HELLO before pairing completed: the Source skipped CPace, so it
     /// considers itself paired. Accept only if we have it pinned too; otherwise refuse (one side
     /// forgot the pin → the Source must re-pair). The Source never reaches here (the Display does
     /// not send HELLO until pairing completes).
@@ -373,8 +466,8 @@ public final class Session: @unchecked Sendable {
         // link, only pairing messages (and BYE) are processed.
         if pairingConfig != nil, !appHandshakeStarted {
             switch type {
-            case .pairProof: handlePairProof(frame.payload)
-            case .pairAck: handlePairAck()
+            case .pairMsg: handlePairMsg(frame.payload)
+            case .pairConfirm: handlePairConfirm(frame.payload)
             case .hello, .helloAck: handlePreHandshakeHello(frame)
             case .bye: finishClose(JSONWire.decode(ReasonMessage.self, from: frame.payload)?.reason)
             default: break // ignore video/input/etc. until pairing completes

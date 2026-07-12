@@ -151,7 +151,7 @@ public final class TCPTransport: Transport, @unchecked Sendable {
         // Channel binding order is always client (Source/dialer) first, server (Display) second.
         let clientSPKI = isServer ? peerSPKI : own
         let serverSPKI = isServer ? own : peerSPKI
-        let cb = PairingProof.channelBinding(clientSPKI: clientSPKI, serverSPKI: serverSPKI)
+        let cb = CPace.channelBinding(clientSPKI: clientSPKI, serverSPKI: serverSPKI)
         onSecurity?(TLSPeerInfo(peerDeviceId: peerDeviceId, peerSPKIHash: peerSPKI,
                                 ownSPKIHash: own, channelBinding: cb, isServer: isServer))
         return true

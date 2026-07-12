@@ -1,9 +1,10 @@
 import Foundation
 
 /// Pairing PIN storage & generation. In protocol v2 the PIN is no longer used to derive a
-/// TLS-PSK; it is the low-entropy secret for the channel-bound PIN proof run over an already-
-/// established certificate-based TLS 1.3 channel (see `SidewireCore.PairingProof` / docs/05).
-/// The PIN itself never crosses the wire — only an HMAC bound to both leaf certificates does.
+/// TLS-PSK; it is the low-entropy secret (`PRS`) for the **CPace PAKE** run over an already-
+/// established certificate-based TLS 1.3 channel (see `SidewireCore.CPace` / docs/05). The PIN
+/// itself never crosses the wire — only CPace public shares and a key-confirmation MAC do, and a
+/// wrong PIN yields an unrelated shared secret (each guess costs one online, rate-limited attempt).
 ///
 /// After the first successful pairing, the peer's public key is stored in the Keychain trust
 /// store (`SidewireCore.TrustStore`) and subsequent connections skip the PIN entirely; the PIN

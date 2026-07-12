@@ -194,8 +194,8 @@ final class DisplayController: ObservableObject {
         let snapshot = currentDisplayInfo()
         let hello = DeviceIdentity.makeHello(role: .display, sessionId: UUID().uuidString)
         let session = Session(transport: transport, role: .display, localHello: hello)
-        // Pairing: a first-time Source must complete the channel-bound PIN proof against the PIN
-        // shown here; a Source we've already pinned skips it (Session checks the trust store).
+        // Pairing: a first-time Source must complete the CPace PAKE against the PIN shown here;
+        // a Source we've already pinned skips it (Session checks the trust store).
         session.pairingConfig = PairingConfig(pin: pairingPIN, trustStore: KeychainTrustStore.shared,
                                               rateLimiter: rateLimiter)
         self.session = session

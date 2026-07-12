@@ -8,13 +8,13 @@ public enum MessageType: UInt8, Sendable {
     case hello       = 0x01
     case helloAck    = 0x02
     case config      = 0x03
-    /// Pairing PIN-proof (channel-bound HMAC), exchanged BEFORE HELLO on a first-time
-    /// pairing connection. Source sends its proof first, Display replies with its own.
-    /// See docs/05-security-and-pairing.md. Payload = 32-byte HMAC-SHA256.
-    case pairProof   = 0x04
-    /// Pairing acknowledgement: Source → Display, empty payload, sent after the Source has
-    /// verified the Display's proof. Confirms mutual success so the Display proceeds to HELLO.
-    case pairAck     = 0x05
+    /// CPace PAKE message, exchanged BEFORE HELLO on a first-time pairing connection. Carries a
+    /// 32-byte CPace public share (`Ya`/`Yb`). The Source (initiator) sends its share first, the
+    /// Display (responder) replies with its own. See docs/05-security-and-pairing.md.
+    case pairMsg     = 0x04
+    /// CPace key-confirmation: each side sends `HMAC-SHA512(mac_key, lv_cat(ownShare, ownAD))`
+    /// (a 64-byte tag) and verifies the peer's constant-time. A mismatch (wrong PIN) → BYE("auth").
+    case pairConfirm = 0x05
     case video       = 0x10
     case audio       = 0x11   // reserved
     case input       = 0x20

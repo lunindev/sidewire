@@ -14,16 +14,22 @@ All multi-byte integers are **big-endian (network byte order)** unless stated. F
 **big-endian**. All strings are UTF-8.
 
 > **What changed from v1.** v2 is a breaking change (`protocol.major = 2`): certificate-based
-> **TLS 1.3** + a channel-bound **PIN proof** replace v1's TLS-1.2 PIN-PSK (see [05](05-security-and-pairing.md));
+> **TLS 1.3** + a **CPace PAKE** for pairing replace v1's TLS-1.2 PIN-PSK (see [05](05-security-and-pairing.md));
 > input events are now **platform-neutral** (USB-HID usages, not macOS keycodes); the video
 > subheader carries a **PTS**; the `FEEDBACK` message is removed; unknown BYE reasons are now
 > fatal-for-reconnect. Nothing shipped on v1, so there is no dual-stack — a v1 peer is rejected at
 > HELLO.
+>
+> **Pairing sub-protocol change within v2 (Phase 7c).** The `0x04`/`0x05` messages were repurposed
+> from the Phase-7a channel-bound HMAC PIN proof (`PAIR_PROOF` 32 B / `PAIR_ACK` empty) to **CPace**
+> (`PAIR_MSG` 32 B share / `PAIR_CONFIRM` 64 B tag). `protocol.major` stays **2** (nothing shipped);
+> the pairing crypto in [05](05-security-and-pairing.md) and `pairing-vectors.json` changed
+> accordingly. A CPace wrong-PIN attempt is no longer offline-crackable (see docs/05 threat model).
 
 ## Transport framing
 
-Connection lifecycle: **TCP connect → TLS 1.3 handshake (cert-based, mutual auth) → [pairing PIN
-proof, first time only] → application handshake → streaming.** TLS and pairing are specified in
+Connection lifecycle: **TCP connect → TLS 1.3 handshake (cert-based, mutual auth) → [CPace pairing,
+first time only] → application handshake → streaming.** TLS and pairing are specified in
 [05](05-security-and-pairing.md); everything below rides *inside* the established TLS 1.3 channel.
 
 Every message is a fixed **12-byte header** followed by a payload:
@@ -58,8 +64,8 @@ unrecognized `type` as fatal. This is what lets a newer peer talk to an older on
 | `0x01` | `HELLO` | both | JSON | no |
 | `0x02` | `HELLO_ACK` | both | JSON | no |
 | `0x03` | `CONFIG` | source→display | JSON | no |
-| `0x04` | `PAIR_PROOF` | both | binary (32 B HMAC-SHA256) | no |
-| `0x05` | `PAIR_ACK` | source→display | empty | no |
+| `0x04` | `PAIR_MSG` | both | binary (32 B CPace share) | no |
+| `0x05` | `PAIR_CONFIRM` | both | binary (64 B HMAC-SHA512 tag) | no |
 | `0x10` | `VIDEO` | source→display | binary (subheader + Annex-B) | **yes** |
 | `0x11` | `AUDIO` | *reserved* | — | — |
 | `0x20` | `INPUT` | display→source | binary (32 B/event) | **yes** |
@@ -78,15 +84,19 @@ unrecognized `type` as fatal. This is what lets a newer peer talk to an older on
 > bitrate). It was never sent — adaptive bitrate is RTT-driven (from PING/PONG) — so it is removed
 > and `0x42` is reserved. A receiver that ever sees `0x42` skips it like any unknown type.
 
-### PAIR_PROOF (`0x04`) / PAIR_ACK (`0x05`)
+### PAIR_MSG (`0x04`) / PAIR_CONFIRM (`0x05`)
 
-The channel-bound PIN proof, exchanged **before** HELLO on a first-time pairing connection (a paired
-reconnect skips these entirely — no `0x04`/`0x05` on the wire). `PAIR_PROOF` payload is a bare
-**32-byte HMAC-SHA256**; `PAIR_ACK` is empty. Sequence: Source → `PAIR_PROOF(clientProof)`; Display
-verifies → `PAIR_PROOF(serverProof)`; Source verifies → `PAIR_ACK`; both proceed to HELLO. The
-byte-exact key/proof derivation, channel binding, ordering, failure handling (`BYE("auth")`), and
-rate limiting (`BYE("rateLimited")`) are specified in [05](05-security-and-pairing.md) (normative)
-and pinned by `protocol-vectors/pairing-vectors.json`.
+The **CPace PAKE** messages, exchanged **before** HELLO on a first-time pairing connection (a paired
+reconnect skips these entirely — no `0x04`/`0x05` on the wire). `PAIR_MSG` carries a bare **32-byte
+CPace public share** (`Ya`/`Yb`); `PAIR_CONFIRM` carries a **64-byte HMAC-SHA512** key-confirmation
+tag. Sequence: Source (initiator) → `PAIR_MSG(Ya)`; Display (responder) → `PAIR_MSG(Yb)`; Source →
+`PAIR_CONFIRM(Ta)`; Display verifies `Ta`, and **only then** → `PAIR_CONFIRM(Tb)`; Source verifies
+`Tb`; both pin the peer and proceed to HELLO. The Display **must not** reveal `Tb` before `Ta`
+verifies (else the rate limiter is bypassable — see [05](05-security-and-pairing.md) § Exchange). The ciphersuite (`CPACE-X25519-SHA512-ELLIGATOR2`), the
+byte-exact generator/share/ISK/confirmation derivation, the `CI`/`sid` binding to the TLS
+`channelBinding`, failure handling (`BYE("auth")`), and rate limiting (`BYE("rateLimited")`) are
+specified in [05](05-security-and-pairing.md) (normative) and pinned by
+`protocol-vectors/pairing-vectors.json`.
 
 ## Handshake
 
@@ -95,10 +105,11 @@ Source (dialer / client)                         Display (listener / server)
   │  ── TCP connect ─────────────────────────────▶ │
   │  ══ TLS 1.3 handshake (mutual cert auth) ═════ │   both derive the peer SPKI hash + deviceId
   │                                                 │
-  │  [first-time pairing only — see docs/05]        │
-  │  ── PAIR_PROOF(clientProof) ──────────────────▶ │   verify → pin Source, reply
-  │  ◀────────────────── PAIR_PROOF(serverProof) ── │
-  │  ── PAIR_ACK ─────────────────────────────────▶ │   both pin the peer
+  │  [first-time pairing only — CPace, see docs/05] │
+  │  ── PAIR_MSG(Ya) ─────────────────────────────▶ │   compute K, ISK
+  │  ◀──────────────────────────────── PAIR_MSG(Yb) │   (withholds Tb)
+  │  ── PAIR_CONFIRM(Ta) ─────────────────────────▶ │   verify Ta → pin Source
+  │  ◀──────────────────────────── PAIR_CONFIRM(Tb) │   verify Tb → pin Display
   │                                                 │
   │  ── HELLO ────────────────────────────────────▶ │   validate (magic/major/role/inputMapping)
   │  ◀──────────────────────────────────── HELLO ── │

@@ -18,7 +18,7 @@ report it.
 | `input-vectors.json` | 32-byte `INPUT` records (mouse, scroll, keys, modifiers) | **byte-exact** (`hex`) |
 | `video-vectors.json` | `VIDEO` payload = 12-byte subheader (ltrToken, flags, **pts**) + Annex-B | **byte-exact** (`payloadHex`) |
 | `message-vectors.json` | canonical JSON control messages (HELLO, CONFIG, DISPLAY_INFO, BYE) | **semantic** (decode + compare fields; see below) |
-| `pairing-vectors.json` | channel-bound PIN proof: `channelBinding`, `K`, `clientProof`, `serverProof` from fixed inputs | **byte-exact** (hex) |
+| `pairing-vectors.json` | CPace PAKE: `channelBinding`, `sid`, `generator`, shares, `K`, `ISK`, `mac_key`, confirmation tags from fixed inputs + injected scalars | **byte-exact** (hex) |
 
 All integers on the wire are **big-endian**; floats are IEEE-754 big-endian; all hex is lowercase.
 
@@ -39,20 +39,31 @@ Every file is `{ "note": "...", "vectors"/... : [ { "name", "description", <inpu
 
 ### Pairing crypto (`pairing-vectors.json`)
 
-Given a fixed `pin`, `clientSPKI` (32 B), and `serverSPKI` (32 B), a conformant implementation must
-reproduce every hex field:
+The pairing exchange is **CPace**, ciphersuite `CPACE-X25519-SHA512-ELLIGATOR2`
+(`draft-irtf-cfrg-cpace-21`). Given a fixed `pin`, `clientSPKI` (32 B), `serverSPKI` (32 B), and the
+two injected scalars `scalarA`/`scalarB`, a conformant implementation must reproduce every hex field:
 
 ```
-channelBinding = SHA-256( clientSPKI ‖ serverSPKI )                       // 32 B, client-then-server
-K              = HKDF-SHA256( IKM=utf8(pin), salt=saltAscii,              // 32 B
-                              info=channelBinding, L=32 )
-clientProof    = HMAC-SHA256( K, utf8(clientLabelAscii) )                 // 32 B — the Source sends this
-serverProof    = HMAC-SHA256( K, utf8(serverLabelAscii) )                 // 32 B — the Display replies with this
+CI   = channelBinding = SHA-256( clientSPKI ‖ serverSPKI )   // 32 B, client-then-server
+sid  = SHA-256( channelBinding )                             // 32 B, deterministic
+PRS  = utf8(pin) ; ADa = ADb = ""                            // Source = initiator A, Display = responder B
+g    = calculate_generator(PRS, CI, sid)                     // SHA-512 gen-string → first 32 B → decodeUCoordinate → Elligator2
+Ya   = X25519(scalarA, g)  ;  Yb = X25519(scalarB, g)        // PAIR_MSG payloads
+K    = X25519(scalarA, Yb) = X25519(scalarB, Ya)             // abort if all-zero (low-order point)
+ISK  = SHA-512( lv_cat("CPace255_ISK", sid, K) ‖ lv_cat(Ya,ADa) ‖ lv_cat(Yb,ADb) )   // 64 B
+mac_key   = SHA-512( "CPaceMac" ‖ sid ‖ ISK )                // 64 B
+confirmA  = HMAC-SHA512( mac_key, lv_cat(Ya, ADa) )          // Ta — PAIR_CONFIRM from Source
+confirmB  = HMAC-SHA512( mac_key, lv_cat(Yb, ADb) )          // Tb — PAIR_CONFIRM from Display
 ```
 
-Proof comparisons on the wire **must be constant-time**. The `clientSPKI`/`serverSPKI` in the
-vectors are fixed test patterns (`00..1f`, `20..3f`), not real certificates; in a live session they
-are the SHA-256 SPKI fingerprints of the two leaf certs (docs/05).
+`lv_cat` prepends each field's LEB128 length; transcript ordering is initiator-first (`transcript_ir`).
+Confirmation-tag comparisons on the wire **must be constant-time**. The `scalarA`/`scalarB` fields are
+the **RNG-injection point** that makes these vectors deterministic — a live session samples fresh
+random scalars, so only the derivations (not `Ya/Yb/K/ISK`) are reproducible there. The
+`clientSPKI`/`serverSPKI` are fixed test patterns (`00..1f`, `20..3f`), not real certificates; in a
+live session they are the SHA-256 SPKI fingerprints of the two leaf certs (docs/05). Sidewire's
+implementation is additionally verified byte-for-byte against the CPace draft's own published
+X25519/SHA-512 test vectors.
 
 ## Regenerating
 

@@ -20,20 +20,20 @@
       "type" : 2
     },
     {
-      "description" : "PAIR_PROOF frame: 32-byte HMAC payload (example bytes; real proofs in pairing-vectors.json).",
+      "description" : "PAIR_MSG frame: 32-byte CPace share (example bytes; real shares in pairing-vectors.json).",
       "flags" : 0,
       "frameHex" : "040000000000002000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-      "name" : "pair_proof",
+      "name" : "pair_msg",
       "payloadHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
       "seq" : 0,
       "type" : 4
     },
     {
-      "description" : "PAIR_ACK frame: empty payload.",
+      "description" : "PAIR_CONFIRM frame: 64-byte HMAC-SHA512 key-confirmation tag (example bytes).",
       "flags" : 0,
-      "frameHex" : "050000000000000000000001",
-      "name" : "pair_ack",
-      "payloadHex" : "",
+      "frameHex" : "050000000000004000000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "name" : "pair_confirm",
+      "payloadHex" : "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
       "seq" : 1,
       "type" : 5
     },

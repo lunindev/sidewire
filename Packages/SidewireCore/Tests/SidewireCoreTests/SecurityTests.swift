@@ -82,8 +82,8 @@ final class SecurityTests: XCTestCase {
         XCTAssertEqual(sourceTrust.pinned(for: displayID.deviceId)?.spkiHash, displayID.spkiHash.hexString)
 
         // A proof WAS exchanged on this first-time pairing.
-        XCTAssertGreaterThan(sourceTap.sentCount(of: .pairProof), 0)
-        XCTAssertGreaterThan(sourceTap.sentCount(of: .pairAck), 0)
+        XCTAssertGreaterThan(sourceTap.sentCount(of: .pairMsg), 0)
+        XCTAssertGreaterThan(sourceTap.sentCount(of: .pairConfirm), 0)
 
         source.sendVideo(Data([1, 2, 3]), keyframe: true)
         wait(for: [gotVideo], timeout: 5)
@@ -115,6 +115,33 @@ final class SecurityTests: XCTestCase {
         listener.stop()
     }
 
+    /// Security-critical ordering: the Display must NOT reveal its confirmation tag (Tb) until the
+    /// Source's tag (Ta) has verified. Otherwise an attacker sends one guess share, harvests Tb,
+    /// checks the guess offline, and disconnects before sending Ta — never charging the rate
+    /// limiter. With a wrong PIN the Source's Ta never verifies, so the Display must send its share
+    /// but ZERO confirmations.
+    func testDisplayWithholdsConfirmationUntilSourceProves() throws {
+        let displayID = try bag.make(), sourceID = try bag.make()
+        let displayTrust = InMemoryTrustStore(), sourceTrust = InMemoryTrustStore()
+        let box = SessionBox()
+        let (listener, port) = startDisplay(identity: displayID, trust: displayTrust, pin: "111111") { s, tap in
+            box.session = s; box.tap = tap
+        }
+        let (source, _) = makeSource(port: port, identity: sourceID, pin: "999999", trust: sourceTrust) // wrong PIN
+
+        let closed = expectation(description: "source closes")
+        closed.assertForOverFulfill = false
+        source.onReady = { _ in XCTFail("must not stream on a wrong PIN") }
+        source.onClosed = { _ in closed.fulfill() }
+        source.start()
+        wait(for: [closed], timeout: 15)
+
+        XCTAssertEqual(box.tap?.sentCount(of: .pairMsg), 1, "the Display sends its share")
+        XCTAssertEqual(box.tap?.sentCount(of: .pairConfirm), 0,
+                       "the Display must NOT send its confirmation tag before the Source's verifies")
+        listener.stop()
+    }
+
     // MARK: - Paired reconnect
 
     func testPairedReconnectSkipsProofEntirely() throws {
@@ -138,11 +165,11 @@ final class SecurityTests: XCTestCase {
         wait(for: [sourceReady, displayReady], timeout: 15)
 
         // The whole point: NO pairing messages crossed the wire in either direction.
-        XCTAssertEqual(sourceTap.sentCount(of: .pairProof), 0)
-        XCTAssertEqual(sourceTap.receivedCount(of: .pairProof), 0)
-        XCTAssertEqual(sourceTap.sentCount(of: .pairAck), 0)
-        XCTAssertEqual(box.tap?.sentCount(of: .pairProof), 0)
-        XCTAssertEqual(box.tap?.receivedCount(of: .pairAck), 0)
+        XCTAssertEqual(sourceTap.sentCount(of: .pairMsg), 0)
+        XCTAssertEqual(sourceTap.receivedCount(of: .pairMsg), 0)
+        XCTAssertEqual(sourceTap.sentCount(of: .pairConfirm), 0)
+        XCTAssertEqual(box.tap?.sentCount(of: .pairMsg), 0)
+        XCTAssertEqual(box.tap?.receivedCount(of: .pairConfirm), 0)
         // And HELLO did flow (handshake reached streaming).
         XCTAssertGreaterThan(sourceTap.sentCount(of: .hello), 0)
         source.close(reason: "user")
@@ -169,7 +196,7 @@ final class SecurityTests: XCTestCase {
 
         wait(for: [sourceReady, displayReady], timeout: 15)
         // A fresh proof healed the asymmetry, and both sides are pinned again.
-        XCTAssertGreaterThan(sourceTap.sentCount(of: .pairProof), 0, "the Source must re-prove")
+        XCTAssertGreaterThan(sourceTap.sentCount(of: .pairMsg), 0, "the Source must re-prove")
         XCTAssertNotNil(sourceTrust.pinned(for: displayID.deviceId), "source re-pins the display")
         XCTAssertNotNil(displayTrust.pinned(for: sourceID.deviceId), "display keeps the source pinned")
         source.close(reason: "user")
@@ -201,7 +228,7 @@ final class SecurityTests: XCTestCase {
 
         wait(for: [closed], timeout: 15)
         XCTAssertEqual(rbox.reason, SessionConstants.keyChangedReason)
-        XCTAssertEqual(sourceTap.sentCount(of: .pairProof), 0, "no proof/data flows after keyChanged")
+        XCTAssertEqual(sourceTap.sentCount(of: .pairMsg), 0, "no proof/data flows after keyChanged")
         XCTAssertEqual(sourceTap.sentCount(of: .hello), 0)
         listener.stop()
     }
