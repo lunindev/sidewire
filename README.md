@@ -2,18 +2,22 @@
 
 **Turn a spare Mac into a real second display for your primary Mac — over a direct Thunderbolt cable or over Wi‑Fi.**
 
-Sidewire is one universal app. Launch it on both Macs and pick a role: **Source** (shares this Mac's screen by creating a virtual display, capturing and encoding it) or **Display** (shows the other Mac's screen and forwards your keyboard & mouse). It uses `CGVirtualDisplay` + ScreenCaptureKit + hardware HEVC (VideoToolbox) and streams over TCP.
+Sidewire is one universal app. Launch it on both Macs and pick a role: **Source** (shares this Mac's screen by creating a virtual display, capturing and encoding it) or **Display** (shows the other Mac's screen and forwards your keyboard & mouse). It uses `CGVirtualDisplay` + ScreenCaptureKit + hardware HEVC (VideoToolbox) and streams over TCP, secured with **certificate-based TLS 1.3 + a CPace PAKE** for pairing.
 
-> This is a ground-up rebuild of the earlier two-app *MacDisplay* prototype. The full design and phased plan live in [`docs/`](docs/README.md) — start with [docs/00-review-and-decisions.md](docs/00-review-and-decisions.md).
+A spare **Windows or Linux** PC can be a Display too, via the native **Rust client** in
+[`clients/sidewire-viewer/`](clients/sidewire-viewer/) — it speaks the identical wire protocol and pairs
+with a Mac Source. (The Source is always a Mac: creating a virtual display is macOS-specific.)
+
+> This is a ground-up rebuild of the earlier two-app *MacDisplay* prototype. The full design and phased plan live in [`docs/`](docs/README.md) — start with [docs/00-review-and-decisions.md](docs/00-review-and-decisions.md). **What is done, what is left, and the exact "you run this" steps are in [docs/11-status-and-gaps.md](docs/11-status-and-gaps.md).**
 
 ## Status
 
-**Feature-complete for personal use.** All phases 0–5 in [docs/07-roadmap-and-phases.md](docs/07-roadmap-and-phases.md) are implemented:
+**Feature-complete.** All phases **0–9** are implemented and committed; the macOS app is feature-complete and distributable-ready, and the Rust Windows/Linux client is feature-complete (M1–M4). The only work left is **owner-gated** (Apple notarization credential, the Sparkle signing key, and physical testing on the real M4↔i9 pair) — see [docs/11-status-and-gaps.md](docs/11-status-and-gaps.md). Phases 0–5 (macOS core), in [docs/07-roadmap-and-phases.md](docs/07-roadmap-and-phases.md):
 
 - **Phase 0** — one universal app + versioned protocol; end-to-end pipeline.
 - **Phase 1** — reliability: application-level heartbeat, self-healing reconnect with backoff, no-frame & encoder-stall watchdogs, sleep/wake recovery.
 - **Phase 2** — RTT-driven adaptive bitrate; latency/stats.
-- **Phase 3** — TLS-PSK encryption + 6-digit PIN pairing + input-injection gate.
+- **Phase 3** — encryption + 6-digit PIN pairing + input-injection gate *(migrated in Phase 7 to certificate **TLS 1.3** + a **CPace** PAKE — see below)*.
 - **Phase 4** — permission onboarding (+ relaunch), immersive receiver, resolution presets.
 - **Phase 5** — Developer ID signing + hardened runtime + notarized-DMG pipeline (`scripts/release.sh`; see [Distribution & notarization](#distribution--notarization)).
 
@@ -32,7 +36,7 @@ Sidewire/                     app target (SwiftUI, Universal 2, macOS 14+)
   Media/                      ScreenCapture (420v), VideoEncoder (HEVC), VideoDecoder, VideoPresenter, VirtualDisplay
   Input/                      InputCapture / InputInjector (binary 32-byte events)
   UI/                         RolePicker, MenuBar, Source/Display/Settings/Welcome views
-  Pairing/                    PIN → TLS-PSK key derivation (HKDF)
+  Pairing/                    CPace PAKE over cert-TLS 1.3 (docs/05); Keychain trust store
   Settings/                   AppSettings (codec/resolution/fps/bitrate/auto-connect/menu-bar)
   Permissions/, Net/, Diagnostics/, Private/ (CGVirtualDisplay bridge)
 Packages/
@@ -43,24 +47,87 @@ clients/sidewire-viewer/      Rust Windows/Linux Display client (Phase 8; Cargo 
 project.yml                   XcodeGen spec
 ```
 
-## Build
+## Building (console)
 
-Requirements: macOS 14+, Xcode 16+ (developed on Xcode 26 / Swift 6 toolchain), [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+There are two things to build: the **macOS app** (the Source *and* the Display for two Macs) and,
+optionally, the **Rust client** (a Windows/Linux Display). All commands below are copy-pasteable — no
+Xcode GUI needed. Run them from the repo root unless noted.
 
-```bash
-brew install xcodegen        # if needed
-xcodegen generate            # regenerate Sidewire.xcodeproj from project.yml
-open Sidewire.xcodeproj       # build & run the "Sidewire" scheme
-```
+### 1. The macOS app (runs on both your M4 Max and the Intel i9)
 
-Run the package tests without Xcode:
+Requirements: macOS 14+, Xcode 16+ (developed on Xcode 26 / Swift 6), [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ```bash
-(cd Packages/SidewireProtocol && swift test)
-(cd Packages/SidewireCore && swift test)
+brew install xcodegen                 # once, if needed
+xcodegen generate                     # (re)generate Sidewire.xcodeproj from project.yml
+
+# Build a runnable .app from the command line (Debug is fine for your own Macs):
+xcodebuild -project Sidewire.xcodeproj -scheme Sidewire -configuration Debug \
+  -derivedDataPath build/dd build
+# → the app is at:  build/dd/Build/Products/Debug/Sidewire.app
+open build/dd/Build/Products/Debug/Sidewire.app          # launch it on THIS Mac
 ```
 
-The everyday build signs with a stable **Apple Development** identity (by certificate hash, no Xcode account/provisioning needed) so **Screen Recording / Accessibility grants survive rebuilds**. On first use the **Source** requests **Screen Recording** (to capture the virtual display) and **Accessibility** (to inject keyboard/mouse); both Macs request **Local Network**.
+The app is a **Universal 2 binary — the *same* build runs natively on the Apple-silicon M4 Max and the
+Intel i9.** Confirm it:
+
+```bash
+lipo -archs build/dd/Build/Products/Debug/Sidewire.app/Contents/MacOS/Sidewire   # → "x86_64 arm64"
+```
+
+**To try it on the Intel i9:** copy `Sidewire.app` to the i9 (AirDrop / a shared folder / a USB stick)
+and double-click it. An app you build locally and copy over is **not quarantined**, so Gatekeeper
+doesn't block it — no notarization needed just to run it on your own two Macs. Each Mac prompts for its
+own permissions on first launch (Screen Recording + Accessibility on the Source; Local Network on both).
+For a **swap into `/Applications`** or a shippable DMG, use `./scripts/release.sh` (see
+[Distribution](#distribution--notarization)). Use `-configuration Release` above for an optimized build.
+
+Run the package unit tests without Xcode:
+
+```bash
+(cd Packages/SidewireProtocol && swift test)     # 24 tests
+(cd Packages/SidewireCore && swift test)         # 39 tests
+```
+
+The everyday build signs with a stable **Apple Development** identity (by certificate hash, no Xcode
+account/provisioning needed) so **Screen Recording / Accessibility grants survive rebuilds**.
+
+### 2. The Rust client (a Windows/Linux Display)
+
+The i9 test above uses the macOS app on *both* Macs. The **Rust client** is only needed when the Display
+is a **Windows or Linux** machine — it speaks the exact same wire protocol and pairs with a Mac Source.
+You can build and run it on macOS too (to test it locally / against a Mac Source over the LAN).
+
+```bash
+# Prereqs on macOS. ffmpeg@7 is keg-only (it does not shadow a system ffmpeg 8); only the media
+# crate links it. Rust ≥ 1.90.
+brew install rust ffmpeg@7 pkg-config
+
+# The media crate needs these env vars on macOS (keg-only ffmpeg@7 → not on the default paths):
+export FFMPEG_DIR="$(brew --prefix ffmpeg@7)"
+export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig:$PKG_CONFIG_PATH"
+export DYLD_FALLBACK_LIBRARY_PATH="$FFMPEG_DIR/lib:$DYLD_FALLBACK_LIBRARY_PATH"
+
+cd clients/sidewire-viewer
+cargo test              # 74 tests (+1 #[ignore]d live-mDNS round-trip)
+cargo build --release   # → target/release/sidewire-viewer
+```
+
+Run it (it is always the **Display** — it listens, prints a 6-digit pairing PIN, and opens the video
+window once a Mac Source connects):
+
+```bash
+cargo run --release                          # listen on :5005 + advertise over mDNS; wait for a Source
+cargo run --release -- --file some_clip.h264 # smoke test the decode→window pipeline with a local clip (no Mac)
+cargo run --release -- --discover            # list nearby Sidewire Displays on the LAN
+cargo run --release -- --handshake-only      # pair + reach CONFIG then exit (no window)
+```
+
+Building **for the actual Windows/Linux targets** needs that OS's Rust toolchain + a bundled/installed
+ffmpeg 7.x + a Vulkan/D3D GPU driver — see [`clients/sidewire-viewer/README.md`](clients/sidewire-viewer/README.md)
+and [`clients/sidewire-viewer/packaging/`](clients/sidewire-viewer/packaging/) (packaging is scaffolding,
+not yet built on those OSes). ⚠️ **The Rust client has not yet been tested against a live Mac Source** —
+only Rust↔Rust loopback + byte-exact protocol vectors.
 
 ## Usage
 
