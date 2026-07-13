@@ -31,6 +31,9 @@ pollster.workspace = true
 bytemuck.workspace = true
 log.workspace = true
 
+# discovery (M4)
+mdns-sd.workspace = true
+
 [dev-dependencies]
 hex.workspace = true
 pollster.workspace = true

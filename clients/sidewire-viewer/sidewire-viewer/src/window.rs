@@ -94,6 +94,13 @@ impl FrameProducer {
     pub fn should_stop(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
+
+    /// The shared window-close flag, to thread into [`crate::session::Session::run_streaming`] so an
+    /// **in-progress** stream (not just the between-sessions accept loop) unwinds with `BYE("user")`
+    /// the moment the user closes the window.
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop.clone()
+    }
 }
 
 /// Run a video window on this (main) thread, spawning `worker` on a background thread with a
@@ -116,10 +123,22 @@ where
     // queue without limit; `try_send` on the capture path drops when full. The session drains it
     // every ~5 ms, so it only ever fills while idle — where dropping captured input is correct.
     let (input_tx, input_rx) = sync_channel::<InputEventRecord>(INPUT_CHANNEL_CAPACITY);
-    std::thread::spawn(move || worker(producer, input_rx));
+    let worker_handle = std::thread::spawn(move || worker(producer, input_rx));
 
     let mut app = VideoApp::new(title.into(), mailbox, input_tx, stop);
-    event_loop.run_app(&mut app)?;
+    let loop_result = event_loop.run_app(&mut app);
+
+    // The event loop returned because the window closed. `shutdown` set the stop flag *before*
+    // `exit()`, so the worker observes it and unwinds: the streaming loop (polled every ~5 ms) flushes
+    // `BYE("user")`; the re-listen accept poll (every 100 ms) stops accepting; a worker parked in a
+    // blocking handshake read wakes on the wire socket timeout (a few seconds) and then breaks on the
+    // stop check. Join it before we return so a streaming `BYE` is actually written — otherwise
+    // dropping the worker's socket mid-send would strand the Source on its 2.5 s watchdog. Worst-case
+    // close latency is the handshake socket timeout, and only if a peer was stalled mid-pairing.
+    if let Err(e) = worker_handle.join() {
+        log::error!("viewer worker thread panicked: {e:?}");
+    }
+    loop_result?;
     Ok(())
 }
 

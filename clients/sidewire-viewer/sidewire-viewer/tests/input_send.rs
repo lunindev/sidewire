@@ -114,7 +114,9 @@ fn input_records_round_trip_display_to_source() {
             tx.send(*r).unwrap();
         }
         drop(tx);
-        session.run_streaming(&rx, HeartbeatConfig::default(), |_nal, _kf, _pts| {})
+        // No window here — the stop flag is never set; the Source's BYE ends the session.
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        session.run_streaming(&rx, &stop, HeartbeatConfig::default(), |_nal, _kf, _pts| {})
     });
 
     // --- Source: connect, reach CONFIG, collect the 3 INPUT records, then BYE("user").

@@ -8,6 +8,7 @@
 //! (never sends first). For M1 the state machine runs until CONFIG is reached (or the session
 //! closes); heartbeat/streaming arrive in later milestones.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -101,6 +102,10 @@ pub struct SourceStreamPlan {
     /// Send a `PING` every `ping_interval` (to keep the Display's watchdog fed).
     pub send_ping: bool,
     pub ping_interval: Duration,
+    /// Payload for each sent `PING`. `None` uses the monotonic-clock value (production behavior);
+    /// tests set a fixed 8-byte value to assert the Display echoes it back **exactly** in its `PONG`
+    /// (docs/02 § PING/PONG).
+    pub ping_payload: Option<[u8; 8]>,
     /// Reply `PONG` to inbound `PING`s (also keeps the Display alive).
     pub echo_pong: bool,
     /// Hard cap on time spent streaming before closing with `BYE("user")`.
@@ -115,6 +120,7 @@ impl Default for SourceStreamPlan {
             read_timeout: Duration::from_millis(5),
             send_ping: false,
             ping_interval: Duration::from_millis(20),
+            ping_payload: None,
             echo_pong: false,
             max_duration: Duration::from_secs(2),
             stop_after_inputs: None,
@@ -131,6 +137,9 @@ pub struct SourceStreamResult {
     pub pings_received: usize,
     /// Count of inbound `PONG`s from the Display (echoes of this peer's `PING`s).
     pub pongs_received: usize,
+    /// Payload of the most recent `PONG` received from the Display — the Display must echo the exact
+    /// bytes of the `PING` we sent (docs/02 § PING/PONG). `None` if no `PONG` arrived.
+    pub last_pong_payload: Option<Vec<u8>>,
 }
 
 /// Direction of a recorded wire event.
@@ -304,11 +313,20 @@ impl Session {
     ///   the session with reason `"timeout"`;
     /// * an inbound `PING` is answered with `PONG` (exact 8-byte echo); `BYE` closes with its reason.
     ///
+    /// `stop` is the window's stop flag (the one behind `FrameProducer::should_stop`): when the user
+    /// closes the window it is set, and the streaming loop notices it, sends `BYE("user")`, and
+    /// unwinds promptly — so the Source sees a clean goodbye instead of waiting out its 2.5 s
+    /// watchdog. Tests that don't model a window pass a never-set flag.
+    ///
     /// The handshake phase uses the blocking [`Wire::read_frame`]; only the streaming phase switches
-    /// to the short-timeout incremental read. Returns when the peer/watchdog closes. Consumes `self`.
+    /// to the short-timeout incremental read. A window close during the handshake is honored within
+    /// the wire's socket timeout (a blocked read wakes on it, then the `stop` check breaks) — no BYE
+    /// is sent then, which is fine: the peer is still pre-stream. Returns when the peer/watchdog
+    /// closes. Consumes `self`.
     pub fn run_streaming<F>(
         mut self,
         input_rx: &Receiver<InputEventRecord>,
+        stop: &AtomicBool,
         heartbeat: HeartbeatConfig,
         mut on_video: F,
     ) -> SessionOutcome
@@ -316,10 +334,14 @@ impl Session {
         F: FnMut(&[u8], bool, u64),
     {
         self.begin_pairing_or_handshake();
-        // Phase 1 — blocking handshake to CONFIG (unchanged from M1/M2: milliseconds under the coarse
-        // socket timeout). The fine-grained ≤2.5 s heartbeat/watchdog governs only the streaming
-        // phase below, which is where a live static-screen session actually spends its time.
+        // Phase 1 — blocking handshake to CONFIG (milliseconds under the socket timeout in normal
+        // operation). The fine-grained ≤2.5 s heartbeat/watchdog governs only the streaming phase
+        // below. Poll the window `stop` flag each iteration so a close during pairing unwinds within
+        // the socket timeout instead of parking until the peer sends its next frame.
         while !self.ready && !self.closed {
+            if stop.load(Ordering::Relaxed) {
+                break; // window closed mid-handshake — bare close (pre-stream, no BYE expected)
+            }
             match self.wire.read_frame() {
                 Ok(frame) => {
                     self.record_recv(frame.raw_type);
@@ -332,16 +354,18 @@ impl Session {
             }
         }
         if self.ready && !self.closed {
-            self.stream_loop(input_rx, heartbeat, &mut on_video);
+            self.stream_loop(input_rx, stop, heartbeat, &mut on_video);
         }
         self.into_outcome()
     }
 
     /// The post-CONFIG streaming loop: send INPUT + heartbeat, receive VIDEO/PING/BYE, run the
-    /// watchdog. Single IO thread, short-timeout reads so no duty starves another.
+    /// watchdog. Single IO thread, short-timeout reads so no duty starves another. Also polls the
+    /// window `stop` flag so a window close unwinds the loop with `BYE("user")`.
     fn stream_loop<F>(
         &mut self,
         input_rx: &Receiver<InputEventRecord>,
+        stop: &AtomicBool,
         heartbeat: HeartbeatConfig,
         on_video: &mut F,
     ) where
@@ -359,6 +383,13 @@ impl Session {
         let mut last_inbound = now;
 
         while !self.closed {
+            // (0) The user closed the window: say a proper goodbye so the Source doesn't sit on its
+            // 2.5 s watchdog, then unwind. Checked first so a close is honored within one loop tick.
+            if stop.load(Ordering::Relaxed) {
+                self.close_sending_bye("user");
+                break;
+            }
+
             // (a) Drain queued INPUT events and send each as an INPUT frame (docs/02 § INPUT). A
             // closed channel (window/input source gone) just ends the drain; the video link stays up
             // until the peer or the watchdog ends it.
@@ -481,6 +512,7 @@ impl Session {
         let mut inputs: Vec<InputEventRecord> = Vec::new();
         let mut pings_received = 0usize;
         let mut pongs_received = 0usize;
+        let mut last_pong_payload: Option<Vec<u8>> = None;
 
         if self.ready && !self.closed {
             self.record_events = false;
@@ -496,11 +528,11 @@ impl Session {
                 }
                 if plan.send_ping && Instant::now().duration_since(last_ping) >= plan.ping_interval
                 {
-                    self.send(
-                        MessageType::Ping,
-                        0,
-                        &HeartbeatPayload::encode(monotonic_nanos()),
-                    );
+                    let payload = match plan.ping_payload {
+                        Some(bytes) => bytes.to_vec(),
+                        None => HeartbeatPayload::encode(monotonic_nanos()),
+                    };
+                    self.send(MessageType::Ping, 0, &payload);
                     last_ping = Instant::now();
                 }
                 if self.closed {
@@ -527,6 +559,7 @@ impl Session {
                                     &mut inputs,
                                     &mut pings_received,
                                     &mut pongs_received,
+                                    &mut last_pong_payload,
                                 );
                                 if !keep {
                                     break;
@@ -552,6 +585,7 @@ impl Session {
             inputs,
             pings_received,
             pongs_received,
+            last_pong_payload,
         }
     }
 
@@ -564,6 +598,7 @@ impl Session {
         inputs: &mut Vec<InputEventRecord>,
         pings_received: &mut usize,
         pongs_received: &mut usize,
+        last_pong_payload: &mut Option<Vec<u8>>,
     ) -> bool {
         let msg_type = match frame.message_type() {
             Some(t) => t,
@@ -577,7 +612,10 @@ impl Session {
                     self.send(MessageType::Pong, 0, &frame.payload);
                 }
             }
-            MessageType::Pong => *pongs_received += 1,
+            MessageType::Pong => {
+                *pongs_received += 1;
+                *last_pong_payload = Some(frame.payload.clone());
+            }
             MessageType::Bye => {
                 self.handle_bye(&frame.payload);
                 return false;

@@ -16,12 +16,15 @@ use sidewire_proto::Frame;
 
 use crate::tls::{self, TlsError, TlsPeerInfo};
 
-/// A coarse read/write timeout on the underlying socket so a stalled or silent peer cannot hang a
-/// blocking read/write forever — without it, a peer that completes the TCP handshake and then sends
-/// nothing pins the accept thread indefinitely (a pre-auth slowloris). It is deliberately generous:
-/// the fine-grained ≤2.5 s liveness heartbeat + watchdog (docs/02 § Heartbeat) is an M3 concern;
-/// this only bounds the worst case for M1, where the whole exchange to CONFIG takes milliseconds.
-const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(30);
+/// A coarse read/write timeout on the underlying socket, applied during the TLS handshake and the
+/// blocking pre-CONFIG application handshake. Every read/write it guards carries a frame that arrives
+/// within milliseconds in normal operation (TLS 1.3 is 1-RTT; the Source sends `PAIR_MSG` right after
+/// TLS since the PIN is already entered), so a few seconds is ample — it only ever trips a genuinely
+/// stalled/malicious peer. Kept modest (not 30 s) so that (a) a pre-auth slowloris is bounded and
+/// (b) when the user closes the window while the worker is parked in a blocking handshake read, the
+/// process finishes closing within this bound rather than lingering (the streaming phase already
+/// honors the window stop flag within ~5 ms via the short `STREAM_READ_TIMEOUT`).
+const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Errors establishing or using a wire.
 #[derive(Debug, thiserror::Error)]

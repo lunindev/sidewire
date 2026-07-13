@@ -81,6 +81,8 @@ Work through [10-fix-backlog.md](10-fix-backlog.md) in priority order (P0 → P2
 
 ### Phase 8 — Rust viewer (Windows + Linux)
 
+> **Status (2026-07-13): M1–M4 implemented + committed** in [`clients/sidewire-viewer/`](../clients/sidewire-viewer/). Two details in the original milestone text below turned out **stale** and were superseded during implementation: (i) the transport is **rustls (cert TLS 1.3 + CPace)**, *not* "TLS-PSK via the openssl crate" (that predated the Phase-7 security migration — see D10's correction above); (ii) **hardware decode is deferred** — M2 shipped robust **software** decode (ffmpeg 7.x via `ffmpeg-the-third`) with a `DecodeBackend` seam for a later hw path, and "glass-to-glass latency" is only locally instrumented (no live Mac). What *is* done: proto/crypto/TLS→CONFIG (M1), SW decode + wgpu window (M2), winit→HID input + heartbeat + fullscreen + re-listen (M3), mDNS advertise + manual-IP + packaging scaffolding (M4). 74 Rust tests pass; the Swift reference is untouched. The **Acceptance** below is a *hardware* bar — **not yet met**: nothing has run on the real M4↔i9 pair, live Rust↔Swift interop is unproven, and packaging is scaffolding untested on Windows/Linux.
+
 Milestones:
 - **M1:** `sidewire-proto` Rust crate — framing + messages + input records, validated against the Phase 7 golden vectors; TLS 1.3 PSK connect to the Mac listener via `openssl` crate.
 - **M2:** headless→windowed decode: receive stream, FFmpeg hw decode, render in a resizable window; measure glass-to-glass latency vs the Mac client.

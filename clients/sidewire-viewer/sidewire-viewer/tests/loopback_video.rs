@@ -95,8 +95,11 @@ fn run_video_loopback(fixture_name: &str, codec_name: &str, codec: Codec) -> Vec
         // No captured input in this video-only test: a live-but-empty channel (the sender is held so
         // the receiver never disconnects). Default heartbeat is fine — the clip streams in ms.
         let (_input_tx, input_rx) = std::sync::mpsc::channel();
+        // No window here — the stop flag is never set; the Source's BYE ends the session.
+        let stop = std::sync::atomic::AtomicBool::new(false);
         let outcome = session.run_streaming(
             &input_rx,
+            &stop,
             HeartbeatConfig::default(),
             |nal, keyframe, pts| {
                 let decoded = decoder

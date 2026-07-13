@@ -54,7 +54,6 @@ crate reproduces them byte-for-byte; **do not edit** the vectors or the Swift re
   `sidewire_media::DecodeBackend` trait is the decode-backend seam; a VideoToolbox / D3D11VA / VAAPI
   backend can implement it (a moonlight-qt-style ladder) without touching the keyframe-gate / rebuild
   logic — see the `TODO(M3+)` in `sidewire-media/src/decoder.rs`.
-- **M4:** mDNS discovery (`_sidewire._tcp`) + manual-IP fallback + packaging (Windows, Linux).
 
 ## Status — Milestone M3 (input capture + heartbeat/watchdog + fullscreen + re-listen) ✅
 
@@ -92,13 +91,51 @@ crate reproduces them byte-for-byte; **do not edit** the vectors or the Swift re
 - **Middle / extra mouse buttons** are dropped (only left/right cross the wire, matching the Mac).
 - The **handshake phase** still uses the coarse 30 s socket timeout; the fine-grained ≤2.5 s
   heartbeat/watchdog governs the streaming phase (where a live static-screen session actually sits).
-- **Closing the window mid-stream drops the link abruptly (no `BYE("user")`).** The Source detects it
-  via its own ≤2.5 s watchdog and reconnects — docs/03's reliability layer is explicitly designed to
-  tolerate abrupt drops (heartbeat is the sanctioned detector). A graceful close would require the
-  worker to observe the stop flag inside `stream_loop` and the event loop to join the worker before
-  exiting; deferred as a clean-close nicety, not a correctness bug.
 - A live **Rust↔Swift** input round-trip (a real Mac Source injecting the HID usages) and the actual
   fullscreen/latency feel need a live Mac — see below.
+
+## Status — Milestone M4 (mDNS discovery + manual-IP + packaging) ✅
+
+- **`sidewire-viewer::discovery`** — mDNS/DNS-SD via the `mdns-sd` crate. The Rust client is always the
+  **Display**, so its core job is to **advertise** `_sidewire._tcp` — the exact contract a Mac Source
+  browses (`Discovery.swift`) and dials:
+  - `Advertiser` registers `_sidewire._tcp.local.` at the listener port with instance name = the
+    Display's device name and TXT **`did` = deviceId** (+ optional **`tb`** Thunderbolt IP), mirroring
+    `TCPListener.swift` (`NWListener.Service`) + `DisplayController.swift`. Drop/`stop()` unregisters.
+    The service type reuses `sidewire_proto`'s `BONJOUR_SERVICE_TYPE` (`_sidewire._tcp`, docs/02).
+  - `peer_from_service_info` is a **pure** parser (no network) extracting `did`/`tb` from TXT (a value
+    is taken only when present *and* non-empty, mirroring Swift's `txtValue`); `discover()`/`browse()`
+    drive the `--discover` diagnostic. Because the daemon-free construction/parse path is pure, the TXT
+    logic is **unit-tested without multicast** (live multicast doesn't resolve in this dev/CI env — a
+    browse gets `SearchStarted` but never `ServiceResolved`), and the one live advertise→browse
+    round-trip is `#[ignore]`d (documented to run on a real LAN).
+- **Wired into the Display** — listen mode starts advertising `did = deviceId` at the bound port and
+  keeps it up across the re-listen loop (unregisters on shutdown). The listener defaults to port
+  **5005** — the documented **manual-IP fallback** — and advertises that exact port, so a Source can
+  connect by `IP:5005` with zero discovery infrastructure. A **`--discover [secs]`** mode browses and
+  prints nearby Sidewire Displays (diagnostic).
+- **Graceful close on window close** — the window's stop flag is threaded into
+  `Session::run_streaming`/`stream_loop`; when the user closes the window the loop sends **`BYE("user")`**
+  and unwinds, and `window::run` **joins the worker** after the event loop exits so that BYE is flushed
+  before the process ends (the Source sees a clean goodbye instead of waiting out its 2.5 s watchdog).
+- **Packaging scaffolding** — [`packaging/`](packaging/): a per-OS recipe [`README.md`](packaging/README.md)
+  (ffmpeg 7.x dynamic-lib bundling vs static link; wgpu's GPU-driver requirement; Windows `.zip`/MSI,
+  Linux AppImage/`.deb`), a Linux [`sidewire-viewer.desktop`](packaging/sidewire-viewer.desktop), and a
+  GitHub Actions [`ci-release.yml`](packaging/ci-release.yml) cross-build sketch. **Scaffolding only —
+  see below.**
+
+### M4 deferred / honest scope
+- **Packaging is documentation + a CI sketch, NOT built artifacts.** No Windows `.zip`/MSI or Linux
+  AppImage/`.deb` has been produced or run — the cross toolchains and target-OS ffmpeg/wgpu libs are
+  out of reach on this macOS box. A real build must stand up Windows/Linux runners, install ffmpeg 7.x,
+  `cargo build --release`, and bundle the *actual* linked libs (read off `ldd`/`dumpbin`, don't trust
+  the illustrative soname list). See [`packaging/README.md`](packaging/README.md).
+- **No `tb` (Thunderbolt) TXT yet** — the Rust Display has no interface-monitor equivalent to the Mac's
+  `InterfaceMonitor.localThunderboltIP()`, so it advertises `did` only. A Source's Wi-Fi connect still
+  works; a one-click cable connect would need the Rust side to discover its own TB link-local IP.
+- **No live mDNS interop.** The advertise/parse logic is proven structurally + against the Swift
+  contract by inspection; a real Mac Source browsing and resolving the Rust Display needs a working
+  multicast LAN (the `#[ignore]`d round-trip) and remains open, like all Rust↔Swift interop below.
 
 ## ⚠️ Untested on real hardware
 Nothing here has run against a live **Mac Source** yet. Proven with no Mac: byte-for-byte vector
@@ -107,23 +144,34 @@ end-to-end Rust↔Rust **video** loopback (Source replays a fixture clip → Dis
 real TLS 1.3); the decode+render pipeline (offscreen wgpu render of a known YUV frame); and, new in
 M3, an **input-send** loopback (INPUT records round-trip Display→Source byte-identically over real
 TLS) plus **heartbeat/watchdog** loopbacks (silent Source → `"timeout"`; active Source → stays alive
-+ echoes PONG). Still open and needing a live Mac: **Rust↔Swift interop** (a real TLS 1.3 handshake +
-channel binding on genuine leaf certs; Rust decoding a real VideoToolbox HEVC/H.264 stream; the Mac
-Source **injecting** the HID usages the Rust Display sends), the actual fullscreen/latency feel, and
++ echoes the **exact** PING payload back as PONG); and, new in M4, **structural mDNS** advertise/parse
+tests (a constructed `ServiceInfo` recovers `did`/`tb`; missing/empty → `None`) proving the TXT
+contract without multicast. Still open and needing a live Mac: **Rust↔Swift interop** (a real TLS 1.3
+handshake + channel binding on genuine leaf certs; Rust decoding a real VideoToolbox HEVC/H.264 stream;
+the Mac Source **injecting** the HID usages the Rust Display sends; a Mac Source **discovering** the
+Rust Display over live mDNS — the `#[ignore]`d round-trip), the actual fullscreen/latency feel, and
 **real M4↔i9 hardware**. Confirm before any release.
 
 ## Build & test
 
 ```sh
 cd clients/sidewire-viewer
-cargo test                 # 68 tests: vectors + CPace + TLS loopback + decode + render
-                           #   + M3 keymap/input-translate (unit) + heartbeat + input-send loopbacks
+cargo test                 # 73 tests (+1 #[ignore]d live-mDNS round-trip): vectors + CPace + TLS
+                           #   loopback + decode + render + keymap/input (unit) + heartbeat +
+                           #   input-send loopbacks + M4 structural mDNS advertise/parse
 cargo build --release      # the sidewire-viewer binary
 cargo run --bin sidewire-viewer -- --file <clip.h264|.h265>   # decode a local clip → window (no Mac)
-cargo run --bin sidewire-viewer -- [port]                     # listen (re-listen loop): pair → CONFIG
+cargo run --bin sidewire-viewer -- [port]                     # listen (re-listen loop, default :5005):
+                                                              #   advertise _sidewire._tcp, pair → CONFIG
                                                               #   → stream (VIDEO in, INPUT out) → window
 cargo run --bin sidewire-viewer -- --handshake-only [port]    # M1 behavior: run one session to CONFIG
+cargo run --bin sidewire-viewer -- --discover [secs]          # M4 diagnostic: browse for nearby Displays
 ```
+
+**Discovery & manual connect:** in listen mode the Display advertises `_sidewire._tcp` (TXT `did`) at
+its port and defaults to **5005**. A Mac Source can find it via mDNS, or connect **manually** to
+`IP:5005` with no discovery at all (the guaranteed fallback, docs/02 § Constants). Packaging scaffolding
+(unbuilt — scaffolding only) lives in [`packaging/`](packaging/).
 
 In the window: **F11** toggles borderless fullscreen, **Esc** exits it. ⌘/Super combos and Esc stay
 **local** (never forwarded), so you always keep control of the Display machine.

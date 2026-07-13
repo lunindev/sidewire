@@ -112,7 +112,9 @@ fn spawn_display(p: &Peers, heartbeat: HeartbeatConfig) -> std::thread::JoinHand
         );
         // A live (never-disconnected) but empty input channel: no captured input in these tests.
         let (_tx, rx) = mpsc::channel();
-        session.run_streaming(&rx, heartbeat, |_nal, _kf, _pts| {})
+        // No window in these tests, so the stop flag is never set (the peer/watchdog drives close).
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        session.run_streaming(&rx, &stop, heartbeat, |_nal, _kf, _pts| {})
     })
 }
 
@@ -182,21 +184,23 @@ fn silent_source_trips_the_watchdog() {
 #[test]
 fn active_source_keeps_the_link_alive() {
     let p = pre_paired();
-    // Generous margin: 20 ms PINGs vs a 300 ms silence budget (10×+), so scheduling jitter under
-    // parallel test load can't spuriously trip the watchdog.
+    // Generous margin: 20 ms PINGs vs a 500 ms silence budget (25×), so scheduling jitter under
+    // parallel test load (e.g. right after a full recompile) can't spuriously trip the watchdog.
     let heartbeat = HeartbeatConfig {
         interval: Duration::from_millis(20),
-        timeout: Duration::from_millis(300),
+        timeout: Duration::from_millis(500),
     };
     let display = spawn_display(&p, heartbeat);
 
-    // The Source pings every 20 ms and echoes the Display's pings, for ~600 ms (2× the budget),
-    // then closes with BYE("user").
+    // The Source pings every 20 ms (with a known 8-byte payload) and echoes the Display's pings, for
+    // ~600 ms (2× the budget), then closes with BYE("user").
+    const PING_PAYLOAD: [u8; 8] = [0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
     let src = run_source(
         &p,
         SourceStreamPlan {
             send_ping: true,
             ping_interval: Duration::from_millis(20),
+            ping_payload: Some(PING_PAYLOAD),
             echo_pong: true,
             max_duration: Duration::from_millis(600),
             ..Default::default()
@@ -214,6 +218,13 @@ fn active_source_keeps_the_link_alive() {
     assert!(
         src.pongs_received > 0,
         "the Source should have received PONGs echoing its PINGs"
+    );
+    // …and the PONG carried the EXACT 8-byte PING payload the Source sent (docs/02 § PING/PONG —
+    // the responder must echo the ping bytes verbatim, not synthesize its own).
+    assert_eq!(
+        src.last_pong_payload.as_deref(),
+        Some(&PING_PAYLOAD[..]),
+        "the Display must echo the exact PING payload in its PONG"
     );
     // The Display also ORIGINATED its own PINGs on its cadence (stream_loop duty b) — this is what
     // keeps a real Mac Source's watchdog fed on a static screen, so assert it independently of PONG.

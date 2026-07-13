@@ -1,4 +1,4 @@
-//! Sidewire Rust Display client (Phase 8, through M3). Three entry paths:
+//! Sidewire Rust Display client (Phase 8, through M4). Four entry paths:
 //!
 //! * `--file <clip.h264|.h265>` — decode a local Annex-B clip and render it to a window on a loop.
 //!   The manual visual smoke test of the whole decode→render pipeline; needs no Mac.
@@ -9,10 +9,13 @@
 //!   toggles borderless fullscreen; `Esc` exits it (both stay local). (End-to-end needs a live Mac.)
 //! * `--handshake-only [port]` — the M1 behavior, preserved: accept one connection, drive it to
 //!   CONFIG, log the negotiated config, exit. No window.
+//! * `--discover [secs]` — M4 diagnostic: browse `_sidewire._tcp` and print nearby Sidewire
+//!   Displays. (Live multicast resolution is network-dependent — see [`window`]/`discovery`.)
 //!
 //! The winit event loop runs on the **main thread** (macOS requirement); the network/session/decode
 //! runs on a worker thread that posts decoded frames to the window and drains captured input from it
-//! (see [`window`]).
+//! (see [`window`]). In listen mode the Display also advertises `_sidewire._tcp` over mDNS (M4) so a
+//! Mac Source can discover it; manual `IP:5005` works without any discovery.
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -21,6 +24,7 @@ use std::time::{Duration, Instant};
 use sidewire_crypto::Identity;
 use sidewire_media::{detect_codec, split_access_units, Codec, Decoder};
 use sidewire_proto::{Capabilities, DisplayInfo, Hello, Role};
+use sidewire_viewer::discovery::{self, Advertiser};
 use sidewire_viewer::rate_limiter::PairingRateLimiter;
 use sidewire_viewer::session::{HeartbeatConfig, PairingConfig, Session};
 use sidewire_viewer::stats::{FrameStats, LatencyTracker};
@@ -28,6 +32,10 @@ use sidewire_viewer::tls;
 use sidewire_viewer::trust_store::{InMemoryTrustStore, TrustStoring};
 use sidewire_viewer::window::{self, FrameProducer};
 use sidewire_viewer::wire::Wire;
+
+/// The Display's human-facing name — used both as the HELLO `deviceName` and the mDNS instance name
+/// (mirrors the Swift Display advertising its `deviceName`).
+const DISPLAY_NAME: &str = "Sidewire Rust Display";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -37,6 +45,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .get(pos + 1)
             .ok_or("--file requires a path to a .h264/.h265 Annex-B clip")?;
         return run_file_mode(path);
+    }
+
+    if let Some(pos) = args.iter().position(|a| a == "--discover") {
+        // Clamp to a sane range: a huge value would overflow `Instant + Duration` in the browse loop.
+        let secs: u64 = args
+            .get(pos + 1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3)
+            .clamp(1, 3600);
+        return run_discover(Duration::from_secs(secs));
     }
 
     let handshake_only = args.iter().any(|a| a == "--handshake-only");
@@ -131,6 +149,31 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     println!("Sidewire Display (Rust) — listening on {bound}");
     println!("  device id : {}", identity.device_id);
     println!("  pairing PIN: {pin}   (enter this on the Source Mac)");
+
+    // Advertise `_sidewire._tcp` (did = our device id) at the bound port so a Mac Source can discover
+    // us (mirrors the Swift Display). mDNS is best-effort: if it can't start, manual IP:port still
+    // works. The advertiser is held for the whole listen session (across the re-listen loop) — kept
+    // in this frame, which outlives the blocking `window::run` — and unregisters on drop.
+    // (No Thunderbolt-IP source on the Rust side yet, so `tb` is omitted — documented in README.)
+    let _advertiser: Option<Advertiser> =
+        match Advertiser::start(DISPLAY_NAME, &identity.device_id, bound.port(), None) {
+            Ok(a) => {
+                println!(
+                    "  mDNS      : advertising \"{}\" as {} on port {}",
+                    DISPLAY_NAME,
+                    discovery::SERVICE_TYPE,
+                    bound.port()
+                );
+                Some(a)
+            }
+            Err(e) => {
+                eprintln!(
+                "  mDNS      : advertise failed ({e}); Sources can still connect via manual IP:{}",
+                bound.port()
+            );
+                None
+            }
+        };
     println!("  a window opens once a Source connects and streaming begins.");
     println!("  keys: F11 = toggle fullscreen, Esc = exit fullscreen (both stay local; ⌘/Esc are never sent).");
 
@@ -145,6 +188,9 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                 producer.close();
                 return;
             }
+            // The window-close flag, threaded into each streaming session so an in-progress stream
+            // (not just the between-sessions accept poll below) unwinds with BYE("user") on close.
+            let stop = producer.stop_flag();
             while !producer.should_stop() {
                 let (tcp, peer_addr) = match listener.accept() {
                     Ok(v) => v,
@@ -180,7 +226,7 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                 let hello = Hello::new(
                     Role::Display,
                     identity.device_id.clone(),
-                    "Sidewire Rust Display",
+                    DISPLAY_NAME,
                     session_id(),
                     display_capabilities(),
                 );
@@ -206,6 +252,7 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                 let mut tracker = LatencyTracker::new(120);
                 let outcome = session.run_streaming(
                     &input_rx,
+                    &stop,
                     HeartbeatConfig::default(),
                     |nal, keyframe, pts| {
                         if decoder_failed {
@@ -304,7 +351,7 @@ fn run_handshake_only(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let hello = Hello::new(
         Role::Display,
         identity.device_id.clone(),
-        "Sidewire Rust Display",
+        DISPLAY_NAME,
         session_id(),
         display_capabilities(),
     );
@@ -339,6 +386,37 @@ fn run_handshake_only(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             "session closed before CONFIG: reason = {}",
             outcome.close_reason.as_deref().unwrap_or("<none>")
         ),
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// --discover: browse the LAN for Sidewire Displays (M4 diagnostic)
+// ---------------------------------------------------------------------------
+
+fn run_discover(timeout: Duration) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "Sidewire Display (Rust) — browsing {} for {:?}...",
+        discovery::SERVICE_TYPE,
+        timeout
+    );
+    let peers = discovery::discover(timeout)?;
+    if peers.is_empty() {
+        println!("no Sidewire Displays found.");
+        println!("(mDNS multicast may be blocked on this network/host; a manual IP:5005 connect always works.)");
+        return Ok(());
+    }
+    println!("found {} Display(s):", peers.len());
+    for p in &peers {
+        println!(
+            "  {} — host {} port {} did={} tb={} addrs={:?}",
+            p.instance_name,
+            p.host,
+            p.port,
+            p.device_id.as_deref().unwrap_or("-"),
+            p.thunderbolt_ip.as_deref().unwrap_or("-"),
+            p.addresses,
+        );
     }
     Ok(())
 }

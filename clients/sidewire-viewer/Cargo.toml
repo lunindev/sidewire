@@ -47,6 +47,11 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-pki-types = "1"
 x509-parser = "0.16"
 
+# discovery (mDNS/DNS-SD). Advertises `_sidewire._tcp` (the Display's job) and can browse for a
+# `--discover` diagnostic. Pure `ServiceInfo` construction/parse works without a running daemon,
+# so the TXT parse logic is unit-testable off the network (multicast doesn't resolve in CI).
+mdns-sd = "0.13"
+
 # util
 hex = "0.4"
 log = "0.4"
