@@ -8,16 +8,55 @@
 //! (never sends first). For M1 the state machine runs until CONFIG is reached (or the session
 //! closes); heartbeat/streaming arrive in later milestones.
 
-use std::sync::Arc;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use sidewire_proto::{
-    video_flags, Config, DisplayInfo, Hello, MessageType, ReasonMessage, Role, VideoPayload,
+    video_flags, Config, DisplayInfo, FrameParser, HeartbeatPayload, Hello, InputEventRecord,
+    MessageType, ReasonMessage, Role, VideoPayload,
 };
 
 use crate::rate_limiter::PairingRateLimiter;
 use crate::trust_store::{TrustStoring, TrustedPeer};
-use crate::wire::Wire;
+use crate::wire::{self, Wire};
 use sidewire_crypto::cpace;
+
+/// Injectable heartbeat/watchdog timing (docs/02 § Heartbeat, docs/03 § watchdog). The defaults are
+/// the normative 500 ms PING cadence / 2500 ms silence budget; tests inject much shorter values so
+/// they exercise the timeout/keep-alive paths without waiting real seconds.
+#[derive(Debug, Clone, Copy)]
+pub struct HeartbeatConfig {
+    /// Transmit a `PING` at least this often (docs/02: `HEARTBEAT_INTERVAL`).
+    pub interval: Duration,
+    /// Declare the peer dead — close with reason `"timeout"` — after this much inbound silence
+    /// (docs/02: `HEARTBEAT_TIMEOUT`). **Any** inbound frame resets the watchdog.
+    pub timeout: Duration,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs_f64(sidewire_proto::HEARTBEAT_INTERVAL_SECS),
+            timeout: Duration::from_secs_f64(sidewire_proto::HEARTBEAT_TIMEOUT_SECS),
+        }
+    }
+}
+
+/// Short socket read timeout used during streaming so an idle read returns promptly and the single
+/// IO thread can service the INPUT channel + heartbeat between reads (see [`Session::run_streaming`]).
+const STREAM_READ_TIMEOUT: Duration = Duration::from_millis(5);
+
+/// Buffer size for one incremental streaming read. Large enough to swallow a decent chunk of a
+/// VIDEO frame per syscall, small enough to stay off the stack cheaply.
+const STREAM_READ_BUF: usize = 64 * 1024;
+
+/// A process-monotonic nanosecond clock for `PING` payloads. The value is only ever echoed back in a
+/// `PONG` and diffed on the originator's own clock (docs/02 § PING/PONG), so the epoch is arbitrary.
+fn monotonic_nanos() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64
+}
 
 /// Everything the Session needs to run (or skip) CPace before HELLO. Mirrors `PairingConfig`.
 pub struct PairingConfig {
@@ -50,6 +89,48 @@ pub struct OutgoingVideo {
     pub nal: Vec<u8>,
     pub keyframe: bool,
     pub pts_nanos: u64,
+}
+
+/// **Test/loopback helper.** How the Source peer should behave in the streaming phase after CONFIG,
+/// driving [`Session::run_source_stream`]. Lets a test exercise the Display's heartbeat/watchdog and
+/// input-send paths without a live Mac.
+#[derive(Debug, Clone)]
+pub struct SourceStreamPlan {
+    /// Short incremental read timeout (mirrors the Display's streaming reader).
+    pub read_timeout: Duration,
+    /// Send a `PING` every `ping_interval` (to keep the Display's watchdog fed).
+    pub send_ping: bool,
+    pub ping_interval: Duration,
+    /// Reply `PONG` to inbound `PING`s (also keeps the Display alive).
+    pub echo_pong: bool,
+    /// Hard cap on time spent streaming before closing with `BYE("user")`.
+    pub max_duration: Duration,
+    /// Stop (and `BYE("user")`) as soon as this many INPUT records have been collected.
+    pub stop_after_inputs: Option<usize>,
+}
+
+impl Default for SourceStreamPlan {
+    fn default() -> Self {
+        Self {
+            read_timeout: Duration::from_millis(5),
+            send_ping: false,
+            ping_interval: Duration::from_millis(20),
+            echo_pong: false,
+            max_duration: Duration::from_secs(2),
+            stop_after_inputs: None,
+        }
+    }
+}
+
+/// **Test/loopback helper.** What the Source peer observed while streaming (see [`SourceStreamPlan`]).
+pub struct SourceStreamResult {
+    pub outcome: SessionOutcome,
+    /// INPUT records received from the Display, decoded from the 32-byte wire form.
+    pub inputs: Vec<InputEventRecord>,
+    /// Count of inbound `PING`s from the Display.
+    pub pings_received: usize,
+    /// Count of inbound `PONG`s from the Display (echoes of this peer's `PING`s).
+    pub pongs_received: usize,
 }
 
 /// Direction of a recorded wire event.
@@ -147,6 +228,10 @@ pub struct Session {
     closed: bool,
     close_reason: Option<String>,
     events: Vec<WireEvent>,
+    /// Whether to append to [`Session::events`]. On during the (short) handshake so tests can assert
+    /// frame ordering; turned **off** once streaming begins so a long session's hot-path frames
+    /// (VIDEO/INPUT/PING/PONG) don't grow the log without bound.
+    record_events: bool,
 }
 
 impl Session {
@@ -181,6 +266,7 @@ impl Session {
             closed: false,
             close_reason: None,
             events: Vec::new(),
+            record_events: true,
         }
     }
 
@@ -206,29 +292,38 @@ impl Session {
         self.into_outcome()
     }
 
-    /// Drive the **Display** session through pairing + HELLO to CONFIG and then into the M2 streaming
-    /// loop: read frames and, on each `VIDEO`, parse the payload (docs/02 § VIDEO) and invoke
-    /// `on_video(nal, keyframe, pts_nanos)` — where `keyframe` is the FRAME `flags` keyframe bit
-    /// (`0x01`) and `pts_nanos` is the subheader PTS. `PING`s are answered with `PONG` and `BYE` is
-    /// honored (a real ≤2.5 s heartbeat/watchdog is M3; [`crate::wire`] has a coarse interim
-    /// timeout). Returns when the peer closes (BYE / EOF). Consumes `self`.
-    pub fn run_streaming<F>(mut self, mut on_video: F) -> SessionOutcome
+    /// Drive the **Display** session through pairing + HELLO to CONFIG and then into the streaming
+    /// loop that runs all three streaming duties on one TLS connection, single-threaded (no
+    /// concurrent-write race): it **receives** VIDEO (each `VIDEO` payload parsed per docs/02 § VIDEO
+    /// and handed to `on_video(nal, keyframe, pts_nanos)` — `keyframe` = the FRAME `flags` keyframe
+    /// bit `0x01`, `pts_nanos` = the subheader PTS), **sends** INPUT drained from `input_rx`, and
+    /// runs the **heartbeat/watchdog** (docs/02 § Heartbeat, docs/03 § watchdog):
+    ///
+    /// * a `PING` is sent every `heartbeat.interval`;
+    /// * **any** inbound frame resets the watchdog; inbound silence beyond `heartbeat.timeout` closes
+    ///   the session with reason `"timeout"`;
+    /// * an inbound `PING` is answered with `PONG` (exact 8-byte echo); `BYE` closes with its reason.
+    ///
+    /// The handshake phase uses the blocking [`Wire::read_frame`]; only the streaming phase switches
+    /// to the short-timeout incremental read. Returns when the peer/watchdog closes. Consumes `self`.
+    pub fn run_streaming<F>(
+        mut self,
+        input_rx: &Receiver<InputEventRecord>,
+        heartbeat: HeartbeatConfig,
+        mut on_video: F,
+    ) -> SessionOutcome
     where
         F: FnMut(&[u8], bool, u64),
     {
         self.begin_pairing_or_handshake();
-        loop {
-            if self.closed {
-                break;
-            }
+        // Phase 1 — blocking handshake to CONFIG (unchanged from M1/M2: milliseconds under the coarse
+        // socket timeout). The fine-grained ≤2.5 s heartbeat/watchdog governs only the streaming
+        // phase below, which is where a live static-screen session actually spends its time.
+        while !self.ready && !self.closed {
             match self.wire.read_frame() {
                 Ok(frame) => {
                     self.record_recv(frame.raw_type);
-                    if self.ready {
-                        self.handle_stream_frame(frame, &mut on_video);
-                    } else {
-                        self.handle(frame);
-                    }
+                    self.handle(frame);
                 }
                 Err(_) => {
                     self.mark_transport_closed();
@@ -236,7 +331,97 @@ impl Session {
                 }
             }
         }
+        if self.ready && !self.closed {
+            self.stream_loop(input_rx, heartbeat, &mut on_video);
+        }
         self.into_outcome()
+    }
+
+    /// The post-CONFIG streaming loop: send INPUT + heartbeat, receive VIDEO/PING/BYE, run the
+    /// watchdog. Single IO thread, short-timeout reads so no duty starves another.
+    fn stream_loop<F>(
+        &mut self,
+        input_rx: &Receiver<InputEventRecord>,
+        heartbeat: HeartbeatConfig,
+        on_video: &mut F,
+    ) where
+        F: FnMut(&[u8], bool, u64),
+    {
+        // A live session runs for hours at 60 fps — stop growing the event log now (it is a
+        // short-handshake test aid, not a hot-path buffer).
+        self.record_events = false;
+        let _ = self.wire.set_read_timeout(Some(STREAM_READ_TIMEOUT));
+
+        let mut parser = FrameParser::new();
+        let mut buf = [0u8; STREAM_READ_BUF];
+        let now = Instant::now();
+        let mut last_ping = now;
+        let mut last_inbound = now;
+
+        while !self.closed {
+            // (a) Drain queued INPUT events and send each as an INPUT frame (docs/02 § INPUT). A
+            // closed channel (window/input source gone) just ends the drain; the video link stays up
+            // until the peer or the watchdog ends it.
+            while let Ok(rec) = input_rx.try_recv() {
+                self.send(MessageType::Input, 0, &rec.encode());
+                if self.closed {
+                    break;
+                }
+            }
+            if self.closed {
+                break;
+            }
+
+            let now = Instant::now();
+            // (b) Keep the link warm: PING on cadence (docs/02: every HEARTBEAT_INTERVAL).
+            if now.duration_since(last_ping) >= heartbeat.interval {
+                self.send(
+                    MessageType::Ping,
+                    0,
+                    &HeartbeatPayload::encode(monotonic_nanos()),
+                );
+                last_ping = now;
+            }
+            if self.closed {
+                break;
+            }
+            // (c) Watchdog: inbound silence past the budget ⇒ peer is dead (docs/02 § Heartbeat).
+            if now.duration_since(last_inbound) > heartbeat.timeout {
+                self.close_sending_bye("timeout");
+                break;
+            }
+
+            // (d) Read whatever plaintext is available; feed the incremental parser.
+            match self.wire.read_available(&mut buf) {
+                Ok(0) => {
+                    self.mark_transport_closed(); // clean TLS EOF
+                    break;
+                }
+                Ok(n) => match parser.append(&buf[..n]) {
+                    Ok(frames) => {
+                        for frame in frames {
+                            last_inbound = Instant::now(); // ANY inbound frame resets the watchdog
+                            self.record_recv(frame.raw_type);
+                            self.handle_stream_frame(frame, on_video);
+                            if self.closed {
+                                break;
+                            }
+                        }
+                    }
+                    // A corrupt/oversized declared length is an unrecoverable framing error.
+                    Err(_) => {
+                        self.close_sending_bye("transport");
+                        break;
+                    }
+                },
+                Err(ref e) if wire::is_timeout(e) => { /* no frame yet — loop and service duties */
+                }
+                Err(_) => {
+                    self.mark_transport_closed();
+                    break;
+                }
+            }
+        }
     }
 
     /// **Test/loopback helper (Source peer).** Drive the Source handshake to CONFIG, then send each
@@ -273,12 +458,143 @@ impl Session {
         self.into_outcome()
     }
 
-    /// Record an inbound frame in the event log.
+    /// **Test/loopback helper (Source peer).** Drive the Source handshake to CONFIG, then run a
+    /// streaming loop per `plan`: optionally send periodic `PING`, optionally echo `PONG`, collect
+    /// inbound INPUT records, and count inbound `PING`/`PONG`, until the peer closes / `max_duration`
+    /// elapses / `stop_after_inputs` is reached — then close with `BYE("user")`. Mirrors the Display
+    /// stream loop's shape so a test can exercise the heartbeat + input-send paths without a Mac.
+    pub fn run_source_stream(mut self, plan: SourceStreamPlan) -> SourceStreamResult {
+        self.begin_pairing_or_handshake();
+        while !self.ready && !self.closed {
+            match self.wire.read_frame() {
+                Ok(frame) => {
+                    self.record_recv(frame.raw_type);
+                    self.handle(frame);
+                }
+                Err(_) => {
+                    self.mark_transport_closed();
+                    break;
+                }
+            }
+        }
+
+        let mut inputs: Vec<InputEventRecord> = Vec::new();
+        let mut pings_received = 0usize;
+        let mut pongs_received = 0usize;
+
+        if self.ready && !self.closed {
+            self.record_events = false;
+            let _ = self.wire.set_read_timeout(Some(plan.read_timeout));
+            let mut parser = FrameParser::new();
+            let mut buf = [0u8; STREAM_READ_BUF];
+            let start = Instant::now();
+            let mut last_ping = start;
+
+            loop {
+                if self.closed {
+                    break;
+                }
+                if plan.send_ping && Instant::now().duration_since(last_ping) >= plan.ping_interval
+                {
+                    self.send(
+                        MessageType::Ping,
+                        0,
+                        &HeartbeatPayload::encode(monotonic_nanos()),
+                    );
+                    last_ping = Instant::now();
+                }
+                if self.closed {
+                    break;
+                }
+                if Instant::now().duration_since(start) >= plan.max_duration
+                    || plan.stop_after_inputs.is_some_and(|n| inputs.len() >= n)
+                {
+                    self.close_sending_bye("user");
+                    break;
+                }
+
+                match self.wire.read_available(&mut buf) {
+                    Ok(0) => {
+                        self.mark_transport_closed();
+                        break;
+                    }
+                    Ok(n) => match parser.append(&buf[..n]) {
+                        Ok(frames) => {
+                            for frame in frames {
+                                let keep = self.handle_source_stream_frame(
+                                    frame,
+                                    plan.echo_pong,
+                                    &mut inputs,
+                                    &mut pings_received,
+                                    &mut pongs_received,
+                                );
+                                if !keep {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            self.close_sending_bye("transport");
+                            break;
+                        }
+                    },
+                    Err(ref e) if wire::is_timeout(e) => {}
+                    Err(_) => {
+                        self.mark_transport_closed();
+                        break;
+                    }
+                }
+            }
+        }
+
+        SourceStreamResult {
+            outcome: self.into_outcome(),
+            inputs,
+            pings_received,
+            pongs_received,
+        }
+    }
+
+    /// Source-side streaming dispatch (test helper): collect INPUT, count PING/PONG (echo PONG if
+    /// asked), stop on BYE. Returns `false` to stop the loop.
+    fn handle_source_stream_frame(
+        &mut self,
+        frame: sidewire_proto::Frame,
+        echo_pong: bool,
+        inputs: &mut Vec<InputEventRecord>,
+        pings_received: &mut usize,
+        pongs_received: &mut usize,
+    ) -> bool {
+        let msg_type = match frame.message_type() {
+            Some(t) => t,
+            None => return true, // unknown/reserved → skip
+        };
+        match msg_type {
+            MessageType::Input => inputs.extend(InputEventRecord::decode_batch(&frame.payload)),
+            MessageType::Ping => {
+                *pings_received += 1;
+                if echo_pong {
+                    self.send(MessageType::Pong, 0, &frame.payload);
+                }
+            }
+            MessageType::Pong => *pongs_received += 1,
+            MessageType::Bye => {
+                self.handle_bye(&frame.payload);
+                return false;
+            }
+            _ => {}
+        }
+        !self.closed
+    }
+
+    /// Record an inbound frame in the event log (no-op once streaming turns recording off).
     fn record_recv(&mut self, raw_type: u8) {
-        self.events.push(WireEvent {
-            dir: Dir::Recv,
-            raw_type,
-        });
+        if self.record_events {
+            self.events.push(WireEvent {
+                dir: Dir::Recv,
+                raw_type,
+            });
+        }
     }
 
     /// EOF or transport failure. If the peer already told us a reason (BYE), keep it; otherwise this
@@ -336,10 +652,12 @@ impl Session {
             return;
         }
         let seq = self.next_seq();
-        self.events.push(WireEvent {
-            dir: Dir::Sent,
-            raw_type: msg_type.as_u8(),
-        });
+        if self.record_events {
+            self.events.push(WireEvent {
+                dir: Dir::Sent,
+                raw_type: msg_type.as_u8(),
+            });
+        }
         if self
             .wire
             .write_frame(msg_type.as_u8(), flags, seq, payload)

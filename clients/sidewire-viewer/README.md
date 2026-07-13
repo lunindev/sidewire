@@ -50,34 +50,83 @@ crate reproduces them byte-for-byte; **do not edit** the vectors or the Swift re
   is no live Mac; M2 provides the instrumentation, real numbers come on hardware.
 
 ### Deferred / not yet done
-- **Hardware decode is deferred to M3+.** M2 ships robust software decode as the baseline. The
+- **Hardware decode is deferred.** M2 ships robust software decode as the baseline. The
   `sidewire_media::DecodeBackend` trait is the decode-backend seam; a VideoToolbox / D3D11VA / VAAPI
   backend can implement it (a moonlight-qt-style ladder) without touching the keyframe-gate / rebuild
   logic — see the `TODO(M3+)` in `sidewire-media/src/decoder.rs`.
-- **M3:** borderless fullscreen + input capture (winit → HID usages) + the ≤2.5 s heartbeat/watchdog
-  liveness contract & reconnect parity. *(Blocking IO still has only a coarse 30 s socket timeout as
-  interim protection against a stalled peer; the real heartbeat lands here.)*
 - **M4:** mDNS discovery (`_sidewire._tcp`) + manual-IP fallback + packaging (Windows, Linux).
 
+## Status — Milestone M3 (input capture + heartbeat/watchdog + fullscreen + re-listen) ✅
+
+- **`sidewire-viewer::input`** — winit `WindowEvent`s → platform-neutral `InputEventRecord`s
+  (docs/02 § INPUT), a faithful port of the Mac Display's `InputCapture.swift` + `KeyMapping.swift`:
+  - `input::keymap::hid_usage` maps every winit `KeyCode` to the **same USB-HID usage** as
+    `HIDKeyboardMap.swift` (`KeyA`→0x04, `Enter`→0x28, `ArrowUp`→0x52, `ShiftLeft`→0xE1, …); an
+    unmapped key returns `None` (dropped, never sent as an ambiguous 0);
+  - `InputTranslator` (a pure, unit-testable struct — no window needed) normalizes pointer coords
+    `0..1` into the **rendered video rect** (aspect-fit letterbox, clamped; no Y-flip — winit's
+    top-left origin already matches the wire), tracks left/right drag + double-click multiplicity,
+    emits scroll deltas in **pixels** (line deltas × `LINE_SCROLL_PX`), maps modifier keys to
+    `flagsChanged` + the HID boot-protocol modifier byte (left-hand bit), and keeps **⌘/Super combos
+    and Escape LOCAL** (never forwarded, key-state balanced) so the user always keeps control of the
+    Display machine and can exit fullscreen.
+- **Heartbeat / watchdog / streaming IO** — `Session::run_streaming` now runs all three streaming
+  duties on **one TLS connection, single-threaded** (no concurrent-write race): receive VIDEO, send
+  INPUT drained from an mpsc channel, and run the heartbeat. The streaming read switches from the
+  blocking `read_frame` to a **short-timeout incremental** read (`Wire::read_available` at a ~5 ms
+  socket timeout, feeding a `FrameParser`), so a timed-out read just means "no frame yet". Per
+  iteration it drains INPUT, PINGs every `HEARTBEAT_INTERVAL`, echoes inbound PING→PONG, resets the
+  watchdog on **any** inbound frame, and closes with reason `"timeout"` after
+  `HEARTBEAT_TIMEOUT` of silence. Timing is injectable via `HeartbeatConfig` (defaults 500 ms /
+  2500 ms; tests use ~20 ms / ~100 ms).
+- **Window** — `F11` toggles **borderless fullscreen** (`Fullscreen::Borderless(None)`), `Esc` exits
+  it; both stay local (Esc is also reserved-local in the translator). The winit thread feeds every
+  event to the `InputTranslator` and forwards records to the worker over an mpsc channel; the
+  renderer's video rect is pushed into the translator on each render so pointer mapping tracks the
+  letterbox.
+- **Display re-listen loop** — the listen worker wraps accept+session in a loop: when a session ends
+  (timeout / transport / BYE / user), it returns to `accept()` for the next Source (the Source is the
+  reconnecting dialer, docs/03), keeping the window open, and exits only when the window closes.
+
+### M3 deferred
+- **Middle / extra mouse buttons** are dropped (only left/right cross the wire, matching the Mac).
+- The **handshake phase** still uses the coarse 30 s socket timeout; the fine-grained ≤2.5 s
+  heartbeat/watchdog governs the streaming phase (where a live static-screen session actually sits).
+- **Closing the window mid-stream drops the link abruptly (no `BYE("user")`).** The Source detects it
+  via its own ≤2.5 s watchdog and reconnects — docs/03's reliability layer is explicitly designed to
+  tolerate abrupt drops (heartbeat is the sanctioned detector). A graceful close would require the
+  worker to observe the stop flag inside `stream_loop` and the event loop to join the worker before
+  exiting; deferred as a clean-close nicety, not a correctness bug.
+- A live **Rust↔Swift** input round-trip (a real Mac Source injecting the HID usages) and the actual
+  fullscreen/latency feel need a live Mac — see below.
+
 ## ⚠️ Untested on real hardware
-Nothing here has run against a live **Mac Source** yet. Byte-for-byte vector conformance, a Rust↔Rust
-loopback (handshake + first-time pairing/reconnect/rate-limit), and an **end-to-end Rust↔Rust video
-loopback** (Source replays a fixture clip → Display decodes 5 frames over real TLS 1.3) are proven, and
-the decode+render pipeline is validated headlessly (offscreen wgpu render of a known YUV frame). Still
-open: **live Rust↔Swift interop** (a real TLS 1.3 handshake + channel binding on genuine leaf certs;
-Rust decoding a real VideoToolbox HEVC/H.264 stream) and **real M4↔i9 hardware**. Confirm before any
-release.
+Nothing here has run against a live **Mac Source** yet. Proven with no Mac: byte-for-byte vector
+conformance; a Rust↔Rust loopback (handshake + first-time pairing/reconnect/rate-limit); an
+end-to-end Rust↔Rust **video** loopback (Source replays a fixture clip → Display decodes 5 frames over
+real TLS 1.3); the decode+render pipeline (offscreen wgpu render of a known YUV frame); and, new in
+M3, an **input-send** loopback (INPUT records round-trip Display→Source byte-identically over real
+TLS) plus **heartbeat/watchdog** loopbacks (silent Source → `"timeout"`; active Source → stays alive
++ echoes PONG). Still open and needing a live Mac: **Rust↔Swift interop** (a real TLS 1.3 handshake +
+channel binding on genuine leaf certs; Rust decoding a real VideoToolbox HEVC/H.264 stream; the Mac
+Source **injecting** the HID usages the Rust Display sends), the actual fullscreen/latency feel, and
+**real M4↔i9 hardware**. Confirm before any release.
 
 ## Build & test
 
 ```sh
 cd clients/sidewire-viewer
-cargo test                 # 44 tests: golden vectors + CPace draft + TLS loopback + decode + render
+cargo test                 # 68 tests: vectors + CPace + TLS loopback + decode + render
+                           #   + M3 keymap/input-translate (unit) + heartbeat + input-send loopbacks
 cargo build --release      # the sidewire-viewer binary
 cargo run --bin sidewire-viewer -- --file <clip.h264|.h265>   # decode a local clip → window (no Mac)
-cargo run --bin sidewire-viewer -- [port]                     # listen: pair → CONFIG → stream → window
+cargo run --bin sidewire-viewer -- [port]                     # listen (re-listen loop): pair → CONFIG
+                                                              #   → stream (VIDEO in, INPUT out) → window
 cargo run --bin sidewire-viewer -- --handshake-only [port]    # M1 behavior: run one session to CONFIG
 ```
+
+In the window: **F11** toggles borderless fullscreen, **Esc** exits it. ⌘/Super combos and Esc stay
+**local** (never forwarded), so you always keep control of the Display machine.
 
 Toolchain: Rust ≥ 1.90. Crypto is one backend (`ring`, via rustls + rcgen) — no `openssl`/`aws-lc-rs`
 crate (the OpenSSL **CLI** is only used, if present, for one identity cross-check test). Video decode

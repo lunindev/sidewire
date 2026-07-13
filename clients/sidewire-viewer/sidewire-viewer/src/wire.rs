@@ -34,14 +34,30 @@ pub enum WireError {
     Io(#[from] io::Error),
 }
 
-/// Anything that can be read and written and moved across threads (a TLS stream, in practice).
-trait ReadWrite: Read + Write + Send {}
-impl<T: Read + Write + Send> ReadWrite for T {}
+/// A readable/writable, `Send` TLS stream that also lets us retune the underlying socket's read
+/// timeout — needed to switch from the coarse handshake timeout to the short streaming poll timeout
+/// without unpacking the type-erased stream. Implemented for both concrete `StreamOwned` types via
+/// their public `sock` field (the `TcpStream`).
+trait WireStream: Read + Write + Send {
+    fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()>;
+}
+
+impl WireStream for StreamOwned<ServerConnection, TcpStream> {
+    fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.sock.set_read_timeout(dur)
+    }
+}
+
+impl WireStream for StreamOwned<ClientConnection, TcpStream> {
+    fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.sock.set_read_timeout(dur)
+    }
+}
 
 /// A framed TLS channel. Owns the `rustls` stream; the concrete server/client connection type is
-/// erased behind a `Read + Write` object once the handshake (which needs the concrete type) is done.
+/// erased behind a [`WireStream`] object once the handshake (which needs the concrete type) is done.
 pub struct Wire {
-    stream: Box<dyn ReadWrite>,
+    stream: Box<dyn WireStream>,
 }
 
 impl Wire {
@@ -159,4 +175,33 @@ impl Wire {
         self.stream.write_all(&bytes)?;
         self.stream.flush()
     }
+
+    /// Retune the underlying socket's read timeout. The blocking handshake uses the coarse
+    /// [`SOCKET_IO_TIMEOUT`]; the streaming loop drops it to a few milliseconds so a read that finds
+    /// no frame returns promptly (as [`WouldBlock`]/[`TimedOut`]) instead of parking the single IO
+    /// thread that must also send INPUT + heartbeat (docs/02 § Heartbeat; docs/03 § watchdog).
+    ///
+    /// [`WouldBlock`]: io::ErrorKind::WouldBlock
+    /// [`TimedOut`]: io::ErrorKind::TimedOut
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        self.stream.set_read_timeout(dur)
+    }
+
+    /// Read whatever plaintext is available right now into `buf`, returning the byte count. Unlike
+    /// [`Wire::read_frame`] this does **not** block for a whole frame: with a short read timeout set
+    /// (see [`Wire::set_read_timeout`]) a quiet link returns [`is_timeout`]`== true` and the caller
+    /// treats it as "no frame yet". `Ok(0)` is a clean TLS EOF (peer sent close_notify). Feed the
+    /// bytes to a [`sidewire_proto::FrameParser`], which buffers partial frames across calls.
+    pub fn read_available(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.stream.read(buf)
+    }
+}
+
+/// True if `err` is a read that timed out with no data (a short-timeout socket reports
+/// `WouldBlock` on macOS/Linux, `TimedOut` on Windows) — i.e. "no frame yet", not a failure.
+pub fn is_timeout(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
 }

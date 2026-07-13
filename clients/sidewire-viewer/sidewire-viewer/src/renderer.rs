@@ -68,6 +68,8 @@ pub enum RendererError {
     NoAdapter,
     #[error("wgpu device request failed: {0}")]
     RequestDevice(#[from] wgpu::RequestDeviceError),
+    #[error("wgpu surface creation failed: {0}")]
+    CreateSurface(#[from] wgpu::CreateSurfaceError),
 }
 
 /// The per-draw uniform: clip-space scale + the pixel format selector. `repr(C)` for a stable GPU

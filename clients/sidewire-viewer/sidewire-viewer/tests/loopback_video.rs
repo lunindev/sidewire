@@ -13,7 +13,7 @@ use std::time::Duration;
 use sidewire_crypto::Identity;
 use sidewire_media::{split_access_units, Codec, Decoder};
 use sidewire_proto::{Capabilities, DisplayInfo, Hello, Role};
-use sidewire_viewer::session::{OutgoingVideo, PairingConfig, Session};
+use sidewire_viewer::session::{HeartbeatConfig, OutgoingVideo, PairingConfig, Session};
 use sidewire_viewer::tls;
 use sidewire_viewer::trust_store::InMemoryTrustStore;
 use sidewire_viewer::wire::Wire;
@@ -92,19 +92,26 @@ fn run_video_loopback(fixture_name: &str, codec_name: &str, codec: Codec) -> Vec
 
         let mut decoder = Decoder::new(d_codec).expect("build decoder");
         let mut frames: Vec<FrameInfo> = Vec::new();
-        let outcome = session.run_streaming(|nal, keyframe, pts| {
-            let decoded = decoder
-                .decode_access_unit(nal, keyframe, pts)
-                .expect("decode AU");
-            for f in decoded {
-                frames.push(FrameInfo {
-                    width: f.width,
-                    height: f.height,
-                    pts: f.pts_nanos,
-                    keyframe_seen: keyframe,
-                });
-            }
-        });
+        // No captured input in this video-only test: a live-but-empty channel (the sender is held so
+        // the receiver never disconnects). Default heartbeat is fine — the clip streams in ms.
+        let (_input_tx, input_rx) = std::sync::mpsc::channel();
+        let outcome = session.run_streaming(
+            &input_rx,
+            HeartbeatConfig::default(),
+            |nal, keyframe, pts| {
+                let decoded = decoder
+                    .decode_access_unit(nal, keyframe, pts)
+                    .expect("decode AU");
+                for f in decoded {
+                    frames.push(FrameInfo {
+                        width: f.width,
+                        height: f.height,
+                        pts: f.pts_nanos,
+                        keyframe_seen: keyframe,
+                    });
+                }
+            },
+        );
         (outcome, frames)
     });
 

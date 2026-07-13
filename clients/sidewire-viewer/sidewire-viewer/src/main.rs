@@ -1,15 +1,18 @@
-//! Sidewire Rust Display client (Phase 8, M2). Three entry paths:
+//! Sidewire Rust Display client (Phase 8, through M3). Three entry paths:
 //!
 //! * `--file <clip.h264|.h265>` — decode a local Annex-B clip and render it to a window on a loop.
 //!   The manual visual smoke test of the whole decode→render pipeline; needs no Mac.
-//! * *(default)* listen — the real Display: bind a TLS 1.3 listener, print the pairing PIN, accept a
-//!   connection, pair (CPace), reach CONFIG, then stream: receive VIDEO → decode → render to a
-//!   window, with a periodic latency/stat log. (End-to-end needs a live Mac Source; wired up here.)
+//! * *(default)* listen — the real Display: bind a TLS 1.3 listener, print the pairing PIN, then
+//!   **re-listen in a loop** (docs/03: the Display re-listens on a drop; the Source is the
+//!   reconnecting dialer): accept a Source, pair (CPace), reach CONFIG, then stream — receive VIDEO →
+//!   decode → render, **send captured INPUT** (M3), and run the ≤2.5 s heartbeat/watchdog. `F11`
+//!   toggles borderless fullscreen; `Esc` exits it (both stay local). (End-to-end needs a live Mac.)
 //! * `--handshake-only [port]` — the M1 behavior, preserved: accept one connection, drive it to
 //!   CONFIG, log the negotiated config, exit. No window.
 //!
 //! The winit event loop runs on the **main thread** (macOS requirement); the network/session/decode
-//! runs on a worker thread that posts decoded frames to the window (see [`window`]).
+//! runs on a worker thread that posts decoded frames to the window and drains captured input from it
+//! (see [`window`]).
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -19,7 +22,7 @@ use sidewire_crypto::Identity;
 use sidewire_media::{detect_codec, split_access_units, Codec, Decoder};
 use sidewire_proto::{Capabilities, DisplayInfo, Hello, Role};
 use sidewire_viewer::rate_limiter::PairingRateLimiter;
-use sidewire_viewer::session::{PairingConfig, Session};
+use sidewire_viewer::session::{HeartbeatConfig, PairingConfig, Session};
 use sidewire_viewer::stats::{FrameStats, LatencyTracker};
 use sidewire_viewer::tls;
 use sidewire_viewer::trust_store::{InMemoryTrustStore, TrustStoring};
@@ -70,7 +73,7 @@ fn run_file_mode(path: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     window::run(
         format!("Sidewire — {path}"),
-        move |producer: FrameProducer| {
+        move |producer: FrameProducer, _input_rx| {
             let mut decoder = match Decoder::new(codec) {
                 Ok(d) => d,
                 Err(e) => {
@@ -129,112 +132,146 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     println!("  device id : {}", identity.device_id);
     println!("  pairing PIN: {pin}   (enter this on the Source Mac)");
     println!("  a window opens once a Source connects and streaming begins.");
+    println!("  keys: F11 = toggle fullscreen, Esc = exit fullscreen (both stay local; ⌘/Esc are never sent).");
 
-    window::run("Sidewire — Display", move |producer: FrameProducer| {
-        let (tcp, peer_addr) = match listener.accept() {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("accept failed: {e}");
+    window::run(
+        "Sidewire — Display",
+        move |producer: FrameProducer, input_rx| {
+            // Poll for connections so the (re)listen loop can notice the window closing (docs/03: the
+            // Display re-listens on a drop — the Source is the reconnecting dialer). One session at a
+            // time; when it ends, loop back to accept the next Source, keeping the window open.
+            if let Err(e) = listener.set_nonblocking(true) {
+                eprintln!("could not set listener non-blocking: {e}");
                 producer.close();
                 return;
             }
-        };
-        println!("accepted connection from {peer_addr}");
-
-        let (wire, tls_info) = match Wire::accept(server_config, tcp, &identity) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("TLS accept failed: {e}");
-                producer.close();
-                return;
-            }
-        };
-        println!(
-            "TLS 1.3 established; peer device id = {} (paired: {})",
-            tls_info.peer_device_id,
-            trust_store.is_paired(&tls_info.peer_device_id)
-        );
-
-        let hello = Hello::new(
-            Role::Display,
-            identity.device_id.clone(),
-            "Sidewire Rust Display",
-            session_id(),
-            display_capabilities(),
-        );
-        let pairing = PairingConfig::new(pin, trust_store.clone(), Some(rate_limiter));
-        let session = Session::new(
-            Role::Display,
-            hello,
-            Some(display_info()),
-            wire,
-            tls_info,
-            pairing,
-        );
-
-        let mut decoder: Option<Decoder> = None;
-        let mut decoder_failed = false;
-        let mut tracker = LatencyTracker::new(120);
-        let outcome = session.run_streaming(|nal, keyframe, pts| {
-            if decoder_failed {
-                return; // a prior init failure already asked the window to close
-            }
-            let recv = Instant::now();
-            // Build the decoder from the codec carried in-band by the first keyframe's parameter
-            // sets (docs/04) — equivalent to the negotiated CONFIG.codec for this stream. Fail loud
-            // (log + close the window) rather than panicking the worker thread (which would leave the
-            // window hung) or silently mis-decoding as the wrong codec.
-            if decoder.is_none() {
-                let codec = match detect_codec(nal) {
-                    Some(c) => c,
-                    None => {
-                        eprintln!("could not determine codec from the first access unit; closing");
-                        decoder_failed = true;
-                        producer.close();
-                        return;
-                    }
-                };
-                match Decoder::new(codec) {
-                    Ok(d) => {
-                        println!("decoding {codec:?} stream");
-                        decoder = Some(d);
+            while !producer.should_stop() {
+                let (tcp, peer_addr) = match listener.accept() {
+                    Ok(v) => v,
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
                     Err(e) => {
-                        eprintln!("decoder init failed: {e}");
-                        decoder_failed = true;
-                        producer.close();
-                        return;
+                        eprintln!("accept failed: {e}");
+                        std::thread::sleep(Duration::from_millis(200));
+                        continue;
                     }
+                };
+                if let Err(e) = tcp.set_nonblocking(false) {
+                    eprintln!("could not set stream blocking: {e}");
+                    continue;
                 }
+                println!("accepted connection from {peer_addr}");
+
+                let (wire, tls_info) = match Wire::accept(server_config.clone(), tcp, &identity) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("TLS accept failed: {e}");
+                        continue;
+                    }
+                };
+                println!(
+                    "TLS 1.3 established; peer device id = {} (paired: {})",
+                    tls_info.peer_device_id,
+                    trust_store.is_paired(&tls_info.peer_device_id)
+                );
+
+                let hello = Hello::new(
+                    Role::Display,
+                    identity.device_id.clone(),
+                    "Sidewire Rust Display",
+                    session_id(),
+                    display_capabilities(),
+                );
+                let pairing = PairingConfig::new(
+                    pin.clone(),
+                    trust_store.clone(),
+                    Some(rate_limiter.clone()),
+                );
+                let session = Session::new(
+                    Role::Display,
+                    hello,
+                    Some(display_info()),
+                    wire,
+                    tls_info,
+                    pairing,
+                );
+
+                // Discard any input captured while we were between sessions (stale pointer moves).
+                while input_rx.try_recv().is_ok() {}
+
+                let mut decoder: Option<Decoder> = None;
+                let mut decoder_failed = false;
+                let mut tracker = LatencyTracker::new(120);
+                let outcome = session.run_streaming(
+                    &input_rx,
+                    HeartbeatConfig::default(),
+                    |nal, keyframe, pts| {
+                        if decoder_failed {
+                            return; // a prior init failure already asked the window to close
+                        }
+                        let recv = Instant::now();
+                        // Build the decoder from the codec carried in-band by the first keyframe's
+                        // parameter sets (docs/04) — equivalent to the negotiated CONFIG.codec. Fail loud
+                        // (log) rather than panicking the worker thread or mis-decoding the wrong codec.
+                        if decoder.is_none() {
+                            let codec = match detect_codec(nal) {
+                                Some(c) => c,
+                                None => {
+                                    eprintln!(
+                                        "could not determine codec from first AU; ending session"
+                                    );
+                                    decoder_failed = true;
+                                    return;
+                                }
+                            };
+                            match Decoder::new(codec) {
+                                Ok(d) => {
+                                    println!("decoding {codec:?} stream");
+                                    decoder = Some(d);
+                                }
+                                Err(e) => {
+                                    eprintln!("decoder init failed: {e}");
+                                    decoder_failed = true;
+                                    return;
+                                }
+                            }
+                        }
+                        let dec = decoder.as_mut().expect("decoder set above");
+                        let frames = dec
+                            .decode_access_unit(nal, keyframe, pts)
+                            .unwrap_or_default();
+                        let decoded_at = Instant::now();
+                        for f in frames {
+                            let present_start = Instant::now();
+                            let alive = producer.post(f);
+                            tracker.record(FrameStats {
+                                wire_pts_nanos: pts,
+                                recv_to_decode: decoded_at - recv,
+                                decode_to_present: present_start.elapsed(),
+                            });
+                            if tracker.total_frames().is_multiple_of(30) {
+                                println!("{}", tracker.summary_line());
+                            }
+                            if !alive {
+                                break;
+                            }
+                        }
+                    },
+                );
+                println!(
+                "session ended: reason = {}, frames decoded = {} — re-listening for the next Source",
+                outcome.close_reason.as_deref().unwrap_or("<none>"),
+                tracker.total_frames()
+            );
+                // Clear any per-session input state (a button/modifier held when this Source dropped)
+                // so nothing stuck leaks into the next Source (mirrors InputCapture.stop()).
+                producer.reset_input();
             }
-            let dec = decoder.as_mut().expect("decoder set above");
-            let frames = dec
-                .decode_access_unit(nal, keyframe, pts)
-                .unwrap_or_default();
-            let decoded_at = Instant::now();
-            for f in frames {
-                let present_start = Instant::now();
-                let alive = producer.post(f);
-                tracker.record(FrameStats {
-                    wire_pts_nanos: pts,
-                    recv_to_decode: decoded_at - recv,
-                    decode_to_present: present_start.elapsed(),
-                });
-                if tracker.total_frames().is_multiple_of(30) {
-                    println!("{}", tracker.summary_line());
-                }
-                if !alive {
-                    break;
-                }
-            }
-        });
-        producer.close();
-        println!(
-            "session ended: reason = {}, frames decoded = {}",
-            outcome.close_reason.as_deref().unwrap_or("<none>"),
-            tracker.total_frames()
-        );
-    })?;
+            producer.close();
+        },
+    )?;
     Ok(())
 }
 
