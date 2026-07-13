@@ -61,26 +61,32 @@ Requirements: macOS 14+, Xcode 16+ (developed on Xcode 26 / Swift 6), [XcodeGen]
 brew install xcodegen                 # once, if needed
 xcodegen generate                     # (re)generate Sidewire.xcodeproj from project.yml
 
-# Build a runnable .app from the command line (Debug is fine for your own Macs):
-xcodebuild -project Sidewire.xcodeproj -scheme Sidewire -configuration Debug \
-  -derivedDataPath build/dd build
-# → the app is at:  build/dd/Build/Products/Debug/Sidewire.app
-open build/dd/Build/Products/Debug/Sidewire.app          # launch it on THIS Mac
+# Build a runnable, optimized, UNIVERSAL .app from the command line. The
+# `-destination 'generic/platform=macOS'` is REQUIRED for a Universal (x86_64 + arm64)
+# binary — without it xcodebuild builds only the machine's active arch (arm64 on Apple silicon),
+# which would NOT run on the Intel i9. Use Release (optimized encode/decode), not Debug.
+xcodebuild -project Sidewire.xcodeproj -scheme Sidewire -configuration Release \
+  -destination 'generic/platform=macOS' -derivedDataPath build/dd build
+# → the app is at:  build/dd/Build/Products/Release/Sidewire.app
+open build/dd/Build/Products/Release/Sidewire.app          # launch it on THIS Mac
 ```
 
 The app is a **Universal 2 binary — the *same* build runs natively on the Apple-silicon M4 Max and the
-Intel i9.** Confirm it:
+Intel i9.** Confirm both slices are present:
 
 ```bash
-lipo -archs build/dd/Build/Products/Debug/Sidewire.app/Contents/MacOS/Sidewire   # → "x86_64 arm64"
+lipo -archs build/dd/Build/Products/Release/Sidewire.app/Contents/MacOS/Sidewire   # → "x86_64 arm64"
 ```
+
+If you see only `arm64`, you omitted `-destination 'generic/platform=macOS'` — rebuild with it.
 
 **To try it on the Intel i9:** copy `Sidewire.app` to the i9 (AirDrop / a shared folder / a USB stick)
 and double-click it. An app you build locally and copy over is **not quarantined**, so Gatekeeper
 doesn't block it — no notarization needed just to run it on your own two Macs. Each Mac prompts for its
 own permissions on first launch (Screen Recording + Accessibility on the Source; Local Network on both).
-For a **swap into `/Applications`** or a shippable DMG, use `./scripts/release.sh` (see
-[Distribution](#distribution--notarization)). Use `-configuration Release` above for an optimized build.
+For a signed, drag-install DMG (needed to hand it to Macs you don't control), use `./scripts/release.sh`
+(also Universal; see [Distribution](#distribution--notarization)). A quick Debug build for iterating on the
+Apple-silicon Mac only: drop `-destination …` and use `-configuration Debug`.
 
 Run the package unit tests without Xcode:
 
