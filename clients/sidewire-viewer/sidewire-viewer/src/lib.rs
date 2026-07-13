@@ -9,7 +9,10 @@
 //! packaging (M4).
 
 pub mod rate_limiter;
+pub mod renderer;
 pub mod session;
+pub mod stats;
 pub mod tls;
 pub mod trust_store;
+pub mod window;
 pub mod wire;

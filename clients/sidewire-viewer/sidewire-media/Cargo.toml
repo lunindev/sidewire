@@ -1,0 +1,17 @@
+[package]
+name = "sidewire-media"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "sidewire_media"
+path = "src/lib.rs"
+
+# H.264/HEVC Annex-B decode via libavcodec (ffmpeg 7.x). No windowing here — the renderer lives in
+# `sidewire-viewer`. See docs/04-media-pipeline.md (the stream properties) and docs/02 § VIDEO.
+[dependencies]
+ffmpeg-the-third.workspace = true
+thiserror.workspace = true

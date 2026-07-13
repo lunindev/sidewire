@@ -17,11 +17,20 @@ path = "src/main.rs"
 [dependencies]
 sidewire-proto.workspace = true
 sidewire-crypto.workspace = true
+sidewire-media.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
 
+# window / GPU render (M2)
+winit.workspace = true
+wgpu.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true
+log.workspace = true
+
 [dev-dependencies]
 hex.workspace = true
+pollster.workspace = true

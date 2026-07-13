@@ -10,7 +10,9 @@
 
 use std::sync::Arc;
 
-use sidewire_proto::{Config, DisplayInfo, Hello, MessageType, ReasonMessage, Role};
+use sidewire_proto::{
+    video_flags, Config, DisplayInfo, Hello, MessageType, ReasonMessage, Role, VideoPayload,
+};
 
 use crate::rate_limiter::PairingRateLimiter;
 use crate::trust_store::{TrustStoring, TrustedPeer};
@@ -39,6 +41,15 @@ impl PairingConfig {
             rate_limiter,
         }
     }
+}
+
+/// One access unit to transmit as a `VIDEO` frame via [`Session::run_sending_video`] (the loopback
+/// Source peer). `nal` is the raw Annex-B AU; `keyframe` sets the FRAME flags keyframe bit.
+#[derive(Debug, Clone)]
+pub struct OutgoingVideo {
+    pub nal: Vec<u8>,
+    pub keyframe: bool,
+    pub pts_nanos: u64,
 }
 
 /// Direction of a recorded wire event.
@@ -174,32 +185,141 @@ impl Session {
     }
 
     /// Drive the session (blocking) until it reaches CONFIG or closes. Consumes `self`.
+    ///
+    /// This is the M1 handshake-only path: it stops the moment streaming (CONFIG) is reached. For
+    /// the M2 Display streaming loop (decode incoming VIDEO), use [`Session::run_streaming`]; the
+    /// two share the same handshake internals so the M1 tests are unaffected.
     pub fn run(mut self) -> SessionOutcome {
         self.begin_pairing_or_handshake();
         while !self.ready && !self.closed {
             match self.wire.read_frame() {
                 Ok(frame) => {
-                    self.events.push(WireEvent {
-                        dir: Dir::Recv,
-                        raw_type: frame.raw_type,
-                    });
+                    self.record_recv(frame.raw_type);
                     self.handle(frame);
                 }
                 Err(_) => {
-                    // EOF or transport failure. If the peer already told us a reason (BYE), keep it;
-                    // otherwise this is a canonical transport failure.
-                    if !self.closed {
-                        self.close_reason = Some("transport".to_string());
-                        self.closed = true;
-                    }
+                    self.mark_transport_closed();
                     break;
                 }
             }
         }
+        self.into_outcome()
+    }
+
+    /// Drive the **Display** session through pairing + HELLO to CONFIG and then into the M2 streaming
+    /// loop: read frames and, on each `VIDEO`, parse the payload (docs/02 § VIDEO) and invoke
+    /// `on_video(nal, keyframe, pts_nanos)` — where `keyframe` is the FRAME `flags` keyframe bit
+    /// (`0x01`) and `pts_nanos` is the subheader PTS. `PING`s are answered with `PONG` and `BYE` is
+    /// honored (a real ≤2.5 s heartbeat/watchdog is M3; [`crate::wire`] has a coarse interim
+    /// timeout). Returns when the peer closes (BYE / EOF). Consumes `self`.
+    pub fn run_streaming<F>(mut self, mut on_video: F) -> SessionOutcome
+    where
+        F: FnMut(&[u8], bool, u64),
+    {
+        self.begin_pairing_or_handshake();
+        loop {
+            if self.closed {
+                break;
+            }
+            match self.wire.read_frame() {
+                Ok(frame) => {
+                    self.record_recv(frame.raw_type);
+                    if self.ready {
+                        self.handle_stream_frame(frame, &mut on_video);
+                    } else {
+                        self.handle(frame);
+                    }
+                }
+                Err(_) => {
+                    self.mark_transport_closed();
+                    break;
+                }
+            }
+        }
+        self.into_outcome()
+    }
+
+    /// **Test/loopback helper (Source peer).** Drive the Source handshake to CONFIG, then send each
+    /// access unit as a `VIDEO` frame — keyframe bit in the FRAME flags, PTS in the subheader
+    /// (docs/02 § VIDEO) — and finally close with `BYE("user")`. The production Source is the Mac;
+    /// this exists so the loopback video test can feed a fixture clip through a real TLS session.
+    pub fn run_sending_video(mut self, frames: &[OutgoingVideo]) -> SessionOutcome {
+        self.begin_pairing_or_handshake();
+        while !self.ready && !self.closed {
+            match self.wire.read_frame() {
+                Ok(frame) => {
+                    self.record_recv(frame.raw_type);
+                    self.handle(frame);
+                }
+                Err(_) => {
+                    self.mark_transport_closed();
+                    break;
+                }
+            }
+        }
+        if self.ready && !self.closed {
+            for f in frames {
+                let flags = if f.keyframe { video_flags::KEYFRAME } else { 0 };
+                let payload = VideoPayload::encode(0, f.pts_nanos, &f.nal);
+                self.send(MessageType::Video, flags, &payload);
+                if self.closed {
+                    break;
+                }
+            }
+            if !self.closed {
+                self.close_sending_bye("user");
+            }
+        }
+        self.into_outcome()
+    }
+
+    /// Record an inbound frame in the event log.
+    fn record_recv(&mut self, raw_type: u8) {
+        self.events.push(WireEvent {
+            dir: Dir::Recv,
+            raw_type,
+        });
+    }
+
+    /// EOF or transport failure. If the peer already told us a reason (BYE), keep it; otherwise this
+    /// is a canonical transport failure.
+    fn mark_transport_closed(&mut self) {
+        if !self.closed {
+            self.close_reason = Some("transport".to_string());
+            self.closed = true;
+        }
+    }
+
+    fn into_outcome(self) -> SessionOutcome {
         SessionOutcome {
             config: self.negotiated_config,
             close_reason: self.close_reason,
             events: self.events,
+        }
+    }
+
+    /// Streaming-phase dispatch (after CONFIG): VIDEO → decode callback; PING → PONG; BYE → close;
+    /// PAUSE/RESUME acknowledged as liveness only. Unknown/reserved types are skipped.
+    fn handle_stream_frame<F>(&mut self, frame: sidewire_proto::Frame, on_video: &mut F)
+    where
+        F: FnMut(&[u8], bool, u64),
+    {
+        let msg_type = match frame.message_type() {
+            Some(t) => t,
+            None => return, // unknown/reserved → skip (forward compatibility)
+        };
+        match msg_type {
+            MessageType::Video => {
+                let keyframe = frame.flags & video_flags::KEYFRAME != 0;
+                if let Some((_ltr, pts, nal)) = VideoPayload::decode(&frame.payload) {
+                    on_video(&nal, keyframe, pts);
+                }
+            }
+            // Echo the exact 8 bytes back (docs/02 § PING/PONG) so the peer's RTT is on its clock.
+            MessageType::Ping => self.send(MessageType::Pong, 0, &frame.payload),
+            MessageType::Bye => self.handle_bye(&frame.payload),
+            // PAUSE/RESUME/PONG/etc. just keep the link warm; nothing to do at M2.
+            _ => {}
         }
     }
 

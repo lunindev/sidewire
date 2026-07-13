@@ -6,7 +6,7 @@
 # in ../../protocol-vectors/ and docs/02 + docs/05 (do NOT modify those).
 [workspace]
 resolver = "2"
-members = ["sidewire-proto", "sidewire-crypto", "sidewire-viewer"]
+members = ["sidewire-proto", "sidewire-crypto", "sidewire-media", "sidewire-viewer"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,11 +20,22 @@ publish = false
 # in-workspace
 sidewire-proto = { path = "sidewire-proto" }
 sidewire-crypto = { path = "sidewire-crypto" }
+sidewire-media = { path = "sidewire-media" }
 
 # protocol / serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+
+# media decode (ffmpeg 7.x — libavcodec 61). Only sidewire-media links ffmpeg; the rest of the
+# workspace stays ring-only. See README.md for the macOS keg-only ffmpeg@7 build/run env.
+ffmpeg-the-third = "3"
+
+# window / GPU render
+winit = "0.30"
+wgpu = "24"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
 
 # crypto
 x25519-dalek = { version = "2", features = ["static_secrets"] }

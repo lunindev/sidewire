@@ -13,8 +13,6 @@ crate reproduces them byte-for-byte; **do not edit** the vectors or the Swift re
 
 ## Status — Milestone M1 (protocol + crypto + transport foundation) ✅
 
-Done and verified (`cargo test`, 31 tests):
-
 - **`sidewire-proto`** — pure wire protocol: 12-byte framing + incremental parser, JSON control
   messages (HELLO/CONFIG/DISPLAY_INFO/BYE), 32-byte HID `INPUT` records, VIDEO payload + PTS.
   Reproduces `frame`/`input`/`video`-vectors byte-for-byte and `message`-vectors semantically.
@@ -29,28 +27,81 @@ Done and verified (`cargo test`, 31 tests):
   runs a real TLS 1.3 handshake + first-time pairing, wrong-PIN → `BYE("auth")`, paired-reconnect
   (skips CPace), and rate-limit lockout.
 
-### Not yet done (later milestones)
-- **M2:** H.264/HEVC decode (ffmpeg, hw where available) + a window; glass-to-glass latency.
+## Status — Milestone M2 (video decode + a window) ✅
+
+- **`sidewire-media`** (new crate) — H.264/HEVC **Annex-B software decode** via libavcodec (ffmpeg
+  7.x, the `ffmpeg-the-third` crate). Feeds one self-contained access unit at a time straight to
+  libavcodec (no demuxer/format context — the stream is clean Annex-B with in-band parameter sets,
+  docs/04), carries the **wire PTS** through unchanged (a FIFO, since there are no B-frames), gates on
+  a first keyframe, and rebuilds on a hard decode error. Also an Annex-B AU splitter + codec sniffer.
+  A `DecodeBackend` trait is the seam a hardware backend slots into later (see below).
+- **`sidewire-viewer` rendering** — a **wgpu** renderer that uploads a decoded frame's YUV planes as
+  textures and converts **YUV→RGB in a fragment shader** (BT.709 limited-range), drawing a full-screen
+  quad with **aspect-fit letterboxing**; the rendered video rect is exposed for M3's input mapping
+  (docs/02 § INPUT). Supports **YUV420P** (SW decode) and **NV12** (future HW). A **winit 0.30**
+  window (`ApplicationHandler`) runs the event loop on the main thread; the network/decode runs on a
+  worker thread and posts the *latest* frame to the renderer (stale frames dropped, not queued).
+- **Session streaming** — `Session::run_streaming(on_video)` extends the Display past CONFIG into a
+  streaming loop: each `VIDEO` frame is parsed (subheader PTS + FRAME keyframe bit) and handed to a
+  callback; `PING`→`PONG` and `BYE` are honored. The M1 `run()` (stops at CONFIG) is unchanged.
+- **Latency instrumentation** — `stats::FrameStats`/`LatencyTracker` expose local receive→decode and
+  decode→present deltas + the wire PTS. **Honest scope:** true cross-machine *glass-to-glass* latency
+  can't be measured here — the PTS epoch is the Source's arbitrary monotonic clock (docs/02) and there
+  is no live Mac; M2 provides the instrumentation, real numbers come on hardware.
+
+### Deferred / not yet done
+- **Hardware decode is deferred to M3+.** M2 ships robust software decode as the baseline. The
+  `sidewire_media::DecodeBackend` trait is the decode-backend seam; a VideoToolbox / D3D11VA / VAAPI
+  backend can implement it (a moonlight-qt-style ladder) without touching the keyframe-gate / rebuild
+  logic — see the `TODO(M3+)` in `sidewire-media/src/decoder.rs`.
 - **M3:** borderless fullscreen + input capture (winit → HID usages) + the ≤2.5 s heartbeat/watchdog
-  liveness contract & reconnect parity. *(M1's blocking IO has only a coarse 30 s socket timeout as
+  liveness contract & reconnect parity. *(Blocking IO still has only a coarse 30 s socket timeout as
   interim protection against a stalled peer; the real heartbeat lands here.)*
 - **M4:** mDNS discovery (`_sidewire._tcp`) + manual-IP fallback + packaging (Windows, Linux).
 
 ## ⚠️ Untested on real hardware
-Nothing here has run against a live **Mac Source** yet. Byte-for-byte vector conformance + a Rust↔Rust
-loopback are proven; **live Rust↔Swift interop** (a real TLS 1.3 handshake + channel-binding agreement
-on genuine leaf certs, and end-to-end pairing) and **real M4↔i9 hardware** remain open. Confirm before
-any release.
+Nothing here has run against a live **Mac Source** yet. Byte-for-byte vector conformance, a Rust↔Rust
+loopback (handshake + first-time pairing/reconnect/rate-limit), and an **end-to-end Rust↔Rust video
+loopback** (Source replays a fixture clip → Display decodes 5 frames over real TLS 1.3) are proven, and
+the decode+render pipeline is validated headlessly (offscreen wgpu render of a known YUV frame). Still
+open: **live Rust↔Swift interop** (a real TLS 1.3 handshake + channel binding on genuine leaf certs;
+Rust decoding a real VideoToolbox HEVC/H.264 stream) and **real M4↔i9 hardware**. Confirm before any
+release.
 
 ## Build & test
 
 ```sh
 cd clients/sidewire-viewer
-cargo test                 # 31 tests: golden vectors + CPace draft vectors + TLS loopback pairing
+cargo test                 # 44 tests: golden vectors + CPace draft + TLS loopback + decode + render
 cargo build --release      # the sidewire-viewer binary
-cargo run --bin sidewire-viewer [port]   # M1 demo: listen, print PIN, run one Display session to CONFIG
+cargo run --bin sidewire-viewer -- --file <clip.h264|.h265>   # decode a local clip → window (no Mac)
+cargo run --bin sidewire-viewer -- [port]                     # listen: pair → CONFIG → stream → window
+cargo run --bin sidewire-viewer -- --handshake-only [port]    # M1 behavior: run one session to CONFIG
 ```
 
-Toolchain: Rust ≥ 1.90; one crypto backend (`ring`, via rustls + rcgen) — no `openssl`/`aws-lc-rs`
-crate dependency (the OpenSSL **CLI** is only used, if present, for one identity cross-check test).
-ffmpeg/window deps arrive with M2. `target/` is git-ignored; `Cargo.lock` is committed (this is a bin).
+Toolchain: Rust ≥ 1.90. Crypto is one backend (`ring`, via rustls + rcgen) — no `openssl`/`aws-lc-rs`
+crate (the OpenSSL **CLI** is only used, if present, for one identity cross-check test). Video decode
+links **ffmpeg 7.x** (only `sidewire-media` does; the rest of the tree stays ring-only); the window
+uses **wgpu** + **winit**. `target/` is git-ignored; `Cargo.lock` is committed (this is a bin).
+
+### ffmpeg 7.x build/run env
+
+`sidewire-media` links **libavcodec 61 (ffmpeg 7.x)** via `ffmpeg-the-third`. On Linux/Windows a system
+ffmpeg 7.x on the default `pkg-config` path needs no extra env. On **macOS**, `brew`'s `ffmpeg@7` is
+keg-only, so the build (bindgen) and the tests/bin (dylib load) need three vars — export them before
+any `cargo` command that touches the media crate:
+
+```sh
+export FFMPEG_DIR="$(brew --prefix ffmpeg@7)"
+export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig:$PKG_CONFIG_PATH"
+export DYLD_FALLBACK_LIBRARY_PATH="$FFMPEG_DIR/lib:$DYLD_FALLBACK_LIBRARY_PATH"
+```
+
+(Without `FFMPEG_DIR` the bindgen build fails to find the libav* headers; without
+`DYLD_FALLBACK_LIBRARY_PATH` the tests/bin fail to load libav* at runtime. This is a macOS keg-only
+quirk only — do **not** hardcode a mac path into any committed `.cargo/config.toml`.)
+
+### Test fixtures
+Tiny (~5 KB) Annex-B clips live in `sidewire-media/tests/fixtures/` (`clip.h264`, `clip.h265`) — 320×240,
+5 frames, no B-frames, in-band parameter sets. Regeneration commands are in that directory's
+`README.md`.
