@@ -41,6 +41,14 @@ packages:
     path: Packages/SidewireProtocol
   SidewireCore:
     path: Packages/SidewireCore
+  # Phase 9 — Sparkle 2 auto-update (EdDSA appcast on GitHub Releases). Resolves as 2.9.4
+  # today; its universal (arm64+x86_64) xcframework matches ARCHS. Xcode embeds + signs
+  # Sparkle's XPC services in the correct inside-out order automatically — NEVER `codesign
+  # --deep` (it corrupts those XPC signatures). Sparkle is the app's first and only
+  # network "phone-home"; everything else is 100% local (no accounts, no telemetry).
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.0.0
 
 targets:
   Sidewire:
@@ -51,6 +59,7 @@ targets:
     dependencies:
       - package: SidewireProtocol
       - package: SidewireCore
+      - package: Sparkle
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kinocoder.sidewire

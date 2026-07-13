@@ -21,7 +21,7 @@ Additional polish landed on top: **instant local cursor** (the pointer no longer
 
 The distribution build is signed + hardened but **not yet notarized** — notarization is a one-time credential step you run yourself (below).
 
-**Next stage** (decided 2026-07-12): fix backlog → protocol v2 + TLS 1.3 → a native **Rust** Windows/Linux Display client → distribution hardening. Phases 6 and 7 (incl. the **CPace** pairing PAKE) are done; the Rust client (Phase 8) is next and not yet started. **Current state is tracked in [docs/11-status-and-gaps.md](docs/11-status-and-gaps.md).** See also [docs/09-next-stage.md](docs/09-next-stage.md) (decisions + roadmap) and [docs/10-fix-backlog.md](docs/10-fix-backlog.md).
+**Next stage** (decided 2026-07-12): fix backlog → protocol v2 + TLS 1.3 → a native **Rust** Windows/Linux Display client → distribution hardening. Phases 6–9 are done: Phase 6/7 (incl. the **CPace** pairing PAKE), **Phase 8 — the native Rust Display client (M1–M4, in [`clients/sidewire-viewer/`](clients/sidewire-viewer/): pair → decode H.264/HEVC → wgpu render → HID input → heartbeat → fullscreen → mDNS)**, and **Phase 9 — Sparkle 2 auto-update + CI** (this doc's [Auto-update](#auto-update-sparkle-2) section). **Not yet done / owner-gated:** nothing has run on the real M4↔i9 hardware and live Rust↔Swift interop is unproven; the one-time notarization credential + Sparkle EdDSA key are your manual steps. **Current state is tracked in [docs/11-status-and-gaps.md](docs/11-status-and-gaps.md).** See also [docs/09-next-stage.md](docs/09-next-stage.md) (decisions + roadmap) and [docs/10-fix-backlog.md](docs/10-fix-backlog.md).
 
 ## Project layout
 
@@ -38,7 +38,8 @@ Sidewire/                     app target (SwiftUI, Universal 2, macOS 14+)
 Packages/
   SidewireProtocol/           pure Swift: framing, message catalog, codecs (unit-tested)
   SidewireCore/               Transport + TCP + Bonjour discovery + Session (unit-tested)
-docs/                         the specification (read 00 → 08)
+docs/                         the specification (read 00 → 11)
+clients/sidewire-viewer/      Rust Windows/Linux Display client (Phase 8; Cargo workspace)
 project.yml                   XcodeGen spec
 ```
 
@@ -96,6 +97,25 @@ The everyday build above is enough to run Sidewire on **your own Macs**. To hand
 ```
 
 > The distribution build is signed with a **different** identity (Developer ID) than the dev build (Apple Development), so on first launch it re-requests Screen Recording / Accessibility (fresh TCC grants) — expected for the distributable version. Because Mac App Store review rejects the private display API, App Store distribution is not possible; Developer ID + notarization is the correct channel (see [docs/08](docs/08-build-and-distribution.md)).
+
+## Auto-update (Sparkle 2)
+
+Sidewire updates itself with [Sparkle 2](https://sparkle-project.org) — an **EdDSA-signed** appcast hosted on GitHub Releases. **Check for Updates…** lives in the app menu (and the menu-bar window), and Settings has an opt-in **"Automatically check for updates"** toggle (off by default).
+
+> **Sparkle is Sidewire's first and only "phone-home."** The app is otherwise **100 % local** — no accounts, no analytics, no telemetry, no other network calls anywhere in the code. It only reaches the internet to look for a newer signed version, and only when you ask (or opt into background checks).
+
+**Owner one-time setup** (before the first release):
+
+1. Generate the update key pair once with Sparkle's `generate_keys` (ships in the resolved Sparkle SPM artifact under `…/SourcePackages/artifacts/sparkle/Sparkle/bin/`). Keep the **private** key in your login keychain.
+2. Paste the printed **public** key into `SUPublicEDKey` in [`Sidewire/Resources/Info.plist`](Sidewire/Resources/Info.plist), and set `SUFeedURL`'s `OWNER` to the real GitHub owner. *Until you do, Sparkle **fails closed** — it refuses any update it can't verify, which is the safe default.*
+
+**Per release**, after `./scripts/release.sh` builds + notarizes the DMG:
+
+```bash
+./scripts/generate-appcast.sh     # EdDSA-signs dist/*.dmg → dist/appcast.xml (needs your key)
+```
+
+Then upload `appcast.xml` + the DMG to the GitHub Release. CI ([`.github/workflows/`](.github/workflows/)): `ci.yml` builds + runs both test suites on every push/PR; `release.yml` is a documented, secret-gated sketch of the full signed/notarized/appcast release.
 
 ## License
 

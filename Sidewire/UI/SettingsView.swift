@@ -7,6 +7,7 @@ import SidewireCore
 struct SettingsView: View {
     @ObservedObject private var settings = AppSettings.shared
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var updater: UpdaterController
 
     var body: some View {
         Form {
@@ -71,6 +72,14 @@ struct SettingsView: View {
                 Button("Show Welcome…") {
                     NotificationCenter.default.post(name: .sidewireShowWelcome, object: nil)
                 }
+            }
+
+            Section("Updates") {
+                Toggle("Automatically check for updates", isOn: Binding(
+                    get: { updater.automaticallyChecksForUpdates },
+                    set: { updater.automaticallyChecksForUpdates = $0 }))
+                Text("Checks GitHub for a newer signed version. This is Sidewire's only connection to the internet — there are no accounts and no telemetry. Updates are verified with an EdDSA signature.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Diagnostics") {

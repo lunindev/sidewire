@@ -22,5 +22,24 @@
 	<array>
 		<string>_sidewire._tcp</string>
 	</array>
+	<!-- ===== Sparkle 2 auto-update (Phase 9) ============================================
+	     Sparkle is the app's FIRST AND ONLY network "phone-home": it fetches the appcast
+	     below to see if a newer signed build exists. Everything else is 100% local (no
+	     accounts, no telemetry, no other HTTP). -->
+	<!-- OWNER: replace OWNER with the real GitHub org/user hosting the repo. The appcast is
+	     published as a Release asset (see scripts/generate-appcast.sh + release.sh). -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/OWNER/sidewire/releases/latest/download/appcast.xml</string>
+	<!-- OWNER, ONE-TIME: run Sparkle's `generate_keys` once (from the resolved Sparkle SPM
+	     artifact's bin/), keep the PRIVATE key in your login keychain, and paste the printed
+	     PUBLIC key here (replace the placeholder). Until it is a real key, Sparkle FAILS
+	     CLOSED — it refuses every update it cannot verify — which is the safe default. -->
+	<key>SUPublicEDKey</key>
+	<string>REPLACE_WITH_SUPublicEDKey_FROM_generate_keys</string>
+	<!-- Opt-in: no automatic background checks until the user enables the Settings toggle
+	     ("Automatically check for updates"). Respects the "first and only phone-home"
+	     principle — the app never reaches the network on its own until asked. -->
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
 </dict>
 </plist>

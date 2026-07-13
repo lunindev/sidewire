@@ -108,3 +108,20 @@ echo "▸ Verifying Gatekeeper acceptance…"
 spctl -a -vvv -t install "$DMG" 2>&1 | head -3 || true
 xcrun stapler validate "$DMG" && echo "  ✓ Notarized + stapled"
 echo "✅ Done: $DMG"
+
+# ---- 5. Sparkle appcast (auto-update) --------------------------------------
+# The signed DMG now needs an EdDSA-signed appcast entry so existing installs can update to it.
+# That signing needs the private update key (owner's login keychain), so it is NOT done here by
+# default. Opt in with SIDEWIRE_APPCAST=1 (on a machine that has the key); otherwise we just
+# print the one command to run. See scripts/generate-appcast.sh + docs/08.
+echo
+echo "▸ Sparkle auto-update — generate + sign the appcast entry:"
+if [ "${SIDEWIRE_APPCAST:-0}" = "1" ]; then
+  "$ROOT/scripts/generate-appcast.sh" "$OUT"
+else
+  cat <<EOF
+    ./scripts/generate-appcast.sh          # signs $DMG → $OUT/appcast.xml (needs your EdDSA key)
+  Then upload appcast.xml + the DMG to a GitHub Release (the SUFeedURL points at
+  releases/latest/download/appcast.xml). Sparkle is the app's only phone-home — see docs/08.
+EOF
+fi

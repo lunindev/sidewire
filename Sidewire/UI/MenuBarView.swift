@@ -4,6 +4,9 @@ import SwiftUI
 /// device list, status dots, and stats HUD arrive in Phase 4 (see docs/06).
 struct MenuBarView: View {
     @EnvironmentObject var model: AppModel
+    // Phase 9 — surfaced here too so "Check for Updates…" stays reachable in menu-bar-only mode,
+    // where the app's main menu (and its CommandGroup) is hidden.
+    @EnvironmentObject var updater: UpdaterController
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -31,6 +34,8 @@ struct MenuBarView: View {
                     openWindow(id: "main")
                 }
                 Spacer()
+                Button("Check for Updates…") { updater.checkForUpdates() }
+                    .disabled(!updater.canCheckForUpdates)
                 Button("Quit") { NSApp.terminate(nil) }
             }
         }

@@ -5,6 +5,9 @@ import SwiftUI
 struct SidewireApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
+    // Phase 9 — Sparkle 2 auto-update. Held for the app's lifetime so the background scheduler
+    // and the "Check for Updates…" command share one updater.
+    @StateObject private var updater = UpdaterController()
 
     var body: some Scene {
         Window("Sidewire", id: "main") {
@@ -13,6 +16,13 @@ struct SidewireApp: App {
         }
         .defaultSize(width: 760, height: 520)
         .commands {
+            // The canonical Sparkle-SwiftUI menu action, placed under the app menu's About item.
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updater.checkForUpdates()
+                }
+                .disabled(!updater.canCheckForUpdates)
+            }
             // D8 — re-show the first-run Welcome from the Help menu.
             CommandGroup(replacing: .help) {
                 Button("Show Welcome…") {
@@ -24,6 +34,7 @@ struct SidewireApp: App {
         MenuBarExtra {
             MenuBarView()
                 .environmentObject(model)
+                .environmentObject(updater)
         } label: {
             MenuBarLabel()
                 .environmentObject(model)
@@ -33,6 +44,7 @@ struct SidewireApp: App {
         Settings {
             SettingsView()
                 .environmentObject(model)
+                .environmentObject(updater)
         }
     }
 }

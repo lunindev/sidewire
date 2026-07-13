@@ -50,15 +50,26 @@ Notes:
 
 ## CI (GitHub Actions)
 
+> **Implemented (Phase 9).** Two workflows under [`.github/workflows/`](../../.github/workflows/):
+> - **`ci.yml`** — build + test on every push/PR (`macos-14`): `brew install xcodegen`, run **both** package suites (`Packages/SidewireProtocol` = 24 tests, `Packages/SidewireCore` = 39 tests), `xcodegen generate`, then a Debug `xcodebuild` with signing **disabled** (`CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`) — the runner has no Apple cert, so this only proves the code compiles, Sparkle links, and its XPC services embed. This one is real and runnable.
+> - **`release.yml`** — a **documented sketch** (`workflow_dispatch`, **never run**) for the signed path: import the Developer ID `.p12` from a base64 secret into a temp keychain, `store-credentials` for notarytool, run `scripts/release.sh`, generate + EdDSA-sign the appcast, and publish the DMG + `appcast.xml` to a GitHub Release. It is a starting point that needs the owner's secrets — see the header comment in the file for the full secret list.
+
 - Store the Developer ID `.p12` base64-encoded in a repo secret; on CI, create a temporary keychain, import, build, sign, notarize, staple. Store the EdDSA update key as a separate secret (or sign releases manually).
 - Artifacts: the stapled DMG + the Sparkle appcast entry, published to GitHub Releases.
 
 ## Auto-update — Sparkle 2
 
+> **Implemented (Phase 9).** Sparkle 2 (resolves as **2.9.4** via SPM from `2.0.0`) is integrated as the app's auto-updater. Wiring: [`project.yml`](../project.yml) adds the `Sparkle` package + a `- package: Sparkle` dependency (Xcode embeds + signs `Sparkle.framework` and its `Downloader.xpc` / `Installer.xpc` inside-out automatically — **no `--deep`**, verified with `codesign --verify --strict`). [`Sidewire/App/UpdaterController.swift`](../Sidewire/App/UpdaterController.swift) is a `@MainActor ObservableObject` wrapping `SPUStandardUpdaterController(startingUpdater: true, …)`, held as a `@StateObject` in `SidewireApp`; a **"Check for Updates…"** command (`CommandGroup(after: .appInfo)`, `.disabled(!canCheckForUpdates)`) sits under the app menu, and it is mirrored in the menu-bar window so it stays reachable in menu-bar-only mode. A Settings **"Automatically check for updates"** toggle binds `updater.automaticallyChecksForUpdates`.
+>
+> **Info.plist keys** ([`Sidewire/Resources/Info.plist`](../Sidewire/Resources/Info.plist)): `SUFeedURL` (`…/OWNER/sidewire/releases/latest/download/appcast.xml` — owner sets the real owner), `SUPublicEDKey` (placeholder `REPLACE_WITH_SUPublicEDKey_FROM_generate_keys`), `SUEnableAutomaticChecks = false` (opt-in). **Until `SUPublicEDKey` is a real key, Sparkle fails closed** — it refuses any update it can't verify, the safe default.
+>
+> **Owner one-time step:** run Sparkle's `generate_keys` once (ships in the resolved SPM artifact at `<DerivedData>/SourcePackages/artifacts/sparkle/Sparkle/bin/`), keep the **private** key in the login keychain, paste the printed **public** key into `SUPublicEDKey`. Then per release: `./scripts/release.sh` builds+notarizes the DMG and [`scripts/generate-appcast.sh`](../scripts/generate-appcast.sh) EdDSA-signs it into `appcast.xml`; upload both to the GitHub Release. `release.sh` prints this reminder (or runs generate-appcast itself if invoked with `SIDEWIRE_APPCAST=1`).
+
 - Sparkle 2 with **EdDSA (Ed25519)** signatures. Host the `appcast.xml` + DMGs on GitHub Releases (free).
-- Increment `CFBundleVersion` every build (Sparkle keys update detection on it).
+- Increment `CFBundleVersion` every build (Sparkle keys update detection on it). It is already `$(CURRENT_PROJECT_VERSION)` in Info.plist.
 - Leave Sparkle's XPC service bundle ids untouched; sign components in order; no `--deep`.
 - Guard the EdDSA private key custody (CI secret vs manual release signing) — a leaked update key lets an attacker ship a malicious "update."
+- **Sparkle is the app's first and only network "phone-home."** The product is otherwise 100 % local — no accounts, no telemetry, no HTTP anywhere else in the code. Keep it that way; the Settings copy and README say so to the user.
 
 ## Licensing
 
