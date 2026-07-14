@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import SidewireProtocol
 
 /// Display role: the immersive fullscreen video with an auto-hiding control bar. This Mac's
 /// native cursor is the remote pointer — the Source no longer bakes a cursor into the video
@@ -140,6 +141,30 @@ struct DisplayView: View {
                 .padding(.top, 2)
             }
 
+            if controller.isListening, !controller.localAddresses.isEmpty {
+                // This Mac's own IPs, so the other Mac's "Connect by IP" field can be typed
+                // straight off this screen instead of digging through System Settings. The
+                // Thunderbolt link-local address is listed first (it's the cable path and can't
+                // be guessed); a non-default listener port is appended as ":port".
+                VStack(spacing: 4) {
+                    Text("THIS MAC'S ADDRESS").font(.caption).tracking(2).foregroundStyle(.gray)
+                    ForEach(controller.localAddresses) { addr in
+                        HStack(spacing: 8) {
+                            Text(addr.label)
+                                .font(.caption).foregroundStyle(.gray)
+                                .frame(width: 96, alignment: .trailing)
+                            Text(addressText(addr))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.white)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    Text("Type one of these into the other Mac's “Connect by IP” field")
+                        .font(.caption2).foregroundStyle(.gray)
+                }
+                .padding(.top, 4)
+            }
+
             if controller.isListening {
                 // The Source-side counterpart of SourceView's "Can't connect?" guide: the two
                 // things that silently stop this Mac from being found/reached (backlog C1).
@@ -158,6 +183,15 @@ struct DisplayView: View {
 
             Text(controller.statusText).font(.caption).foregroundStyle(.gray.opacity(0.7))
         }
+    }
+
+    /// The IP as the user should type it: bare, or "IP:port" when the listener bound a
+    /// non-default port (the port-ladder fallback), so the manual connect targets the right one.
+    private func addressText(_ addr: LocalAddress) -> String {
+        if let port = controller.listeningPort, port != ProtocolConstants.fallbackPort {
+            return "\(addr.ip):\(port)"
+        }
+        return addr.ip
     }
 
     // MARK: - Immersive UI behavior

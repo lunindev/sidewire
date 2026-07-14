@@ -65,6 +65,12 @@ final class SourceController: ObservableObject {
     // Reconnect give-up thresholds. We never truly stop reconnecting (the peer may come back),
     // but after enough attempts the message becomes a stronger "is it even running?" hint.
     private let reconnectHintAfter = 10
+    /// When the current link entered reconnecting from a live stream. We keep the virtual display
+    /// for a brief blip (fast reconnect, window layout survives), but once reconnection has been
+    /// failing this long we tear the phantom desktop down so the cursor can't stray onto a screen
+    /// with no Mac behind it. A later successful reconnect recreates the display from config.
+    private var reconnectingSince: Date?
+    private let phantomLingerSeconds: TimeInterval = 4
     /// A launch-time auto-connect to a stale lastHost must not loop forever; give up after this
     /// many attempts (the setting itself stays on — a manual connect still works).
     static let maxAutoConnectAttempts = 3
@@ -291,6 +297,7 @@ final class SourceController: ObservableObject {
         activeQuality = nil
         currentMakeTransport = nil
         currentExpectedPeerId = nil
+        reconnectingSince = nil
         isConnected = false
         isConnecting = false
         isStreaming = false
@@ -412,6 +419,7 @@ final class SourceController: ObservableObject {
         case .streaming:
             isConnecting = false; isConnected = true; statusText = String(localized: "Connected")
             autoConnecting = false // reached a live stream → the auto-attempt succeeded
+            reconnectingSince = nil // a healthy stream clears the phantom-teardown timer
             Log.event(.source, "link: connected")
         case .reconnecting(let attempt):
             // A launch auto-connect to a stale lastHost must not loop forever on every launch:
@@ -433,6 +441,17 @@ final class SourceController: ObservableObject {
                 : String(localized: "Reconnecting (\(attempt))…")
             Log.event(.source, "link: reconnecting (attempt \(attempt))")
             tearDownEncoderCapture()
+            // Keep the virtual display for a brief blip so a fast reconnect preserves window
+            // layout — but if the peer stays gone (a hard drop with no BYE: crash, cable pull, or
+            // a quit whose goodbye didn't flush), remove the phantom desktop so the cursor can't
+            // wander onto a screen with no Mac behind it. prepareStreaming() recreates it if the
+            // peer returns.
+            if reconnectingSince == nil { reconnectingSince = Date() }
+            if let since = reconnectingSince, Date().timeIntervalSince(since) >= phantomLingerSeconds,
+               virtualDisplay.isActive {
+                Log.event(.source, "reconnect exceeded \(Int(phantomLingerSeconds))s — removing the virtual display so the cursor can't stray onto it", level: .notice)
+                virtualDisplay.destroy()
+            }
         case .failed(let reason):
             // Terminal (protocol/role mismatch, wrong PIN, key changed, rate-limited, or displaced
             // by another Source): tear down and release the reconnector so a fresh connect() can
@@ -462,6 +481,7 @@ final class SourceController: ObservableObject {
             pendingConfig = nil
             reconnector = nil
             autoConnecting = false
+            reconnectingSince = nil
             activeQuality = nil
             currentMakeTransport = nil
             currentExpectedPeerId = nil

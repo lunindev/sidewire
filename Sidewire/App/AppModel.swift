@@ -13,6 +13,10 @@ extension Notification.Name {
 /// Top-level app state: the chosen role (persisted) and the active role controller.
 @MainActor
 final class AppModel: ObservableObject {
+    /// Weak handle so the AppDelegate can flush a graceful goodbye on ⌘Q (the delegate can't
+    /// reach the SwiftUI `@StateObject`). Set in `init`; there is only ever one AppModel.
+    static weak var shared: AppModel?
+
     @Published var role: Role?
     @Published private(set) var source: SourceController?
     @Published private(set) var display: DisplayController?
@@ -24,6 +28,7 @@ final class AppModel: ObservableObject {
     private var welcomeObserver: Any?
 
     init() {
+        AppModel.shared = self
         // D8 — let the Settings pane / Help menu re-present Welcome without a direct reference.
         welcomeObserver = NotificationCenter.default.addObserver(
             forName: .sidewireShowWelcome, object: nil, queue: .main) { [weak self] _ in
@@ -47,6 +52,20 @@ final class AppModel: ObservableObject {
     func setRole(_ role: Role) {
         UserDefaults.standard.set(role.rawValue, forKey: roleKey)
         activate(role)
+    }
+
+    /// Called from the AppDelegate as the app quits (⌘Q / Quit). Sends a graceful BYE to the
+    /// connected peer so it tears down immediately — a fatal "user" reason means the other Mac
+    /// destroys its virtual display at once instead of waiting for the heartbeat watchdog and
+    /// then reconnecting to a Mac that's gone (which left a phantom desktop the cursor strayed
+    /// onto). Returns true if a live link existed, so the caller can briefly defer termination to
+    /// let the BYE flush over the wire.
+    @discardableResult
+    func prepareForTermination() -> Bool {
+        let live = (source?.isConnected ?? false) || (display?.isConnected ?? false)
+        source?.disconnect() // sends BYE("user") + destroys this Mac's own virtual display
+        display?.stop()      // sends BYE("user")
+        return live
     }
 
     func switchRole() {

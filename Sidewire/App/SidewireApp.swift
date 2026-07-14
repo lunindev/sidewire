@@ -98,6 +98,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated { AppSettings.shared.applyActivationPolicy() }
     }
+
+    /// On quit, send the peer a graceful BYE before the process dies, then hold termination
+    /// briefly so it flushes over TCP. Without this, ⌘Q just drops the socket (a clean, "nil"
+    /// close the peer reads as transient) and the other Mac keeps its virtual display and tries
+    /// to reconnect — leaving a phantom desktop the cursor could slide onto.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let needsFlush = MainActor.assumeIsolated { AppModel.shared?.prepareForTermination() ?? false }
+        guard needsFlush else { return .terminateNow }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
 }
 
 struct RootView: View {

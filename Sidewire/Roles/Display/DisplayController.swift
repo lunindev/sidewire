@@ -54,6 +54,14 @@ final class DisplayController: ObservableObject {
     @Published var presentedFps: Double = 0
     @Published var streamResolution = ""
 
+    /// This Mac's reachable IPv4 addresses (Wi-Fi / Ethernet / Thunderbolt), shown on the waiting
+    /// screen so the other Mac's Connect-by-IP field is easy to type. Refreshed as links change.
+    @Published var localAddresses: [LocalAddress] = []
+    /// The port the listener actually bound. Surfaced with the addresses only when it isn't the
+    /// well-known default — the port-ladder fallback can land elsewhere, and a manual connect then
+    /// needs "IP:port".
+    @Published var listeningPort: UInt16?
+
     private var presentedFrameCount = 0
     private var fpsTimer: Timer?
 
@@ -81,6 +89,9 @@ final class DisplayController: ObservableObject {
         listener.onConnection = { [weak self] transport in
             Task { @MainActor in self?.accept(transport) }
         }
+        listener.onReady = { [weak self] port in
+            Task { @MainActor in self?.listeningPort = port }
+        }
         // A Thunderbolt cable plugged/unplugged while idle changes the "tb" TXT record we
         // advertise; re-arm the listener to readvertise. Never churn during an active session
         // (the accepted connection is unaffected, but the refresh isn't worth the noise).
@@ -88,6 +99,9 @@ final class DisplayController: ObservableObject {
             guard let self, self.session == nil else { return }
             Log.display.info("Thunderbolt interface changed → re-advertising listener TXT")
             self.restartListener()
+        }
+        interfaceMonitor.onAddressesChanged = { [weak self] addrs in
+            Task { @MainActor in self?.localAddresses = addrs }
         }
         interfaceMonitor.start()
 
