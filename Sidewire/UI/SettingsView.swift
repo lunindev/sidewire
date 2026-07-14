@@ -78,8 +78,14 @@ struct SettingsView: View {
                 Toggle("Automatically check for updates", isOn: Binding(
                     get: { updater.automaticallyChecksForUpdates },
                     set: { updater.automaticallyChecksForUpdates = $0 }))
-                Text("Checks GitHub for a newer signed version. This is Sidewire's only connection to the internet — there are no accounts and no telemetry. Updates are verified with an EdDSA signature.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .disabled(!updater.isConfigured)
+                if updater.isConfigured {
+                    Text("Checks GitHub for a newer signed version. This is Sidewire's only connection to the internet — there are no accounts and no telemetry. Updates are verified with an EdDSA signature.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Auto-update isn't set up in this build (no signing key / release feed yet), so update checks are turned off.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             Section("Diagnostics") {

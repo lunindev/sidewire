@@ -13,13 +13,21 @@ public struct DiscoveredPeer: Identifiable, Hashable, Sendable {
     /// The peer's self-authenticating device id (TXT "did"), if advertised. Lets the Source
     /// enforce public-key pinning ("keyChanged") when it dials a peer it has already paired with.
     public let deviceId: String?
+    /// The concrete TCP port the peer bound and advertised (TXT "port"), if present. The Display
+    /// walks a small port ladder when its well-known port is taken, so a host-based dial (the
+    /// Thunderbolt one-click / manual IP) must use this to reach a non-standard rung. nil when the
+    /// peer didn't advertise it (an older/foreign build) → callers fall back to `fallbackPort`,
+    /// i.e. today's behavior. The mDNS/service connect path resolves the port from SRV and ignores
+    /// this.
+    public let port: UInt16?
 
-    public init(id: String, name: String, endpoint: NWEndpoint, thunderboltIP: String?, deviceId: String? = nil) {
+    public init(id: String, name: String, endpoint: NWEndpoint, thunderboltIP: String?, deviceId: String? = nil, port: UInt16? = nil) {
         self.id = id
         self.name = name
         self.endpoint = endpoint
         self.thunderboltIP = thunderboltIP
         self.deviceId = deviceId
+        self.port = port
     }
 
     public static func == (lhs: DiscoveredPeer, rhs: DiscoveredPeer) -> Bool { lhs.id == rhs.id }
@@ -75,7 +83,10 @@ public final class Discovery: @unchecked Sendable {
                       seen.insert(name).inserted else { return nil }
                 return DiscoveredPeer(id: name, name: name, endpoint: result.endpoint,
                                       thunderboltIP: Self.txtValue(from: result.metadata, key: "tb"),
-                                      deviceId: Self.txtValue(from: result.metadata, key: "did"))
+                                      deviceId: Self.txtValue(from: result.metadata, key: "did"),
+                                      // The rung the Display bound (TXT "port"); nil if absent/unparseable
+                                      // → the caller falls back to fallbackPort.
+                                      port: Self.txtValue(from: result.metadata, key: "port").flatMap { UInt16($0) })
             }
             self?.onPeersChanged?(peers)
         }

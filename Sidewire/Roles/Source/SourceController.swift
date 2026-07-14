@@ -209,8 +209,8 @@ final class SourceController: ObservableObject {
               pairingPIN.count == 6 else { return }
         let host = SourceController.lastHost
         guard !host.isEmpty else { return }
-        Log.source.info("auto-connecting to last peer \(host, privacy: .public)")
-        connect(host: host)
+        Log.source.info("auto-connecting to last peer \(host, privacy: .public):\(SourceController.lastPort)")
+        connect(host: host, port: SourceController.lastPort)
         autoConnecting = true // connect() cleared it; mark this link as the bounded auto-attempt
     }
 
@@ -234,11 +234,33 @@ final class SourceController: ObservableObject {
         // Manual IP has no advertised device id, so key pinning can't be pre-enforced here (the
         // peer's key is still verified against the trust store post-handshake by the Session).
         // Remember the last IP dialed by hand so the field is pre-filled next launch — the
-        // Thunderbolt link-local address is stable per cable and tedious to retype.
+        // Thunderbolt link-local address is stable per cable and tedious to retype. Remember the
+        // port alongside it so launch auto-connect re-dials the exact rung the Display last bound
+        // (it may have laddered off the well-known port).
         UserDefaults.standard.set(host, forKey: SourceController.lastHostKey)
+        UserDefaults.standard.set(Int(port), forKey: SourceController.lastPortKey)
         startLink(peerName: host, expectedPeerId: nil) {
             TCPTransport(host: host, port: port, interface: iface, identity: identity)
         }
+    }
+
+    /// Dial a hand-typed address that may carry an explicit ":port" suffix (e.g. "169.254.3.4:5006"),
+    /// so a user can reach a Display that laddered off the well-known port. We treat a trailing
+    /// ":<digits>" as a port only when there is EXACTLY ONE ":" in the string — that unambiguously
+    /// covers plain IPv4 / hostnames. Anything with multiple colons (a bare IPv6 literal) is passed
+    /// through untouched and dials the default port; the discovery/mDNS path is the IPv6 route in
+    /// practice, so we don't try to parse bracketed IPv6:port here.
+    func connect(manualAddress raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if trimmed.filter({ $0 == ":" }).count == 1, let sep = trimmed.firstIndex(of: ":") {
+            let hostPart = String(trimmed[..<sep])
+            let portPart = String(trimmed[trimmed.index(after: sep)...])
+            if !hostPart.isEmpty, let p = UInt16(portPart) {
+                connect(host: hostPart, port: p)
+                return
+            }
+        }
+        connect(host: trimmed) // no parseable :port → default fallbackPort
     }
 
     /// The device id to enforce (keyChanged) for a discovered peer: its advertised id, but only
@@ -250,6 +272,14 @@ final class SourceController: ObservableObject {
 
     static let lastHostKey = "sidewire.lastHost"
     static var lastHost: String { UserDefaults.standard.string(forKey: lastHostKey) ?? "" }
+    /// The port that went with `lastHost`, so launch auto-connect re-dials the exact rung the
+    /// Display last bound (it may have laddered off the well-known port). Defaults to
+    /// `fallbackPort` when unset (a first launch, or an install from before the port was persisted).
+    static let lastPortKey = "sidewire.lastPort"
+    static var lastPort: UInt16 {
+        let stored = UserDefaults.standard.integer(forKey: lastPortKey) // 0 when unset
+        return stored > 0 && stored <= Int(UInt16.max) ? UInt16(stored) : ProtocolConstants.fallbackPort
+    }
 
     func disconnect() {
         reconnector?.stop()

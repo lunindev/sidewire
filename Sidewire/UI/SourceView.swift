@@ -1,5 +1,6 @@
 import SwiftUI
 import SidewireCore
+import SidewireProtocol // ProtocolConstants.fallbackPort (the host-dial default when a peer advertises no "port")
 
 /// Source role main window: discover Displays, connect, and see streaming status.
 struct SourceView: View {
@@ -101,7 +102,10 @@ struct SourceView: View {
                                    controller.localThunderboltIP != nil, // this Mac has a TB bridge to route to it
                                    !controller.isConnected {
                                     Button {
-                                        controller.connect(host: tb)
+                                        // Force the Thunderbolt cable by dialing the peer's TB IP,
+                                        // but at the port it actually advertised (it may have
+                                        // laddered off 5005); fall back to fallbackPort if absent.
+                                        controller.connect(host: tb, port: peer.port ?? ProtocolConstants.fallbackPort)
                                     } label: {
                                         Label("Thunderbolt", systemImage: "cable.connector")
                                     }
@@ -127,10 +131,10 @@ struct SourceView: View {
             GroupBox("Connect by IP — forces Thunderbolt") {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        TextField("169.254.x.x", text: $manualHost)
+                        TextField("169.254.x.x[:port]", text: $manualHost)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 200)
-                        Button("Connect") { controller.connect(host: manualHost) }
+                        Button("Connect") { controller.connect(manualAddress: manualHost) }
                             .disabled(manualHost.isEmpty || controller.isConnected || controller.isConnecting || controller.pairingPIN.count != 6)
                     }
                     if let tb = controller.localThunderboltIP {
@@ -141,6 +145,11 @@ struct SourceView: View {
                         Text("No Thunderbolt Bridge found — connect a cable and check System Settings → Network.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
+                    // The Display normally binds 5005, but steps to 5006, 5007, … if that port is
+                    // taken (it shows the bound port in its status). If it shows a non-standard
+                    // port, append it here, e.g. 169.254.3.4:5006.
+                    Text("Tip: if the other Mac shows a non-standard port, append it — e.g. 169.254.3.4:5006.")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
 
