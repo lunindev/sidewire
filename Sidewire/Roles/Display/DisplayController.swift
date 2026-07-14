@@ -243,6 +243,15 @@ final class DisplayController: ObservableObject {
                 self.handleClosed(reason)
             }
         }
+        // Out-of-band cursor feed: the Source reports where its pointer is over the streamed
+        // display; warp THIS Mac's native cursor there so the pointer tracks at network latency
+        // instead of the video's decode lag (config.showsCursor stays false on the Source).
+        session.onCursor = { [weak self, weak session] nx, ny in
+            Task { @MainActor in
+                guard let self, self.session === session else { return }
+                self.warpCursor(nx: nx, ny: ny)
+            }
+        }
         // Heartbeat liveness: a PONG round-trip means the control link is alive even when no
         // video is flowing (static source screen). The no-frame watchdog uses this to avoid
         // treating a legitimately still screen as a stall.
@@ -280,6 +289,10 @@ final class DisplayController: ObservableObject {
         streamResolution = "\(config.width)×\(config.height) @\(config.fps) · \(config.codec.uppercased())"
         presenter.videoSize = CGSize(width: config.width, height: config.height)
         inputCapture.isEnabled = true
+        // The Source's cursor feed drives THIS Mac's native pointer (see warpCursor). Balance any
+        // stray system hide once on connect so the pointer is guaranteed visible for the feed. A
+        // single show (not a hide/unhide pair) can't leave the counter unbalanced.
+        CGDisplayShowCursor(CGMainDisplayID())
         // D2 — hold the no-display-sleep assertion for the life of the connection.
         if AppSettings.shared.keepAwakeWhileConnected {
             powerAssertion.acquire(reason: "Sidewire is showing another Mac's screen")
@@ -434,6 +447,29 @@ final class DisplayController: ObservableObject {
         session = nil
     }
 
+    /// Warp this Mac's native cursor to where the Source's pointer is over the streamed display.
+    /// `nx`/`ny` are normalized 0..1, TOP-LEFT origin — the exact inverse of
+    /// `InputCapture.normalizedLocation`. Only runs while connected with a mounted window.
+    private func warpCursor(nx: Float, ny: Float) {
+        guard isConnected, let window = presenter.window else { return } // ignore stray/late callbacks
+        let rect = presenter.videoRect
+        guard rect.width > 0, rect.height > 0 else { return }
+        // 1) normalized (top-left) → presenter AppKit view coords (flip ny back to bottom-left).
+        let viewX = rect.minX + CGFloat(nx) * rect.width
+        let viewY = rect.minY + (1 - CGFloat(ny)) * rect.height
+        // 2) view → window → AppKit global screen (bottom-left origin).
+        let winPt = presenter.convert(CGPoint(x: viewX, y: viewY), to: nil)
+        let screenPt = window.convertPoint(toScreen: winPt)
+        // 3) AppKit global (bottom-left) → CG global (top-left) for the warp.
+        let primaryH = NSScreen.screens.first?.frame.height ?? 0
+        let cgPt = CGPoint(x: screenPt.x, y: primaryH - screenPt.y)
+        CGWarpMouseCursorPosition(cgPt)
+        // CGWarp otherwise imposes a ~0.25s movement-suppression "stick"; re-associating cancels
+        // it immediately so a continuous cursor feed stays smooth rather than stuttering.
+        // (Takes boolean_t/Int32, not Bool — 1 == reconnect mouse to cursor.)
+        CGAssociateMouseAndMouseCursorPosition(1)
+    }
+
     /// Focus + fullscreen the video window and enable mouse-moved capture. Without
     /// acceptsMouseMovedEvents the NSEvent monitor never sees pointer movement, so the
     /// remote cursor wouldn't move (the reason mouse control appeared dead).
@@ -462,7 +498,8 @@ final class DisplayController: ObservableObject {
         if !window.styleMask.contains(.fullScreen) {
             window.toggleFullScreen(nil)
         }
-        // Cursor visibility is managed by DisplayView (tied to the auto-hiding control bar).
+        // The native cursor is actively driven by the Source's out-of-band cursor feed (warpCursor);
+        // its visibility is balanced once on connect via CGDisplayShowCursor in startPresenting.
     }
 
     private func exitImmersive() {

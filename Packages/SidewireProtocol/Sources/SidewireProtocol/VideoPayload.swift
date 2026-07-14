@@ -53,6 +53,23 @@ public enum HeartbeatPayload {
     }
 }
 
+public enum CursorPayload {
+    /// An 8-byte payload: cursor `x` then `y`, each an IEEE-754 big-endian Float32, normalized
+    /// 0..1 within the streamed display's bounds with a TOP-LEFT origin (matching the INPUT wire
+    /// convention). Source→Display only; the Display warps its native cursor to this position.
+    public static func encode(x: Float, y: Float) -> Data {
+        var d = Data(capacity: 8)
+        ByteWriter.appendBEFloat(&d, x)
+        ByteWriter.appendBEFloat(&d, y)
+        return d
+    }
+    public static func decode(_ payload: Data) -> (x: Float, y: Float)? {
+        guard payload.count >= 8 else { return nil }
+        let b = payload.startIndex
+        return (ByteReader.beFloat(payload, b), ByteReader.beFloat(payload, b + 4))
+    }
+}
+
 public enum LTRAckPayload {
     /// `count:UInt16` followed by `count` × `UInt16` acknowledged LTR tokens.
     public static func encode(_ tokens: [UInt16]) -> Data {

@@ -67,6 +67,10 @@ public final class Session: @unchecked Sendable {
     public var onInterface: ((String) -> Void)?
     /// Source side: the receiver acknowledged these long-term-reference tokens.
     public var onLTRAck: (([UInt16]) -> Void)?
+    /// Display side: the Source's cursor is over the streamed display; (x, y) are normalized
+    /// 0..1 within the display's bounds, TOP-LEFT origin. The Display warps its native cursor
+    /// here so the pointer tracks at network latency instead of the video's decode lag.
+    public var onCursor: ((Float, Float) -> Void)?
 
     /// Source override for the virtual-display resolution (nil = match the Display's native).
     /// Set before start().
@@ -195,6 +199,15 @@ public final class Session: @unchecked Sendable {
         queue.async {
             guard self.ready, !self.closed else { return }
             self.transport.send(type: .input, seq: self.nextSeq(), payload: rec.encoded)
+        }
+    }
+
+    /// Source side: report the cursor position over the streamed display so the Display can warp
+    /// its native cursor there. `x`/`y` are normalized 0..1, TOP-LEFT origin (see CursorPayload).
+    public func sendCursor(x: Float, y: Float) {
+        queue.async {
+            guard self.ready, !self.closed else { return }
+            self.transport.send(type: .cursor, seq: self.nextSeq(), payload: CursorPayload.encode(x: x, y: y))
         }
     }
 
@@ -513,6 +526,12 @@ public final class Session: @unchecked Sendable {
         case .input:
             if role == .source, let rec = InputEventRecord.decode(from: frame.payload) {
                 onInputEvent?(rec)
+            }
+        case .cursor:
+            // Display-only (mirrors .video). The inbound frame already reset the liveness clock
+            // above, so a steady cursor feed doubles as a keep-alive — no special-casing needed.
+            if role == .display, let (x, y) = CursorPayload.decode(frame.payload) {
+                onCursor?(x, y)
             }
         case .ping:
             transport.send(type: .pong, seq: nextSeq(), payload: frame.payload) // echo

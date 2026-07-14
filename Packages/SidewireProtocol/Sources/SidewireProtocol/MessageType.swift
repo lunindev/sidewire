@@ -18,6 +18,13 @@ public enum MessageType: UInt8, Sendable {
     case video       = 0x10
     case audio       = 0x11   // reserved
     case input       = 0x20
+    /// Cursor position (Source→Display), sent out-of-band on a high-frequency channel so the
+    /// Display can warp its own native hardware cursor to track the user's hand at network
+    /// latency instead of waiting for a cursor baked into the (encode→network→decode-lagged)
+    /// video. Payload is `CursorPayload` (x,y normalized 0..1, TOP-LEFT origin, BE Float32).
+    /// The Parsec/Moonlight "local cursor" technique. Skippable like any unknown type, so a
+    /// peer that doesn't understand it simply ignores it.
+    case cursor      = 0x21
     case ping        = 0x30
     case pong        = 0x31
     case requestIDR  = 0x40

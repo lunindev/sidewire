@@ -1,10 +1,11 @@
 import SwiftUI
 import AppKit
 
-/// Display role: the immersive fullscreen video with an auto-hiding control bar. The local
-/// cursor stays visible — it is the instant remote pointer, since the source no longer bakes
-/// a cursor into the video (that round-trip is what made the pointer feel laggy). The control
-/// bar reveals on mouse movement and auto-hides; Esc always exits.
+/// Display role: the immersive fullscreen video with an auto-hiding control bar. This Mac's
+/// native cursor is the remote pointer — the Source no longer bakes a cursor into the video
+/// (that round-trip is what made it feel laggy); instead it sends the cursor position on a
+/// separate high-frequency channel and DisplayController warps the native cursor to it at
+/// network latency. The control bar reveals on mouse movement and auto-hides; Esc always exits.
 struct DisplayView: View {
     @ObservedObject var controller: DisplayController
     @EnvironmentObject var model: AppModel
@@ -173,9 +174,9 @@ struct DisplayView: View {
         showExitToast = false
     }
 
-    /// Reveal the control bar on activity, then auto-hide while connected. The local cursor
-    /// stays visible throughout — it is the instant remote pointer (the source no longer
-    /// bakes a cursor into the video).
+    /// Reveal the control bar on activity, then auto-hide while connected. The native cursor stays
+    /// visible throughout — it is the remote pointer, driven by the Source's out-of-band cursor
+    /// feed (DisplayController.warpCursor) rather than a cursor baked into the video.
     private func revealControls() {
         hideWork?.cancel()
         withAnimation { controlsVisible = true }

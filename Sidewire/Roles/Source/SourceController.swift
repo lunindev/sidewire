@@ -25,6 +25,10 @@ final class SourceController: ObservableObject {
     }
 
     private let injector = InputInjector()
+    /// Out-of-band cursor feed: streams the pointer's position while it's over the virtual
+    /// display so the Display can warp its native cursor there (no encode/decode lag on the
+    /// pointer). Started in beginStreaming, stopped in tearDownEncoderCapture.
+    private let cursorTracker = CursorTracker()
     private var encoder: VideoEncoder?
     private var reconnector: Reconnector?
     private weak var activeSession: Session?
@@ -484,6 +488,12 @@ final class SourceController: ObservableObject {
         isStreaming = false
         injector.virtualDisplayID = displayID
         firstEncodedLogged = false
+        // Out-of-band cursor feed: track the pointer over the virtual display and stream its
+        // position so the Display warps its native cursor there. Bound to THIS session (weakly),
+        // and restarted from scratch each time streaming (re)begins.
+        cursorTracker.virtualDisplayID = displayID
+        cursorTracker.onCursor = { [weak session] x, y in session?.sendCursor(x: x, y: y) }
+        cursorTracker.start()
         Log.event(.media, "virtual display \(displayID) active → starting capture \(config.width)x\(config.height)@\(config.fps) codec=\(config.codec)")
 
         let enc = makeEncoder(config: config, session: session)
@@ -654,6 +664,7 @@ final class SourceController: ObservableObject {
 
     private func tearDownEncoderCapture() {
         stopMonitor()
+        cursorTracker.stop() // covers reconnect/failed/disconnect (all route through here)
         capture.setSampleHandler(nil)
         Task { await capture.stopCapture() }
         encoder?.flush()
