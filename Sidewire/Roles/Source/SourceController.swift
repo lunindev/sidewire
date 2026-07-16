@@ -125,6 +125,11 @@ final class SourceController: ObservableObject {
     /// fire for them. This is what turns the forever-"Searching…" dead-end into real guidance.
     @Published var searchedAWhileEmpty = false
     private var discoveryEscalation: DispatchWorkItem?
+
+    /// A launch auto-connect waiting for its remembered Mac (by device id) to reappear in
+    /// discovery. Cleared once it connects, times out, or the user starts/ends any link.
+    private var pendingAutoConnectDeviceId: String?
+    private var autoConnectDeadline: DispatchWorkItem?
     @Published var statusText = String(localized: "Idle")
     /// Set when the last connect attempt failed the TLS-PSK handshake (wrong PIN). Drives a
     /// clear message in the UI instead of an endless silent "Reconnecting…". Cleared on the
@@ -198,6 +203,7 @@ final class SourceController: ObservableObject {
                 } else {
                     self.discoveryLikelyBlocked = false // found something → not blocked
                     self.searchedAWhileEmpty = false    // …and not a dead-end
+                    self.tryPendingAutoConnect(peers)   // the remembered Mac may have just appeared
                 }
             }
         }
@@ -235,6 +241,7 @@ final class SourceController: ObservableObject {
         // A pending escalation is [weak self] so it can't touch a dead controller, but cancelling
         // it (and the browser) here keeps a role switch from leaving either running.
         discoveryEscalation?.cancel()
+        autoConnectDeadline?.cancel()
     }
 
     func startDiscovery() {
@@ -296,17 +303,54 @@ final class SourceController: ObservableObject {
         }
     }
 
-    /// If enabled in Settings, dial the last IP on launch (using the saved PIN). No-op if
-    /// disabled, already connecting, missing a PIN, or without a remembered address.
+    /// Reconnect to the last Mac on launch, if enabled. Two remembered kinds:
+    /// - a DISCOVERED peer → wait for that identity to reappear and connect to it (robust to a
+    ///   changed IP). Only a still-paired Mac auto-connects — no PIN to reach for.
+    /// - a hand-typed ADDRESS → dial it directly, using the saved PIN, as before.
+    /// This used to only handle the address kind, so connecting by clicking the list — the common
+    /// case — silently never auto-connected.
     func maybeAutoConnect() {
         guard AppSettings.shared.autoConnectLastPeer,
+              reconnector == nil, !isConnected, !isConnecting else { return }
+        if let deviceId = SourceController.lastPeerDeviceId {
+            pendingAutoConnectDeviceId = deviceId
+            armAutoConnectDeadline()
+            tryPendingAutoConnect(peers) // it may already be on the list
+        } else {
+            let host = SourceController.lastHost
+            guard !host.isEmpty, pairingPIN.count == 6 else { return }
+            Log.source.info("auto-connecting to last address \(host, privacy: .public):\(SourceController.lastPort)")
+            connect(host: host, port: SourceController.lastPort)
+            // Keep linkOrigin = .manualAddress (set by connect(host:)). The give-up copy for an
+            // address ("Check the address…") is right; the .autoConnect copy says "Pick it below",
+            // but a typed address is never a row in the list below.
+        }
+    }
+
+    /// Connect to the pending auto-connect Mac if it's now discovered, idle, and still paired.
+    private func tryPendingAutoConnect(_ peers: [DiscoveredPeer]) {
+        guard let deviceId = pendingAutoConnectDeviceId,
               reconnector == nil, !isConnected, !isConnecting,
-              pairingPIN.count == 6 else { return }
-        let host = SourceController.lastHost
-        guard !host.isEmpty else { return }
-        Log.source.info("auto-connecting to last peer \(host, privacy: .public):\(SourceController.lastPort)")
-        connect(host: host, port: SourceController.lastPort)
-        linkOrigin = .autoConnect // connect() set .manualAddress; this dial is the silent launch attempt
+              let peer = peers.first(where: { $0.deviceId == deviceId }), isPaired(peer) else { return }
+        clearPendingAutoConnect()
+        Log.source.info("auto-connecting to last peer \(peer.name, privacy: .public) by identity")
+        connect(to: peer)
+        linkOrigin = .autoConnect
+    }
+
+    /// Give up waiting for the remembered Mac after a while, so it can't auto-connect long after
+    /// launch when the user has moved on.
+    private func armAutoConnectDeadline() {
+        autoConnectDeadline?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.pendingAutoConnectDeviceId = nil }
+        autoConnectDeadline = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: work)
+    }
+
+    private func clearPendingAutoConnect() {
+        pendingAutoConnectDeviceId = nil
+        autoConnectDeadline?.cancel()
+        autoConnectDeadline = nil
     }
 
     /// Connect to a peer from the discovered list. `forceThunderbolt` dials the peer's advertised
@@ -321,6 +365,18 @@ final class SourceController: ObservableObject {
         // If this peer is already paired, enforce public-key pinning against its advertised
         // device id (a changed key → "keyChanged"). Unpaired ⇒ nil (accept any key, pair via PIN).
         let expected = pinnedExpectation(for: peer.deviceId)
+        // Any discovered-list connect supersedes a remembered hand-typed address — always, even
+        // for a peer we can't remember by identity — so auto-connect never later dials a stale,
+        // unrelated address instead of the Mac just used. A peer with no advertised device id
+        // (old/foreign build) can't be re-matched, so it clears the memory entirely: unrememberable
+        // means "don't auto-connect", not "fall back to an older Mac".
+        UserDefaults.standard.removeObject(forKey: SourceController.lastHostKey)
+        UserDefaults.standard.removeObject(forKey: SourceController.lastPortKey)
+        if let did = peer.deviceId {
+            UserDefaults.standard.set(did, forKey: SourceController.lastPeerDeviceIdKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: SourceController.lastPeerDeviceIdKey)
+        }
         let makeTransport: () -> TCPTransport
         if forceThunderbolt, let tb = peer.thunderboltIP {
             let port = peer.port ?? ProtocolConstants.fallbackPort
@@ -350,6 +406,7 @@ final class SourceController: ObservableObject {
         // (it may have laddered off the well-known port).
         UserDefaults.standard.set(host, forKey: SourceController.lastHostKey)
         UserDefaults.standard.set(Int(port), forKey: SourceController.lastPortKey)
+        UserDefaults.standard.removeObject(forKey: SourceController.lastPeerDeviceIdKey) // address wins now
         let label = port == ProtocolConstants.fallbackPort ? host : "\(host):\(port)"
         startLink(peerName: host, target: .address(label), expectedPeerId: nil) {
             TCPTransport(host: host, port: port, interface: iface, identity: identity)
@@ -381,6 +438,12 @@ final class SourceController: ObservableObject {
 
     static let lastHostKey = "sidewire.lastHost"
     static var lastHost: String { UserDefaults.standard.string(forKey: lastHostKey) ?? "" }
+    /// The device id of the last peer connected from the DISCOVERED list. Auto-connect re-matches
+    /// this identity as the Mac reappears rather than dialing a remembered IP, which would go stale
+    /// the moment the Mac changed network. `lastHost` and this are mutually exclusive — whichever
+    /// connect happened last wins — so auto-connect knows which mechanism to use.
+    static let lastPeerDeviceIdKey = "sidewire.lastPeerDeviceId"
+    static var lastPeerDeviceId: String? { UserDefaults.standard.string(forKey: lastPeerDeviceIdKey) }
     /// The port that went with `lastHost`, so launch auto-connect re-dials the exact rung the
     /// Display last bound (it may have laddered off the well-known port). Defaults to
     /// `fallbackPort` when unset (a first launch, or an install from before the port was persisted).
@@ -391,6 +454,7 @@ final class SourceController: ObservableObject {
     }
 
     func disconnect() {
+        clearPendingAutoConnect() // user hung up → don't silently auto-reconnect
         reconnector?.stop()
         reconnector = nil
         activeSession = nil
@@ -442,6 +506,7 @@ final class SourceController: ObservableObject {
         guard reconnector == nil else { return } // ignore re-entrant connects
         pinRejected = false // fresh attempt clears any prior wrong-PIN error
         everEstablished = false // a new link is unproven until its handshake completes
+        clearPendingAutoConnect() // an explicit link supersedes any waiting auto-connect
         self.peerName = peerName
         self.linkTarget = target
         self.currentExpectedPeerId = expectedPeerId

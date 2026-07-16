@@ -44,8 +44,8 @@ struct SettingsView: View {
             }
 
             Section("Connection") {
-                Toggle("Auto-connect to the last Mac on launch", isOn: $settings.autoConnectLastPeer)
-                Text("Reconnects to the last IP you connected to, using the saved PIN.")
+                Toggle("Reconnect to the last Mac on launch", isOn: $settings.autoConnectLastPeer)
+                Text("Reconnects to the Mac you last used as soon as it's reachable — a paired Mac connects with no code needed.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -156,6 +156,11 @@ private struct PairedMacsSection: View {
 
     private func forget(_ peer: TrustedPeer) {
         KeychainTrustStore.shared.forget(peer.deviceId)
+        // If this was the auto-connect target, drop it too — otherwise next launch arms a pending
+        // reconnect that can never fire (isPaired is now false) and just idles until it times out.
+        if SourceController.lastPeerDeviceId == peer.deviceId {
+            UserDefaults.standard.removeObject(forKey: SourceController.lastPeerDeviceIdKey)
+        }
         reload()
     }
 
