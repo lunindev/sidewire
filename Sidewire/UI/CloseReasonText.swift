@@ -29,9 +29,9 @@ enum CloseReasonText {
         case SessionConstants.rateLimitedReason:
             return String(localized: "Too many wrong PIN attempts — wait a minute and try again.")
         case SessionConstants.supersededReason:
-            return String(localized: "Another Mac took over this display.")
+            return String(localized: "Another Mac took over that screen.")
         case "role":
-            return String(localized: "The other Mac is also set to Share — switch one of them to 'Use as a display'.")
+            return String(localized: "Your other Mac is also set to be the main Mac — switch one of them to 'Make this Mac the screen'.")
         case "protocol", "badMagic":
             return updateBoth
         case "timeout":
@@ -45,7 +45,7 @@ enum CloseReasonText {
     static func display(_ reason: String) -> String {
         switch reason {
         case SessionConstants.supersededReason:
-            return String(localized: "Another Source took over.")
+            return String(localized: "Another Mac took over this screen.")
         case SessionConstants.authFailureReason:
             return String(localized: "A Mac tried to connect with the wrong PIN.")
         case SessionConstants.rateLimitedReason:
@@ -53,7 +53,7 @@ enum CloseReasonText {
         case "user":
             return String(localized: "The other Mac disconnected.")
         case "role":
-            return String(localized: "The other Mac is also set to 'Use as a display' — switch one of them to Share.")
+            return String(localized: "Your other Mac is also set to be the screen — switch one of them to 'Give this Mac another screen'.")
         case "protocol", "badMagic":
             return updateBoth
         case "timeout":

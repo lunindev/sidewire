@@ -24,8 +24,14 @@ final class DisplayController: ObservableObject {
     private var session: Session?
     private var escMonitor: Any?
     private var wakeObserver: Any?
-    /// Bounds the enterImmersive retry loop when the window is still opening (menu-bar-only).
-    private var immersiveRetries = 0
+    /// Window/app-state observers backing `updateGrab()`. Re-armed whenever the presenter moves
+    /// to a new window; split by notification center so each is unregistered from its own.
+    private var windowObservers: [Any] = []
+    private var workspaceObservers: [Any] = []
+    /// Set when the user explicitly handed the pointer back (Esc / the control bar button) while
+    /// the window still satisfies every grab condition. Cleared by a click on the video. Without
+    /// this latch the grab would immediately re-arm itself and Esc would do nothing.
+    private var userReleasedInput = false
 
     private var firstVideoLogged = false
     private var firstDecodedLogged = false
@@ -50,6 +56,21 @@ final class DisplayController: ObservableObject {
     @Published var isListening = false
     @Published var isConnected = false
     @Published var videoStalled = false
+    /// True while this Mac's pointer and keyboard belong to the remote Mac: local input is
+    /// forwarded and the Source's cursor feed drives the native pointer (`warpCursor`).
+    ///
+    /// This is the single gate for both. It requires the video window to actually be fullscreen,
+    /// key, unminiaturized and on the active Space — because the cursor feed pins the pointer
+    /// into the video rect, and in any lesser window state that pins it inside a *frame the user
+    /// needs to escape from*: the pointer gets warped back on every move, so the window controls,
+    /// the menu bar and the Dock all become unreachable. Requiring fullscreen makes that trap
+    /// structurally impossible rather than merely unlikely.
+    @Published private(set) var isGrabbed = false
+
+    /// True when the stream is live and the window is immersive, but the user handed input back —
+    /// so a click on the video would take control. Deliberately narrower than `!isGrabbed`: a
+    /// windowed stream never grabs, and telling the user to click there would be a lie.
+    @Published private(set) var canTakeControlByClicking = false
     @Published var sourceName: String?
     @Published var presentedFps: Double = 0
     @Published var streamResolution = ""
@@ -74,6 +95,26 @@ final class DisplayController: ObservableObject {
         }
         // So captured coordinates map into the aspect-fit video rect, not the whole view.
         inputCapture.presenter = presenter
+        // AppKit calls viewDidMoveToWindow on the main thread; assumeIsolated keeps the window
+        // hand-off synchronous so the grab can never be armed against a stale window.
+        presenter.onWindowChange = { [weak self] window in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.rearmWindowObservers(for: window)
+                // The window may only now have mounted (menu-bar-only, or a reopen after ⌘W),
+                // which is the deterministic moment to take the screen.
+                if window != nil, self.isConnected { self.enterImmersive() }
+            }
+        }
+        // Click-to-grab: the counterpart to Esc. Only re-arms if the window still qualifies —
+        // clicking a windowed stream deliberately does nothing.
+        presenter.onClick = { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.userReleasedInput else { return }
+                self.userReleasedInput = false
+                self.updateGrab()
+            }
+        }
     }
 
     func start() {
@@ -120,14 +161,16 @@ final class DisplayController: ObservableObject {
             }
         }
 
-        // Esc exits the immersive fullscreen (the InputCapture monitor deliberately
-        // does NOT forward Esc to the Source, so this never leaks into the stream).
+        // Esc hands the pointer and keyboard back to this Mac. It deliberately does NOT leave
+        // fullscreen or close the session: releasing while still fullscreen is what lets the user
+        // reach the menu bar and the control bar at all. Gated on `isGrabbed` so Esc behaves
+        // normally everywhere else in the app — unconditionally swallowing keyCode 53 broke Esc
+        // on the waiting screen and in the app's own popovers. The InputCapture monitor never
+        // forwards Esc, so this can't leak into the stream either.
         escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if event.keyCode == 53 {
-                self?.exitImmersive()
-                return nil
-            }
-            return event
+            guard let self, event.keyCode == 53, self.isGrabbed else { return event }
+            self.releaseInput()
+            return nil
         }
     }
 
@@ -143,6 +186,8 @@ final class DisplayController: ObservableObject {
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
+        windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
     }
 
     /// Generate a fresh pairing PIN. In protocol v2 the PIN is not baked into the transport
@@ -164,7 +209,7 @@ final class DisplayController: ObservableObject {
     }
 
     func stop() {
-        session?.close(reason: "user")
+        closeSession(reason: "user") // releases the grab first — see closeSession
         session = nil
         listener.stop()
         interfaceMonitor.stop()
@@ -178,19 +223,38 @@ final class DisplayController: ObservableObject {
             NSEvent.removeMonitor(escMonitor)
             self.escMonitor = nil
         }
-        inputCapture.isEnabled = false
         stopVideoWatchdog()
         stopFpsCounter()
         powerAssertion.release()
-        exitImmersive()
+        // closeSession already did this on the connected path, but it no-ops with no session —
+        // a teardown states its end state rather than inferring it.
         isConnected = false
         isListening = false
         videoStalled = false
+        rearmWindowObservers(for: nil)
+        inputCapture.stop() // removes the monitor; isEnabled alone would leave it registered
+        exitFullscreenIfNeeded()
         statusText = String(localized: "Stopped")
         Log.event(.display, "stopped")
     }
 
     // MARK: - Private
+
+    /// Close the current session, ALWAYS releasing the input grab first. Every close goes through
+    /// here, because the ordering is the whole point and getting it wrong is silent:
+    /// `releaseHeldInput()` sends its keyUps/mouseUps *through this session*, while `Session.close`
+    /// sets `closed` before it fires `onClosed` — so releasing afterwards drops them all and strands
+    /// whatever the user was holding as physically down on the remote Mac. Those are posted at the
+    /// HID event tap, so they outlive the session and keep auto-repeating there, and nothing on the
+    /// Source side can undo them: the Display is the only end that tracks held input.
+    /// `sendInput` and `close` share one serial queue, so releasing first provably drains ahead of
+    /// the close.
+    private func closeSession(reason: String) {
+        guard session != nil else { return }
+        isConnected = false
+        updateGrab()
+        session?.close(reason: reason)
+    }
 
     private func accept(_ transport: TCPTransport) {
         Log.event(.display, "accepting incoming connection")
@@ -203,7 +267,10 @@ final class DisplayController: ObservableObject {
         }
 
         // Newest connection wins (Phase 0). Phase 1 adds proper multi-peer/reconnect logic.
-        session?.close(reason: SessionConstants.supersededReason)
+        // Via closeSession so a supersede mid-gesture releases what the outgoing session was
+        // holding — the old session's onClosed can never do it, since `self.session` is reassigned
+        // below before that callback's main-actor hop lands, so its identity guard rejects it.
+        closeSession(reason: SessionConstants.supersededReason)
 
         let snapshot = currentDisplayInfo()
         let hello = DeviceIdentity.makeHello(role: .display, sessionId: UUID().uuidString)
@@ -223,23 +290,26 @@ final class DisplayController: ObservableObject {
                 NotificationCenter.default.post(name: .sidewirePairedPeersChanged, object: nil)
             }
         }
-        // Identity-guard every queue-hopped callback so a superseded session can't
-        // drive state that now belongs to a newer one.
+        // Identity-guard every queue-hopped callback so a superseded session can't drive state
+        // that now belongs to a newer one. `let session` is load-bearing, not decoration: these
+        // fire after a main-actor hop, by which time both sides can be nil — and `nil === nil` is
+        // TRUE in Swift, so without the unwrap the guard fails open and a dead session's callback
+        // runs against the live controller.
         session.onPhaseChange = { [weak self, weak session] phase in
             Task { @MainActor in
-                guard let self, self.session === session else { return }
+                guard let self, let session, self.session === session else { return }
                 self.applyPhase(phase)
             }
         }
         session.onReady = { [weak self, weak session] config in
             Task { @MainActor in
-                guard let self, self.session === session else { return }
+                guard let self, let session, self.session === session else { return }
                 self.startPresenting(config: config)
             }
         }
         session.onVideoFrame = { [weak self, weak session] nal, isKey, ltrToken, ptsNanos in
             Task { @MainActor in
-                guard let self, self.session === session else { return }
+                guard let self, let session, self.session === session else { return }
                 if !self.firstVideoLogged {
                     self.firstVideoLogged = true
                     Log.media.info("first VIDEO frame received (\(nal.count) bytes, key=\(isKey), pts=\(ptsNanos)ns)")
@@ -253,7 +323,7 @@ final class DisplayController: ObservableObject {
         }
         session.onClosed = { [weak self, weak session] reason in
             Task { @MainActor in
-                guard let self, self.session === session else { return }
+                guard let self, let session, self.session === session else { return }
                 self.handleClosed(reason)
             }
         }
@@ -262,7 +332,7 @@ final class DisplayController: ObservableObject {
         // instead of the video's decode lag (config.showsCursor stays false on the Source).
         session.onCursor = { [weak self, weak session] nx, ny in
             Task { @MainActor in
-                guard let self, self.session === session else { return }
+                guard let self, let session, self.session === session else { return }
                 self.warpCursor(nx: nx, ny: ny)
             }
         }
@@ -271,7 +341,7 @@ final class DisplayController: ObservableObject {
         // treating a legitimately still screen as a stall.
         session.onRTT = { [weak self, weak session] _ in
             Task { @MainActor in
-                guard let self, self.session === session else { return }
+                guard let self, let session, self.session === session else { return }
                 self.lastHeartbeatNanos = DispatchTime.now().uptimeNanoseconds
             }
         }
@@ -302,19 +372,15 @@ final class DisplayController: ObservableObject {
         // translate. Deliberately NOT run through String(localized:) (F1).
         streamResolution = "\(config.width)×\(config.height) @\(config.fps) · \(config.codec.uppercased())"
         presenter.videoSize = CGSize(width: config.width, height: config.height)
-        inputCapture.isEnabled = true
-        // The Source's cursor feed drives THIS Mac's native pointer (see warpCursor). Balance any
-        // stray system hide once on connect so the pointer is guaranteed visible for the feed. A
-        // single show (not a hide/unhide pair) can't leave the counter unbalanced.
-        CGDisplayShowCursor(CGMainDisplayID())
+        // A fresh session starts owning the pointer again, whatever the previous one ended on.
+        userReleasedInput = false
         // D2 — hold the no-display-sleep assertion for the life of the connection.
         if AppSettings.shared.keepAwakeWhileConnected {
             powerAssertion.acquire(reason: "Sidewire is showing another Mac's screen")
         }
-        enterImmersive()
+        enterImmersive() // arms the grab via the window observers
         startFpsCounter()
         hasFirstFrame = false
-        immersiveRetries = 0
         let now = DispatchTime.now().uptimeNanoseconds
         lastPresentedNanos = now
         streamStartNanos = now
@@ -415,7 +481,7 @@ final class DisplayController: ObservableObject {
             let sinceStartMs = Double(now &- streamStartNanos) / 1_000_000
             if sinceStartMs > 12_000 {
                 Log.media.notice("no first frame in \(Int(sinceStartMs))ms → tearing down for reconnect")
-                session?.close(reason: SessionConstants.noVideoReason)
+                closeSession(reason: SessionConstants.noVideoReason)
             }
             return
         }
@@ -427,7 +493,9 @@ final class DisplayController: ObservableObject {
             // Video wedged for a long time. If the link is alive this is a rare local decoder
             // wedge (not a disconnect); tear down either way so the Reconnector rebuilds.
             Log.media.notice("no decoded frame for \(Int(idleMs))ms (linkAlive=\(linkAlive)) → tearing down for reconnect")
-            session?.close(reason: SessionConstants.noFrameReason)
+            // linkAlive means the control link still works, so the releases genuinely reach the
+            // Source — this is exactly the path where closing first would strand a held button.
+            closeSession(reason: SessionConstants.noFrameReason)
         } else if idleMs > SessionConstants.noFrameDim * 1000 {
             if linkAlive {
                 // Healthy link, just no new video → the source screen is static. Hold the last
@@ -448,7 +516,9 @@ final class DisplayController: ObservableObject {
         isConnected = false
         videoStalled = false
         sourceName = nil
-        inputCapture.isEnabled = false
+        // Drops the grab: both input capture and the cursor warp disarm together.
+        updateGrab()
+        userReleasedInput = false
         powerAssertion.release() // D2 — connection ended; let the screen sleep again
         stopVideoWatchdog()
         stopFpsCounter()
@@ -456,16 +526,19 @@ final class DisplayController: ObservableObject {
         decoder = nil
         presenter.flush()
         presenter.videoSize = .zero
-        exitImmersive()
-        statusText = reason.map { CloseReasonText.display($0) } ?? String(localized: "Waiting for a Source…")
+        // Deliberately does NOT leave fullscreen. Most closes are transient (wake, timeout) and the
+        // Source redials within ~0.25s; toggling fullscreen here raced the reconnect's re-entry and
+        // could leave the window windowed with a live session — the state that trapped the pointer.
+        statusText = reason.map { CloseReasonText.display($0) } ?? String(localized: "Waiting for your main Mac…")
         session = nil
     }
 
     /// Warp this Mac's native cursor to where the Source's pointer is over the streamed display.
     /// `nx`/`ny` are normalized 0..1, TOP-LEFT origin — the exact inverse of
-    /// `InputCapture.normalizedLocation`. Only runs while connected with a mounted window.
+    /// `InputCapture.normalizedLocation`. Only ever runs while grabbed: outside the grab this
+    /// pins the pointer inside the video rect on every move, which is a trap, not a feature.
     private func warpCursor(nx: Float, ny: Float) {
-        guard isConnected, let window = presenter.window else { return } // ignore stray/late callbacks
+        guard isGrabbed, let window = presenter.window else { return } // ignore stray/late callbacks
         let rect = presenter.videoRect
         guard rect.width > 0, rect.height > 0 else { return }
         // 1) normalized (top-left) → presenter AppKit view coords (flip ny back to bottom-left).
@@ -484,39 +557,129 @@ final class DisplayController: ObservableObject {
         CGAssociateMouseAndMouseCursorPosition(1)
     }
 
-    /// Focus + fullscreen the video window and enable mouse-moved capture. Without
-    /// acceptsMouseMovedEvents the NSEvent monitor never sees pointer movement, so the
-    /// remote cursor wouldn't move (the reason mouse control appeared dead).
-    private func enterImmersive() {
-        guard let window = presenter.window else {
-            // The window may still be opening (menu-bar-only just asked SwiftUI to open it).
-            // Nudge it and retry briefly rather than give up, so the stream isn't invisible.
-            if immersiveRetries < 20 {
-                immersiveRetries += 1
-                MainWindowOpener.show()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                    Task { @MainActor in
-                        guard let self, self.isConnected else { return }
-                        self.enterImmersive()
-                    }
-                }
-            } else {
-                Log.media.notice("enterImmersive: no window after retries — video will appear once a window mounts")
-            }
-            return
+    // MARK: - Input grab
+
+    /// Recompute whether the remote Mac owns this Mac's pointer and keyboard, and arm or disarm
+    /// both pipes together. Every window/app/Space observer and every state change that can affect
+    /// the answer routes through here — the grab is always derived, never inferred, because the
+    /// two pipes drifting apart is exactly what trapped the pointer.
+    private func updateGrab() {
+        let qualifies = windowQualifiesForGrab
+        let want = isConnected && !userReleasedInput && qualifies
+        // Recomputed unconditionally — it changes on window state alone, even when the grab doesn't.
+        canTakeControlByClicking = isConnected && !want && qualifies
+        guard want != isGrabbed else { return }
+        isGrabbed = want
+        inputCapture.isEnabled = want
+        // Without acceptsMouseMovedEvents the monitor never sees pointer movement, so the remote
+        // cursor wouldn't move. It lives here (not in enterImmersive) so it re-arms correctly
+        // when the view is remounted into a brand-new window after ⌘W.
+        presenter.window?.acceptsMouseMovedEvents = want
+        if want {
+            // The pointer is about to become the remote pointer; guarantee it's visible for the
+            // cursor feed. A single show (not a hide/unhide pair) can't unbalance the counter.
+            CGDisplayShowCursor(CGMainDisplayID())
+        } else {
+            // Hand the pointer back: cancel any movement suppression left by the last warp, and
+            // don't strand keys held at this instant as stuck-down on the remote Mac.
+            CGAssociateMouseAndMouseCursorPosition(1)
+            inputCapture.releaseHeldInput()
         }
-        immersiveRetries = 0
-        NSApp.activate(ignoringOtherApps: true)
-        window.acceptsMouseMovedEvents = true
-        window.makeKeyAndOrderFront(nil)
-        if !window.styleMask.contains(.fullScreen) {
-            window.toggleFullScreen(nil)
-        }
-        // The native cursor is actively driven by the Source's out-of-band cursor feed (warpCursor);
-        // its visibility is balanced once on connect via CGDisplayShowCursor in startPresenting.
+        Log.event(.display, "input grab → \(want)")
     }
 
-    private func exitImmersive() {
+    /// Every window condition the grab depends on. Fullscreen is the load-bearing one: it is what
+    /// guarantees there is no local window frame the warped pointer could be confined inside.
+    private var windowQualifiesForGrab: Bool {
+        guard let window = presenter.window else { return false }
+        return window.styleMask.contains(.fullScreen)
+            && window.isKeyWindow
+            && !window.isMiniaturized
+            && window.isOnActiveSpace
+            && NSApp.isActive
+    }
+
+    /// Subscribe the grab to a window's lifecycle. Each of these can flip `windowQualifiesForGrab`,
+    /// and before this the app observed none of them — it never knew its own window's state.
+    private func rearmWindowObservers(for window: NSWindow?) {
+        let nc = NotificationCenter.default
+        windowObservers.forEach { nc.removeObserver($0) }
+        windowObservers.removeAll()
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
+
+        guard let window else {
+            updateGrab() // no window ⇒ no grab
+            return
+        }
+        let windowNames: [NSNotification.Name] = [
+            NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+            NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification,
+            NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
+            NSWindow.willCloseNotification,
+        ]
+        for name in windowNames {
+            windowObservers.append(nc.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.updateGrab() }
+            })
+        }
+        // App activation carries no window object, and a fullscreen window lives on its own Space:
+        // ⌘-Tab and a Space switch must release just as surely as leaving fullscreen does.
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+            windowObservers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.updateGrab() }
+            })
+        }
+        workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.updateGrab() }
+        })
+        updateGrab()
+    }
+
+    /// Hand the pointer and keyboard back to this Mac's user without touching the session or the
+    /// window. Esc and the control bar's release button both land here; clicking the video takes
+    /// the grab back. Staying fullscreen on release is deliberate — that is what makes the control
+    /// bar and the menu bar reachable at all.
+    func releaseInput() {
+        guard isGrabbed else { return }
+        userReleasedInput = true
+        updateGrab()
+    }
+
+    /// End this session but keep listening for the next one — the Display-role counterpart of the
+    /// Source's Disconnect. Previously the only ways out of a live session from this side were ⌘Q
+    /// and "Switch role" (which tears the whole role down).
+    func disconnect() {
+        guard session != nil else { return }
+        Log.event(.display, "user disconnected")
+        // The peer reads "user" as "the other Mac disconnected", which is true for it. Locally,
+        // handleClosed(nil) restores "Waiting for your main Mac…" — we didn't lose the link, we're
+        // listening again.
+        closeSession(reason: "user")
+        handleClosed(nil)
+        exitFullscreenIfNeeded()
+    }
+
+    // MARK: - Window
+
+    /// Take the screen for the stream. Idempotent: on a transient reconnect the window is already
+    /// fullscreen, and re-activating would yank the user out of whatever Space they had moved to.
+    /// The grab arms itself from the didEnterFullScreen / didBecomeKey observers.
+    private func enterImmersive() {
+        guard let window = presenter.window else { return } // onWindowChange calls back when it mounts
+        guard !window.styleMask.contains(.fullScreen) else {
+            updateGrab()
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.toggleFullScreen(nil)
+    }
+
+    /// Leave fullscreen. Only ever called for a real teardown (`stop()`) or an explicit user
+    /// action — never on a transient close, which would thrash the window on every reconnect blip.
+    private func exitFullscreenIfNeeded() {
         guard let window = presenter.window, window.styleMask.contains(.fullScreen) else { return }
         window.toggleFullScreen(nil)
     }

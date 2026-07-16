@@ -71,11 +71,29 @@ final class SourceController: ObservableObject {
     /// with no Mac behind it. A later successful reconnect recreates the display from config.
     private var reconnectingSince: Date?
     private let phantomLingerSeconds: TimeInterval = 4
-    /// A launch-time auto-connect to a stale lastHost must not loop forever; give up after this
-    /// many attempts (the setting itself stays on — a manual connect still works).
-    static let maxAutoConnectAttempts = 3
-    /// True while the current link was started by launch auto-connect (bounded retries).
-    private var autoConnecting = false
+    /// A link that has never once connected must not retry forever; give up after this many
+    /// attempts. Applies to any first connect — launch auto-connect, a peer picked from the list,
+    /// and a hand-typed address alike (the setting itself stays on; a fresh connect still works).
+    static let maxFirstConnectAttempts = 3
+
+    /// How the current link was started. Only the give-up copy depends on it — the retry bound is
+    /// `everEstablished`. It exists because "couldn't reach it" needs completely different advice
+    /// for an address you typed, a Mac you picked off a list (which is demonstrably on the network
+    /// and running Sidewire — it advertised itself), and a silent reconnect at launch.
+    enum LinkOrigin { case autoConnect, discovered, manualAddress }
+    private var linkOrigin: LinkOrigin = .discovered
+
+    /// Whether THIS link ever completed a handshake and reached `.streaming`. It is the difference
+    /// between "the link dropped" and "the link was never right": a session that got established
+    /// and then broke (sleep, cable pull, wake) must self-heal forever, but one that never
+    /// completed is a wrong address / a Mac that isn't running Sidewire / the wrong network — and
+    /// retrying that forever is what turned one mistyped digit into a two-minute wait ending in a
+    /// status that blamed the other Mac.
+    ///
+    /// Deliberately keyed on the handshake, not on the first video frame: reaching `.streaming`
+    /// already proves the address, the PIN and the peer's identity, which is exactly what the
+    /// bound is asking about. A frame that never arrives afterwards is the watchdog's problem.
+    private var everEstablished = false
 
     // Adaptive bitrate (RTT-driven congestion control).
     private var currentBitrate = 30_000_000
@@ -217,11 +235,11 @@ final class SourceController: ObservableObject {
         guard !host.isEmpty else { return }
         Log.source.info("auto-connecting to last peer \(host, privacy: .public):\(SourceController.lastPort)")
         connect(host: host, port: SourceController.lastPort)
-        autoConnecting = true // connect() cleared it; mark this link as the bounded auto-attempt
+        linkOrigin = .autoConnect // connect() set .manualAddress; this dial is the silent launch attempt
     }
 
     func connect(to peer: DiscoveredPeer) {
-        autoConnecting = false // an explicit user connect is unbounded
+        linkOrigin = .discovered
         let iface = selectedInterface
         let identity = LocalIdentity.shared
         // If this peer is already paired, enforce public-key pinning against its advertised
@@ -234,7 +252,7 @@ final class SourceController: ObservableObject {
     }
 
     func connect(host: String, port: UInt16 = ProtocolConstants.fallbackPort) {
-        autoConnecting = false // an explicit user connect is unbounded (maybeAutoConnect re-sets it)
+        linkOrigin = .manualAddress // maybeAutoConnect overrides this; the retry bound is everEstablished
         let iface = selectedInterface
         let identity = LocalIdentity.shared
         // Manual IP has no advertised device id, so key pinning can't be pre-enforced here (the
@@ -256,17 +274,12 @@ final class SourceController: ObservableObject {
     /// covers plain IPv4 / hostnames. Anything with multiple colons (a bare IPv6 literal) is passed
     /// through untouched and dials the default port; the discovery/mDNS path is the IPv6 route in
     /// practice, so we don't try to parse bracketed IPv6:port here.
+    /// Dial a hand-typed address. Unparseable input is refused rather than dialled — see
+    /// `Address.parse` (SidewireProtocol) for why that distinction is load-bearing. The UI runs
+    /// the same parse to gate its button, so this guard should never be the one that fires.
     func connect(manualAddress raw: String) {
-        let trimmed = raw.trimmingCharacters(in: .whitespaces)
-        if trimmed.filter({ $0 == ":" }).count == 1, let sep = trimmed.firstIndex(of: ":") {
-            let hostPart = String(trimmed[..<sep])
-            let portPart = String(trimmed[trimmed.index(after: sep)...])
-            if !hostPart.isEmpty, let p = UInt16(portPart) {
-                connect(host: hostPart, port: p)
-                return
-            }
-        }
-        connect(host: trimmed) // no parseable :port → default fallbackPort
+        guard let parsed = Address.parse(raw) else { return }
+        connect(host: parsed.host, port: parsed.port)
     }
 
     /// The device id to enforce (keyChanged) for a discovered peer: its advertised id, but only
@@ -302,7 +315,6 @@ final class SourceController: ObservableObject {
         isConnecting = false
         isStreaming = false
         pinRejected = false
-        autoConnecting = false
         accessibilityRevoked = false
         injector.injectionEnabled = true
         statusText = String(localized: "Disconnected")
@@ -319,9 +331,14 @@ final class SourceController: ObservableObject {
         guard let make = currentMakeTransport else { return }
         let name = peerName ?? String(localized: "the last Mac")
         let expected = currentExpectedPeerId
+        let wasProven = everEstablished
         Log.event(.source, "reconnecting to apply new quality settings")
         disconnect() // clears currentMakeTransport — hence the local capture above
         startLink(peerName: name, expectedPeerId: expected, makeTransport: make)
+        // We were streaming from this exact peer a moment ago, so it is proven and must keep the
+        // unbounded self-healing retries. Without this, startLink's reset would drop a deliberate
+        // re-dial onto the bounded first-connect path and give up on a Mac we know is right there.
+        everEstablished = wasProven
     }
 
     // MARK: - Connection
@@ -330,6 +347,7 @@ final class SourceController: ObservableObject {
                            makeTransport: @escaping () -> TCPTransport) {
         guard reconnector == nil else { return } // ignore re-entrant connects
         pinRejected = false // fresh attempt clears any prior wrong-PIN error
+        everEstablished = false // a new link is unproven until its handshake completes
         self.peerName = peerName
         self.currentExpectedPeerId = expectedPeerId
         // Remember the transport factory so D3's reconnect can re-dial the same peer.
@@ -410,6 +428,21 @@ final class SourceController: ObservableObject {
         reconnector.start()
     }
 
+    /// What to tell the user when a first connect gives up. Each origin leaves them somewhere
+    /// different, and the advice has to match: telling someone who picked a Mac off the discovered
+    /// list to "check the address" is nonsense — they never typed one, and that Mac is provably on
+    /// the network running Sidewire, because that is how it got into the list.
+    private static func giveUpText(origin: LinkOrigin, name: String) -> String {
+        switch origin {
+        case .autoConnect:
+            return String(localized: "Couldn't reach \(name) automatically. Pick it below to try again.")
+        case .discovered:
+            return String(localized: "\(name) is on the network but isn't answering. Try quitting and reopening Sidewire on that Mac.")
+        case .manualAddress:
+            return String(localized: "Couldn't reach \(name). Check the address, and that Sidewire is open on that Mac and set to be the screen.")
+        }
+    }
+
     private func applyLinkState(_ state: Reconnector.LinkState) {
         guard reconnector != nil else { return } // ignore late callbacks after disconnect()
         switch state {
@@ -418,17 +451,25 @@ final class SourceController: ObservableObject {
             Log.event(.source, "link: connecting")
         case .streaming:
             isConnecting = false; isConnected = true; statusText = String(localized: "Connected")
-            autoConnecting = false // reached a live stream → the auto-attempt succeeded
+            everEstablished = true // from here on, retries are self-healing and stay unbounded
             reconnectingSince = nil // a healthy stream clears the phantom-teardown timer
             Log.event(.source, "link: connected")
         case .reconnecting(let attempt):
-            // A launch auto-connect to a stale lastHost must not loop forever on every launch:
-            // after a few attempts, give up this attempt (the setting stays on for next time).
-            if autoConnecting && attempt >= Self.maxAutoConnectAttempts {
-                Log.event(.source, "auto-connect gave up after \(attempt) attempts", level: .notice)
-                let name = peerName ?? String(localized: "the last Mac")
+            // Bound the FIRST connect only. A link that never got established was never right, so
+            // retrying it forever just delays the truth — and the delay is worse than useless,
+            // because the "Still trying — is Sidewire running on the other Mac?" hint below sends
+            // the user off to inspect a Mac that is very likely fine. Once a link HAS been
+            // established, `everEstablished` lifts the bound and reconnects run forever, which is
+            // the whole point of the self-healing path.
+            if !everEstablished, attempt >= Self.maxFirstConnectAttempts {
+                Log.event(.source, "first connect gave up after \(attempt) attempts", level: .notice)
+                // Both of these are read BEFORE disconnect(), which clears peerName and could
+                // clear anything else it likes. Reading state back out of a teardown is how the
+                // give-up message ends up describing a situation that no longer exists.
+                let name = peerName ?? String(localized: "the other Mac")
+                let origin = linkOrigin
                 disconnect()
-                statusText = String(localized: "Couldn't reach \(name). Connect manually.")
+                statusText = Self.giveUpText(origin: origin, name: name)
                 return
             }
             // The session died; drop the encoder/capture but KEEP the virtual display so
@@ -480,7 +521,6 @@ final class SourceController: ObservableObject {
             activeSession = nil
             pendingConfig = nil
             reconnector = nil
-            autoConnecting = false
             reconnectingSince = nil
             activeQuality = nil
             currentMakeTransport = nil
@@ -508,7 +548,7 @@ final class SourceController: ObservableObject {
            let did = virtualDisplay.virtualDisplayID {
             beginStreaming(displayID: did)
         } else {
-            statusText = String(localized: "Creating display…")
+            statusText = String(localized: "Creating the extra screen…")
             Log.event(.media, "creating virtual display \(config.width)x\(config.height) hiDPI=\(hiDPI)")
             virtualDisplay.recreate(width: UInt(config.width), height: UInt(config.height), hiDPI: hiDPI)
         }

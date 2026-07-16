@@ -21,6 +21,14 @@ final class InputCapture {
     /// suppressed repeat (e.g. ⌘ pressed while a forwarded key auto-repeats) must not swallow
     /// the keyUp the remote still needs, so suppression only starts for keys not in this set.
     private var forwardedKeyCodes = Set<UInt16>()
+    /// Mouse buttons whose press we forwarded — the remote thinks these are held. The exact
+    /// counterpart of `forwardedKeyCodes`, and load-bearing in both directions: a press we
+    /// forwarded MUST get its release even if the pointer has since left the video (otherwise the
+    /// remote is stranded mid-drag), and a release whose press we never forwarded must be dropped
+    /// (otherwise the click that re-takes the grab arrives as an unpaired mouseUp).
+    private var forwardedButtons = Set<UInt8>()
+    /// The last position we actually forwarded, so a synthesized release lands somewhere sane.
+    private var lastForwardedPoint: (x: Float, y: Float) = (0, 0)
 
     // Left/right ⌘ virtual key codes and Esc — the keys that stay local.
     private static let leftCommandKeyCode: UInt16 = 55
@@ -36,8 +44,14 @@ final class InputCapture {
 
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) { [weak self] event in
             guard let self, self.isEnabled else { return event }
+            // A local monitor is process-wide, so gate on the event actually being aimed at the
+            // video window. Events carrying no window (some flagsChanged) pass through as before.
+            if let eventWindow = event.window, let presenterWindow = self.presenter?.window,
+               eventWindow !== presenterWindow {
+                return event
+            }
 
-            // Keep ⌘-combos and Esc on THIS Mac (local shortcuts; Esc exits fullscreen), and do
+            // Keep ⌘-combos and Esc on THIS Mac (local shortcuts; Esc releases the grab), and do
             // it symmetrically so the remote never sees a half key stroke:
             switch event.type {
             case .keyDown:
@@ -81,6 +95,7 @@ final class InputCapture {
         localMonitor = nil
         suppressedKeyCodes.removeAll() // don't carry a half-pressed key across sessions
         forwardedKeyCodes.removeAll()
+        forwardedButtons.removeAll()
     }
 
     private func handleEvent(_ event: NSEvent) {
@@ -116,7 +131,30 @@ final class InputCapture {
             if hidUsage == 0 { return }
         }
 
-        let (nx, ny) = normalizedLocation(for: event)
+        // Mouse-button bookkeeping, mirroring the keyboard's. A release or drag for a button whose
+        // press we never forwarded is meaningless to the remote — drop it.
+        let button = Self.button(for: event.type)
+        let isPress = (type == .mouseDown || type == .rightMouseDown)
+        let isRelease = (type == .mouseUp || type == .rightMouseUp)
+        let isDrag = (type == .mouseDragged || type == .rightMouseDragged)
+        let gestureInFlight = (isRelease || isDrag) && button.map(forwardedButtons.contains) == true
+        if (isRelease || isDrag), !gestureInFlight { return }
+
+        // Off-video events are dropped rather than clamped: clamping a plain mouse-move to the
+        // nearest edge — which is what this used to do — is what let the Source's cursor feed pin
+        // the pointer against the video's border and trap it. Two kinds must still get through, so
+        // they clamp instead: key events (the injector ignores their position anyway), and a
+        // gesture already in flight — a held button's drag and release have to complete or the
+        // remote Mac is left mid-drag with the button stuck down.
+        let loc = normalizedLocation(for: event, clamping: isKeyEvent || gestureInFlight)
+        if loc == nil, !isKeyEvent { return }
+        let (nx, ny) = loc ?? (0, 0)
+
+        if let button {
+            if isPress { forwardedButtons.insert(button) }
+            else if isRelease { forwardedButtons.remove(button) }
+        }
+        if !isKeyEvent { lastForwardedPoint = (nx, ny) }
 
         let record = InputEventRecord(
             type: type, buttonNumber: bn, clickCount: cc,
@@ -125,30 +163,65 @@ final class InputCapture {
         onInputEvent?(record)
     }
 
-    /// Normalize the pointer into the rendered video rect (0..1). A point inside the view but
-    /// outside the letterboxed video clamps to the nearest edge. Falls back to the full content
-    /// view before the video size is known (or if the presenter is detached).
-    private func normalizedLocation(for event: NSEvent) -> (Float, Float) {
-        guard let window = event.window else { return (0, 0) }
+    /// The button an event belongs to, if any. Drags carry no usable `buttonNumber`, so it comes
+    /// from the event type. 0 = left, 1 = right, matching `NSEvent.buttonNumber`.
+    private static func button(for type: NSEvent.EventType) -> UInt8? {
+        switch type {
+        case .leftMouseDown, .leftMouseUp, .leftMouseDragged: return 0
+        case .rightMouseDown, .rightMouseUp, .rightMouseDragged: return 1
+        default: return nil
+        }
+    }
+
+    /// Normalize the pointer into the rendered video rect (0..1). Without `clamping`, a pointer
+    /// that isn't over the video — the letterbox bars, the title bar, outside the window — returns
+    /// nil, meaning "not a point on the remote screen", which is a different thing from the nearest
+    /// edge. Falls back to the full content view before the video size is known.
+    private func normalizedLocation(for event: NSEvent, clamping: Bool) -> (Float, Float)? {
+        guard let window = event.window else { return nil }
         if let presenter, presenter.window === window, presenter.bounds.width > 0 {
             let rect = presenter.videoRect
             if rect.width > 0, rect.height > 0 {
                 let loc = presenter.convert(event.locationInWindow, from: nil)
-                let nx = ((loc.x - rect.minX) / rect.width).clamped(0, 1)
-                let ny = (1.0 - (loc.y - rect.minY) / rect.height).clamped(0, 1)
-                return (Float(nx), Float(ny))
+                return normalize(x: (loc.x - rect.minX) / rect.width,
+                                 y: 1.0 - (loc.y - rect.minY) / rect.height, clamping: clamping)
             }
         }
         let contentSize = window.contentView?.bounds.size ?? window.frame.size
-        guard contentSize.width > 0, contentSize.height > 0 else { return (0, 0) }
+        guard contentSize.width > 0, contentSize.height > 0 else { return nil }
         let loc = event.locationInWindow
-        return (Float((loc.x / contentSize.width).clamped(0, 1)),
-                Float((1.0 - loc.y / contentSize.height).clamped(0, 1)))
+        return normalize(x: loc.x / contentSize.width, y: 1.0 - loc.y / contentSize.height,
+                         clamping: clamping)
+    }
+
+    private func normalize(x: CGFloat, y: CGFloat, clamping: Bool) -> (Float, Float)? {
+        if clamping { return (Float(min(max(x, 0), 1)), Float(min(max(y, 0), 1))) }
+        guard (0...1).contains(x), (0...1).contains(y) else { return nil }
+        return (Float(x), Float(y))
+    }
+
+    /// Release everything the remote still believes is held — mouse buttons and keys — then forget
+    /// all input state. Called when the grab drops: anything held at that instant would otherwise
+    /// stay down on the remote Mac indefinitely, because its release is delivered to a monitor that
+    /// is no longer forwarding. Must be called while the session is still open.
+    func releaseHeldInput() {
+        for button in forwardedButtons {
+            onInputEvent?(InputEventRecord(type: button == 1 ? .rightMouseUp : .mouseUp,
+                                           buttonNumber: button, clickCount: 1, modifiers: 0,
+                                           x: lastForwardedPoint.x, y: lastForwardedPoint.y,
+                                           deltaX: 0, deltaY: 0, keyCode: 0))
+        }
+        forwardedButtons.removeAll()
+        for code in forwardedKeyCodes {
+            let hid = KeyMapping.hidUsage(fromMacVirtualKey: code)
+            guard hid != 0 else { continue }
+            onInputEvent?(InputEventRecord(type: .keyUp, buttonNumber: 0, clickCount: 0,
+                                           modifiers: 0, x: 0, y: 0, deltaX: 0, deltaY: 0,
+                                           keyCode: hid))
+        }
+        forwardedKeyCodes.removeAll()
+        suppressedKeyCodes.removeAll()
     }
 
     deinit { stop() }
-}
-
-private extension CGFloat {
-    func clamped(_ lo: CGFloat, _ hi: CGFloat) -> CGFloat { Swift.min(Swift.max(self, lo), hi) }
 }

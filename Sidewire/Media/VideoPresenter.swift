@@ -13,6 +13,16 @@ final class VideoPresenterView: NSView {
     /// Zero until presenting starts.
     var videoSize: CGSize = .zero
 
+    /// Fires whenever this view is mounted into a window, moved between windows, or unmounted
+    /// (nil). `window` is nil until SwiftUI actually mounts the view, and it changes identity if
+    /// the window is closed and reopened — so the DisplayController hangs its window-state
+    /// observers and its mouse-moved arming off this rather than polling.
+    var onWindowChange: ((NSWindow?) -> Void)?
+
+    /// A click landing on the video. Used to re-take the input grab after the user released it
+    /// with Esc; the grab itself is decided by DisplayController.
+    var onClick: (() -> Void)?
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -23,6 +33,16 @@ final class VideoPresenterView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange?(window)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
+        super.mouseDown(with: event)
+    }
 
     override func layout() {
         super.layout()

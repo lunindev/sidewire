@@ -19,7 +19,7 @@ struct MenuBarView: View {
             Divider()
 
             if model.role == nil {
-                Text("Choose a role to get started.")
+                Text("Choose which Mac this is to get started.")
                     .font(.callout).foregroundStyle(.secondary)
             } else if let source = model.source {
                 SourceMenu(controller: source)
@@ -66,7 +66,7 @@ private struct SourceMenu: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
             if controller.peers.isEmpty {
-                Text("Searching for displays…").font(.caption).foregroundStyle(.secondary)
+                Text("Searching for Macs…").font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(controller.peers) { peer in
                     HStack {
@@ -92,7 +92,16 @@ private struct DisplayMenu: View {
             Label(controller.statusText, systemImage: "display")
                 .font(.callout)
             if let src = controller.sourceName {
-                Text("Connected to \(src)").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("Connected to \(src)").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Disconnect") { controller.disconnect() }
+                        .font(.caption)
+                }
+                if controller.isGrabbed {
+                    Button("Release mouse & keyboard") { controller.releaseInput() }
+                        .font(.caption2)
+                }
             } else if controller.isListening {
                 // Pairable: show the PIN here so menu-bar-only users can pair without opening
                 // the main window.

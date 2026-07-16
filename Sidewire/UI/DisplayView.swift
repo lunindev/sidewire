@@ -6,7 +6,11 @@ import SidewireProtocol
 /// native cursor is the remote pointer — the Source no longer bakes a cursor into the video
 /// (that round-trip is what made it feel laggy); instead it sends the cursor position on a
 /// separate high-frequency channel and DisplayController warps the native cursor to it at
-/// network latency. The control bar reveals on mouse movement and auto-hides; Esc always exits.
+/// network latency.
+///
+/// That warp is why `DisplayController.isGrabbed` gates this whole screen: while grabbed the
+/// pointer belongs to the remote Mac, and Esc gives it back without dropping the stream. While
+/// released the control bar stays pinned open — it's the one moment the user actually needs it.
 struct DisplayView: View {
     @ObservedObject var controller: DisplayController
     @EnvironmentObject var model: AppModel
@@ -36,14 +40,12 @@ struct DisplayView: View {
                     controlBar.transition(.move(edge: .top).combined(with: .opacity))
                 }
                 Spacer()
-                if controller.isConnected, showExitToast {
-                    Text("Press Esc to exit")
-                        .font(.callout)
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .background(.black.opacity(0.6), in: Capsule())
-                        .foregroundStyle(.white)
-                        .padding(.bottom, 24)
-                        .transition(.opacity)
+                if controller.isGrabbed, showExitToast {
+                    toast("Press Esc to get your mouse & keyboard back")
+                } else if controller.canTakeControlByClicking {
+                    // Persistent, not timed: the stream is live but this Mac's input goes nowhere,
+                    // and nothing else on screen says so.
+                    toast("Click the screen to control the other Mac")
                 }
             }
         }
@@ -53,7 +55,22 @@ struct DisplayView: View {
         .onChange(of: controller.isConnected) { _, connected in
             if connected { enterImmersiveUI() } else { exitImmersiveUI() }
         }
+        .onChange(of: controller.isGrabbed) { _, _ in
+            // Releasing the pointer must surface the bar (that's where Disconnect lives); taking
+            // the grab back re-arms the auto-hide.
+            revealControls()
+        }
         .onDisappear { hideWork?.cancel() }
+    }
+
+    private func toast(_ text: LocalizedStringKey) -> some View {
+        Text(text)
+            .font(.callout)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(.black.opacity(0.6), in: Capsule())
+            .foregroundStyle(.white)
+            .padding(.bottom, 24)
+            .transition(.opacity)
     }
 
     private var controlBar: some View {
@@ -80,8 +97,15 @@ struct DisplayView: View {
             .popover(isPresented: $showInputHelp, arrowEdge: .bottom) {
                 inputHelp
             }
-            Button("Exit") { exitFullscreen() }
-            Button("Switch role") { model.switchRole() }
+            if controller.isGrabbed {
+                Button("Release mouse & keyboard") { controller.releaseInput() }
+                    .help("Give the pointer and keyboard back to this Mac (Esc). The stream keeps running.")
+            }
+            if controller.isConnected {
+                Button("Disconnect") { controller.disconnect() }
+            }
+            Button("Change…") { model.switchRole() }
+                .help("Choose whether this Mac is the main one or the extra screen.")
         }
         .padding(8)
         .background(.black.opacity(0.6))
@@ -94,7 +118,8 @@ struct DisplayView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label("Keyboard & mouse", systemImage: "keyboard")
                 .font(.headline)
-            Text("⌘ shortcuts and Esc stay on this Mac (Esc exits fullscreen). Everything else is sent to the remote Mac.")
+            Text("⌘ shortcuts and Esc stay on this Mac. Everything else is sent to the remote Mac.")
+            Text("**Esc** gives your mouse & keyboard back to this Mac without stopping the stream. Click the screen to take control again.")
             Text("Non-US layouts: keys follow the remote Mac's layout.")
                 .foregroundStyle(.secondary)
         }
@@ -107,7 +132,7 @@ struct DisplayView: View {
         VStack(spacing: 14) {
             Image(systemName: controller.isListening ? "display.trianglebadge.exclamationmark" : "exclamationmark.triangle")
                 .font(.system(size: 44)).foregroundStyle(.gray)
-            Text(controller.isListening ? "Waiting for a Source…" : "Not accepting connections")
+            Text(controller.isListening ? "Ready to be your extra screen" : "Not accepting connections")
                 .font(.title3).foregroundStyle(.gray)
 
             if controller.isListening {
@@ -116,7 +141,7 @@ struct DisplayView: View {
                     Text(controller.pairingPIN)
                         .font(.system(size: 44, weight: .semibold, design: .monospaced))
                         .tracking(6).foregroundStyle(.white)
-                    Text("Enter this on the other Mac to connect")
+                    Text("Type this on your main Mac to connect")
                         .font(.caption2).foregroundStyle(.gray)
                     Button {
                         controller.rotatePIN()
@@ -142,7 +167,7 @@ struct DisplayView: View {
             }
 
             if controller.isListening, !controller.localAddresses.isEmpty {
-                // This Mac's own IPs, so the other Mac's "Connect by IP" field can be typed
+                // This Mac's own IPs, so the main Mac's "Connect by address" field can be typed
                 // straight off this screen instead of digging through System Settings. The
                 // Thunderbolt link-local address is listed first (it's the cable path and can't
                 // be guessed); a non-default listener port is appended as ":port".
@@ -159,7 +184,7 @@ struct DisplayView: View {
                                 .textSelection(.enabled)
                         }
                     }
-                    Text("Type one of these into the other Mac's “Connect by IP” field")
+                    Text("Type one of these into your main Mac's “Connect by address” field")
                         .font(.caption2).foregroundStyle(.gray)
                 }
                 .padding(.top, 4)
@@ -169,7 +194,7 @@ struct DisplayView: View {
                 // The Source-side counterpart of SourceView's "Can't connect?" guide: the two
                 // things that silently stop this Mac from being found/reached (backlog C1).
                 VStack(spacing: 3) {
-                    Text("Not seeing this Mac from the Source? Check Local Network permission and the firewall on this Mac.")
+                    Text("Not seeing this Mac from your main Mac? Check Local Network permission and the firewall on this Mac.")
                         .multilineTextAlignment(.center)
                     if let url = Permissions.localNetworkSettingsURL {
                         Link("Open Local Network settings", destination: url)
@@ -208,20 +233,16 @@ struct DisplayView: View {
         showExitToast = false
     }
 
-    /// Reveal the control bar on activity, then auto-hide while connected. The native cursor stays
-    /// visible throughout — it is the remote pointer, driven by the Source's out-of-band cursor
-    /// feed (DisplayController.warpCursor) rather than a cursor baked into the video.
+    /// Reveal the control bar on activity, then auto-hide — but only while the remote Mac owns the
+    /// pointer. Once input is released the bar stays put: it holds Disconnect and the release
+    /// state's only explanation, and hiding it would strand the user on a screen with no controls.
     private func revealControls() {
         hideWork?.cancel()
         withAnimation { controlsVisible = true }
-        guard controller.isConnected else { return }
+        guard controller.isConnected, controller.isGrabbed else { return }
         let work = DispatchWorkItem { withAnimation { controlsVisible = false } }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
-    }
-
-    private func exitFullscreen() {
-        (NSApp.keyWindow ?? NSApp.windows.first)?.toggleFullScreen(nil)
     }
 }
 

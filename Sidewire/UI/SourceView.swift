@@ -2,25 +2,40 @@ import SwiftUI
 import SidewireCore
 import SidewireProtocol // ProtocolConstants.fallbackPort (the host-dial default when a peer advertises no "port")
 
-/// Source role main window: discover Displays, connect, and see streaming status.
+/// The Main Mac's window: find the spare Mac, connect, and see how the extra screen is doing.
+///
+/// Permissions are NOT here — they're a gate (PermissionsGateView) the user passes before this screen
+/// exists, so this screen is only ever about connecting. Quality lives in Settings (⌘,) and the
+/// virtual-display readout moved to Settings ▸ Diagnostics: both were engineering panels sitting
+/// under the connect controls with equal visual weight, which is what made this look like a
+/// debug console rather than a product.
 struct SourceView: View {
     @ObservedObject var controller: SourceController
     @EnvironmentObject var model: AppModel
-    @ObservedObject private var settings = AppSettings.shared
-    @StateObject private var permissions = PermissionsModel()
     @State private var manualHost = SourceController.lastHost
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 0) {
             header
+                .padding(.horizontal, 24)
+                .padding(.vertical, 14)
+            Divider()
+            // Everything below scrolls. Without this the column simply overflowed the window and
+            // SwiftUI centred it, rendering the header at a negative y — the status, Cancel and
+            // Switch role were not drawn at all.
+            ScrollView {
+                content.padding(24)
+            }
+        }
+    }
 
-            PermissionsView(model: permissions)
-
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 16) {
             if controller.accessibilityRevoked {
                 accessibilityBanner
             }
 
-            GroupBox("Pairing PIN (shown on the Display)") {
+            GroupBox("PIN (shown on your other Mac)") {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         TextField("6-digit PIN", text: $controller.pairingPIN)
@@ -32,17 +47,21 @@ struct SourceView: View {
                                 let filtered = String(newValue.filter(\.isNumber).prefix(6))
                                 if filtered != newValue { controller.pairingPIN = filtered }
                             }
-                        if controller.pairingPIN.count == 6 {
+                        // Gated on a real connection, not on the text field's length. Six digits
+                        // typed into a box encrypt nothing, and the PIN persists across launches —
+                        // so the old check lit this green on a cold start before anything had
+                        // connected, and again directly above "PIN incorrect".
+                        if controller.isConnected {
                             Label("Encrypted (TLS)", systemImage: "lock.fill")
                                 .font(.caption).foregroundStyle(.green)
-                        } else {
-                            Text("Enter the PIN shown on the other Mac.")
+                        } else if controller.pairingPIN.count < 6 {
+                            Text("Enter the PIN shown on your other Mac.")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()
                     }
                     if controller.pinRejected {
-                        Label("PIN incorrect — check the code shown on the other Mac.",
+                        Label("PIN incorrect — check the code shown on your other Mac.",
                               systemImage: "exclamationmark.triangle.fill")
                             .font(.caption).foregroundStyle(.red)
                     } else if controller.isConnected {
@@ -55,7 +74,7 @@ struct SourceView: View {
                 }
             }
 
-            GroupBox("Displays on your network") {
+            GroupBox("Macs that can be your screen") {
                 HStack {
                     InterfacePicker(controller: controller, monitor: controller.interfaceMonitor)
                         .frame(maxWidth: 240)
@@ -80,7 +99,7 @@ struct SourceView: View {
                             HStack(alignment: .top, spacing: 6) {
                                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("No Displays found. Local Network permission may be off — turn it on for Sidewire on both Macs.")
+                                    Text("No Macs found. Local Network permission may be off — turn it on for Sidewire on both Macs.")
                                         .font(.caption)
                                     if let url = Permissions.localNetworkSettingsURL {
                                         Link("Open Local Network settings", destination: url)
@@ -126,16 +145,31 @@ struct SourceView: View {
                 }
             }
 
-            troubleshooting
-
-            GroupBox("Connect by IP — forces Thunderbolt") {
+            // "Connect by address" — NOT "forces Thunderbolt", which was simply false:
+            // connect(host:port:) never sets params.requiredInterface, so the route is whatever
+            // the routing table picks for the address typed. It only goes over the cable if you
+            // type the cable's 169.254.x.x — and the other Mac openly offers its Wi-Fi address
+            // for this field too.
+            GroupBox("Connect by address") {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         TextField("169.254.x.x[:port]", text: $manualHost)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 200)
+                            .onSubmit { if canDialManualHost { controller.connect(manualAddress: manualHost) } }
                         Button("Connect") { controller.connect(manualAddress: manualHost) }
-                            .disabled(manualHost.isEmpty || controller.isConnected || controller.isConnecting || controller.pairingPIN.count != 6)
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(!canDialManualHost)
+                    }
+                    // Refuse a malformed address here rather than dial it. Anything unparseable
+                    // used to be handed to the network stack verbatim, fail as a "transient" DNS
+                    // error, and be retried indefinitely — a stray space cost two minutes and then
+                    // blamed the other Mac.
+                    if !manualHost.trimmingCharacters(in: .whitespaces).isEmpty,
+                       Address.parse(manualHost) == nil {
+                        Label("That isn't an address Sidewire can dial. Try 169.254.3.4 or 169.254.3.4:5006.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.orange)
                     }
                     if let tb = controller.localThunderboltIP {
                         Label("Thunderbolt cable detected (this Mac: \(tb)). Enter the OTHER Mac's 169.254.x.x to go over the cable.",
@@ -153,30 +187,22 @@ struct SourceView: View {
                 }
             }
 
-            GroupBox("Quality") {
-                HStack {
-                    Picker("Resolution", selection: $settings.resolutionPreset) {
-                        ForEach(ResolutionPreset.allCases) { preset in
-                            Text(preset.label).tag(preset)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 260)
-                    .disabled(controller.isConnected || controller.isConnecting)
-                    Spacer()
-                    SettingsLink {
-                        Label("More settings…", systemImage: "slider.horizontal.3")
-                    }
+            // After both ways of connecting, not wedged between them — sitting in the middle made
+            // the address field read as part of the troubleshooting rather than as the fallback
+            // path it is.
+            troubleshooting
+
+            // Quality used to be duplicated here, with a disable rule that contradicted its twin
+            // in Settings (here: locked while connected; there: editable, with a Reconnect button
+            // that applies it live). One control, one home — Settings.
+            HStack {
+                SettingsLink {
+                    Label("Screen quality & other settings…", systemImage: "slider.horizontal.3")
                 }
+                Spacer()
             }
-
-            VirtualDisplayStatusView(vd: controller.virtualDisplay,
-                                     capture: controller.capture,
-                                     isStreaming: controller.isStreaming)
-
-            Spacer()
+            .font(.callout)
         }
-        .padding(24)
     }
 
     private var connectTitle: String {
@@ -184,13 +210,23 @@ struct SourceView: View {
         return controller.isConnecting ? "Connecting…" : "Connect"
     }
 
+    /// The address has to parse before the button lights up — same parse the controller performs,
+    /// so the button can never be enabled for something that would be silently rejected.
+    private var canDialManualHost: Bool {
+        Address.parse(manualHost) != nil
+            && !controller.isConnected && !controller.isConnecting
+            && controller.pairingPIN.count == 6
+    }
+
+    /// Pinned above the scroll area, so it can never be pushed out of the window the way it was
+    /// when the whole screen was one overflowing column.
     private var header: some View {
         HStack {
             Circle()
                 .fill(controller.isConnected ? .green : .secondary)
                 .frame(width: 10, height: 10)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Source").font(.headline)
+                Text("Main Mac").font(.headline)
                 Text(controller.statusText).font(.caption).foregroundStyle(.secondary)
                 if controller.isConnected, !controller.connectionInterface.isEmpty {
                     Label {
@@ -208,7 +244,8 @@ struct SourceView: View {
             if controller.isConnecting {
                 Button("Cancel") { controller.disconnect() }
             }
-            Button("Switch role") { model.switchRole() }
+            Button("Change…") { model.switchRole() }
+                .help("Choose whether this Mac is the main one or the extra screen.")
         }
     }
 
@@ -239,13 +276,13 @@ struct SourceView: View {
                     }
                 }
                 TroubleRow(icon: "flame") {
-                    Text("**Firewall.** The macOS firewall on the Display Mac (System Settings › Network › Firewall) can block incoming connections — allow Sidewire. \u{201C}Connect by IP\u{201D} needs this too.")
+                    Text("**Firewall.** The macOS firewall on your other Mac (System Settings › Network › Firewall) can block incoming connections — allow Sidewire there. \u{201C}Connect by address\u{201D} needs this too.")
                 }
                 TroubleRow(icon: "wifi") {
                     Text("**Same network.** Both Macs must be on the same Wi-Fi/LAN; a VPN can isolate them. A Thunderbolt cable is the reliable fallback.")
                 }
                 TroubleRow(icon: "arrow.2.squarepath") {
-                    Text("**Roles.** The other Mac must be set to \u{201C}Use as a display\u{201D}. If both are sharing, this list stays empty.")
+                    Text("**Which Mac is which.** Your other Mac must be set to \u{201C}Make this Mac the screen\u{201D}. If both Macs are set to be the main one, this list stays empty.")
                 }
             }
             .font(.caption)
@@ -276,23 +313,24 @@ private struct TroubleRow<Content: View>: View {
     }
 }
 
-private struct VirtualDisplayStatusView: View {
+/// The virtual-display readout. Engineering diagnostics ("Active · helper (ID 12)"), so it lives
+/// in Settings ▸ Diagnostics rather than nailed under the connect controls forever, where it had
+/// the same visual weight as the primary action.
+struct VirtualDisplayStatusView: View {
     @ObservedObject var vd: VirtualDisplayManager
     @ObservedObject var capture: ScreenCapture
     let isStreaming: Bool
 
     var body: some View {
-        GroupBox("Virtual display") {
-            HStack(spacing: 16) {
-                Circle().fill(vd.isActive ? .green : .orange).frame(width: 8, height: 8)
-                Text(vd.statusMessage).font(.caption)
-                Spacer()
-                if isStreaming {
-                    Text("\(Int(capture.fps)) fps").font(.caption).foregroundStyle(.secondary)
-                }
+        HStack(spacing: 16) {
+            Circle().fill(vd.isActive ? .green : .orange).frame(width: 8, height: 8)
+            Text(vd.statusMessage).font(.caption)
+            Spacer()
+            if isStreaming {
+                Text("\(Int(capture.fps)) fps").font(.caption).foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

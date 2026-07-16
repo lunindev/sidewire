@@ -11,24 +11,28 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Video") {
-                Picker("Codec", selection: $settings.codec) {
-                    ForEach(AppSettings.CodecPref.allCases) { Text($0.label).tag($0) }
-                }
-                Picker("Resolution", selection: $settings.resolutionPreset) {
-                    ForEach(ResolutionPreset.allCases) { Text($0.label).tag($0) }
-                }
-                Picker("Virtual display scale", selection: $settings.virtualDisplayScale) {
-                    ForEach(AppSettings.VirtualDisplayScale.allCases) { Text($0.label).tag($0) }
-                }
-                Picker("Max frame rate", selection: $settings.maxFps) {
-                    ForEach(AppSettings.fpsOptions, id: \.self) { fps in
-                        Text(fps == 0 ? "Unlimited" : "\(fps) fps").tag(fps)
+            // Only the Main Mac encodes, so only it has a picture to configure. These were shown
+            // on both, where on the screen Mac they persisted happily and were read by nobody.
+            if model.role == .source {
+                Section("Screen quality") {
+                    Picker("Codec", selection: $settings.codec) {
+                        ForEach(AppSettings.CodecPref.allCases) { Text($0.label).tag($0) }
                     }
-                }
-                Picker("Max bitrate", selection: $settings.maxBitrateMbps) {
-                    ForEach(AppSettings.bitrateOptions, id: \.self) { mbps in
-                        Text("\(mbps) Mbps").tag(mbps)
+                    Picker("Resolution", selection: $settings.resolutionPreset) {
+                        ForEach(ResolutionPreset.allCases) { Text($0.label).tag($0) }
+                    }
+                    Picker("Virtual display scale", selection: $settings.virtualDisplayScale) {
+                        ForEach(AppSettings.VirtualDisplayScale.allCases) { Text($0.label).tag($0) }
+                    }
+                    Picker("Max frame rate", selection: $settings.maxFps) {
+                        ForEach(AppSettings.fpsOptions, id: \.self) { fps in
+                            Text(fps == 0 ? "Unlimited" : "\(fps) fps").tag(fps)
+                        }
+                    }
+                    Picker("Max bitrate", selection: $settings.maxBitrateMbps) {
+                        ForEach(AppSettings.bitrateOptions, id: \.self) { mbps in
+                            Text("\(mbps) Mbps").tag(mbps)
+                        }
                     }
                 }
             }
@@ -50,9 +54,13 @@ struct SettingsView: View {
             Section("General") {
                 Toggle("Launch Sidewire at login", isOn: $settings.launchAtLogin)
 
-                Toggle("Keep this Mac awake while connected", isOn: $settings.keepAwakeWhileConnected)
-                Text("Stops this Mac's screen from sleeping while it's acting as a display for another Mac.")
-                    .font(.caption).foregroundStyle(.secondary)
+                // Only meaningful on the Mac that IS the screen — it's the one that must not doze
+                // off mid-session. The Main Mac holds no such assertion.
+                if model.role == .display {
+                    Toggle("Keep this Mac awake while it's the screen", isOn: $settings.keepAwakeWhileConnected)
+                    Text("Stops this Mac's screen from sleeping while your other Mac is using it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
 
                 Toggle("Show only in the menu bar (no Dock icon)", isOn: $settings.menuBarOnly)
                 Text("Sidewire keeps running in the menu bar; reopen the window from there.")
@@ -66,7 +74,7 @@ struct SettingsView: View {
                             if newValue.count > 40 { settings.deviceName = String(newValue.prefix(40)) }
                         }
                 }
-                Text("Shown to the other Mac. Leave blank to use this Mac's name. Applies to new connections; the Display re-advertises its Bonjour name after you relaunch or switch roles.")
+                Text("Shown to your other Mac. Leave blank to use this Mac's name. Applies to new connections; a Mac acting as the screen re-announces its name after you relaunch or switch roles.")
                     .font(.caption).foregroundStyle(.secondary)
 
                 Button("Show Welcome…") {
@@ -89,6 +97,11 @@ struct SettingsView: View {
             }
 
             Section("Diagnostics") {
+                // Moved off the connect screen, where it was pinned under the primary action for
+                // the life of the app with the same weight as the Connect button.
+                if let source = model.source {
+                    VirtualDisplayDiagnosticsRow(source: source)
+                }
                 Toggle("Verbose logging", isOn: $settings.verboseLogging)
                 Text("Includes debug-level detail in the log buffer and exported diagnostics.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -149,6 +162,21 @@ private struct PairedMacsSection: View {
     private static func dateText(_ epoch: Double) -> String {
         let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
         return f.string(from: Date(timeIntervalSince1970: epoch))
+    }
+}
+
+/// Observes the Source itself, so `isStreaming` actually moves. Passing it in as a plain value
+/// from SettingsView's body would freeze it: Settings is its own Scene and never re-renders on the
+/// controller's publishes — the fps readout would simply never appear.
+private struct VirtualDisplayDiagnosticsRow: View {
+    @ObservedObject var source: SourceController
+
+    var body: some View {
+        LabeledContent("Virtual display") {
+            VirtualDisplayStatusView(vd: source.virtualDisplay,
+                                     capture: source.capture,
+                                     isStreaming: source.isStreaming)
+        }
     }
 }
 

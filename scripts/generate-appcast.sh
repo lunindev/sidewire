@@ -64,7 +64,16 @@ ls "$DIST"/*.dmg >/dev/null 2>&1 || { echo "✗ No .dmg in $DIST — run ./scrip
 echo "▸ generate_appcast: $TOOL"
 echo "▸ Signing updates in: $DIST"
 echo "▸ Download URL prefix: $DOWNLOAD_URL_PREFIX"
-[ "$OWNER" = "OWNER" ] && echo "  ⚠︎ OWNER is still the placeholder — export SIDEWIRE_REPO_OWNER=<your-github-owner> so enclosure URLs are correct."
+# A hard failure, not a warning. With the placeholder every <enclosure url> points at
+# github.com/OWNER/… — Sparkle finds the update, announces it, and 404s on the download. The old
+# `⚠︎` printed one line into twenty lines of success output and then wrote the broken appcast
+# anyway. (release.sh exports SIDEWIRE_REPO_OWNER from the SUFeedURL it just validated, so the
+# owner and the feed can't disagree; this catches a direct invocation.)
+if [ "$OWNER" = "OWNER" ]; then
+  echo "✗ OWNER is still the placeholder, so every download URL in the appcast would 404."
+  echo "  export SIDEWIRE_REPO_OWNER=<your-github-owner>   (or set DOWNLOAD_URL_PREFIX outright)"
+  exit 1
+fi
 
 # generate_appcast reads the EdDSA PRIVATE key from the login keychain (stored by generate_keys)
 # and appends an sparkle:edSignature to each enclosure. Writes appcast.xml into $DIST.

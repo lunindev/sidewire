@@ -85,7 +85,11 @@ final class AppModel: ObservableObject {
             source = c
             display = nil
             c.startDiscovery()
-            c.maybeAutoConnect()
+            // Don't auto-connect a Mac that can't capture or inject yet: the setup gate is on
+            // screen, so the user would never see the stream fail — they'd just see a virtual
+            // display appear for no reason. Granting requires a relaunch, and this runs again on
+            // the next launch with the permissions in place.
+            if Permissions.hasScreenRecording, Permissions.hasAccessibility { c.maybeAutoConnect() }
         case .display:
             let d = DisplayController()
             display = d

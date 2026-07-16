@@ -1,40 +1,55 @@
 import SwiftUI
 import SidewireProtocol
 
-/// First-run role selection: this Mac shares its screen (Source) or shows another
-/// Mac's screen (Display).
+/// Asks the only question that matters on first run: **which Mac is this one?**
+///
+/// The old copy ("Share this Mac" / SOURCE / DISPLAY) described the mechanism instead of the goal,
+/// and left users asking what was being shared and with whom. Nobody wants to share a screen —
+/// they want a second monitor. So both cards are phrased from the one thing the product actually
+/// does: your main Mac gains an extra screen, and that screen lives on the spare Mac.
 struct RolePickerView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
+        // Scrolls so a short window (or longer copy, or a larger accessibility text size) can
+        // never push the cards out of sight the way the connect screen's header was.
+        ScrollView { picker }
+    }
+
+    private var picker: some View {
         VStack(spacing: 28) {
             VStack(spacing: 6) {
                 Image(systemName: "rectangle.on.rectangle.angled")
                     .font(.system(size: 40))
                     .foregroundStyle(.tint)
-                Text("Sidewire")
+                Text("An extra screen for your Mac")
                     .font(.system(size: 30, weight: .semibold))
-                Text("Use another Mac as a second display — over Wi-Fi or a Thunderbolt cable.")
+                Text("Sidewire turns a spare Mac into a second screen for your main one — over Wi-Fi or a Thunderbolt cable. Set it up on both Macs.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 460)
             }
+
+            Text("Which Mac is this?")
+                .font(.title3.weight(.medium))
 
             HStack(spacing: 16) {
                 RoleCard(
-                    icon: "macbook.and.iphone",
-                    title: "Share this Mac",
-                    subtitle: "Creates an extra display here and streams it to another Mac.",
-                    guidance: "Pick this on the Mac whose apps and files you want to use.",
-                    role: "Source"
+                    icon: "laptopcomputer.and.arrow.down",
+                    title: "Give this Mac another screen",
+                    subtitle: "You get a second screen here. The picture shows up on your other Mac.",
+                    guidance: "Pick this on the Mac with your apps and files — the one you actually work on.",
+                    badge: "MAIN MAC"
                 ) { model.setRole(.source) }
 
                 RoleCard(
                     icon: "display",
-                    title: "Use as a display",
-                    subtitle: "Shows another Mac's screen and forwards your keyboard and mouse.",
-                    guidance: "Pick this on the spare Mac that will act as the extra screen.",
-                    role: "Display"
+                    title: "Make this Mac the screen",
+                    subtitle: "This Mac becomes the extra screen, and its keyboard and mouse drive your main Mac.",
+                    guidance: "Pick this on the spare Mac you want to use as the monitor.",
+                    badge: "EXTRA SCREEN"
                 ) { model.setRole(.display) }
             }
         }
@@ -49,7 +64,10 @@ private struct RoleCard: View {
     let subtitle: String
     /// One plain-language sentence on which Mac this role belongs on (backlog C4).
     let guidance: String
-    let role: String
+    /// The role in the user's words. Never the wire name: `Role.source`/`.display` cross the
+    /// network in HELLO and are frozen in protocol-vectors, but they are engineering terms and
+    /// must not leak onto the screen.
+    let badge: String
     let action: () -> Void
 
     var body: some View {
@@ -70,11 +88,11 @@ private struct RoleCard: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                Text(role.uppercased())
+                Text(badge)
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tint)
             }
-            .frame(width: 240, height: 220, alignment: .topLeading)
+            .frame(width: 260, height: 240, alignment: .topLeading)
             .padding(18)
             .background(RoundedRectangle(cornerRadius: 14).fill(.quaternary.opacity(0.5)))
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.separator))
