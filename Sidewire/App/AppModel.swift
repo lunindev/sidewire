@@ -70,6 +70,7 @@ final class AppModel: ObservableObject {
 
     func switchRole() {
         source?.disconnect()
+        source?.stopDiscovery() // also cancels the browser + the empty-state escalation timer
         display?.stop()
         source = nil
         display = nil

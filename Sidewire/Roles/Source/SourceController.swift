@@ -118,6 +118,13 @@ final class SourceController: ObservableObject {
     /// a few seconds — most often a denied Local Network permission. Drives a stronger inline
     /// hint next to "Searching…" (backlog C1). Best-effort: cleared the moment a peer appears.
     @Published var discoveryLikelyBlocked = false
+    /// True once discovery has run a while and still found nothing. Unlike `discoveryLikelyBlocked`
+    /// this does NOT require the browser to be `.waiting`/`.failed` — the common causes (Sidewire
+    /// not open on the other Mac, both Macs set to be the main one, different networks/VPN) leave a
+    /// perfectly healthy browser with zero results, so a state keyed on browser trouble can never
+    /// fire for them. This is what turns the forever-"Searching…" dead-end into real guidance.
+    @Published var searchedAWhileEmpty = false
+    private var discoveryEscalation: DispatchWorkItem?
     @Published var statusText = String(localized: "Idle")
     /// Set when the last connect attempt failed the TLS-PSK handshake (wrong PIN). Drives a
     /// clear message in the UI instead of an endless silent "Reconnecting…". Cleared on the
@@ -183,7 +190,15 @@ final class SourceController: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.peers = peers
-                if !peers.isEmpty { self.discoveryLikelyBlocked = false } // found something → not blocked
+                if peers.isEmpty {
+                    // A peer that appeared then left (slept/quit) must not strand the screen on
+                    // "Searching…" — re-arm so guidance returns if it stays empty. onPeersChanged
+                    // only fires on a real change, so this can't busy-loop on empty→empty.
+                    self.armDiscoveryEscalation()
+                } else {
+                    self.discoveryLikelyBlocked = false // found something → not blocked
+                    self.searchedAWhileEmpty = false    // …and not a dead-end
+                }
             }
         }
         discovery.onWaiting = { [weak self] waiting in
@@ -217,6 +232,9 @@ final class SourceController: ObservableObject {
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
         }
+        // A pending escalation is [weak self] so it can't touch a dead controller, but cancelling
+        // it (and the browser) here keeps a role switch from leaving either running.
+        discoveryEscalation?.cancel()
     }
 
     func startDiscovery() {
@@ -228,16 +246,30 @@ final class SourceController: ObservableObject {
         interfaceMonitor.start()
         localThunderboltIP = InterfaceMonitor.localThunderboltIP()
         discovery.start()
+        armDiscoveryEscalation()
     }
-    func stopDiscovery() { discovery.stop() }
+    func stopDiscovery() { discovery.stop(); discoveryEscalation?.cancel() }
 
     /// Re-scan the network for Displays.
     func refreshDiscovery() {
         peers = []
         discoveryLikelyBlocked = false // give the fresh scan a clean slate before re-flagging
+        searchedAWhileEmpty = false
         localThunderboltIP = InterfaceMonitor.localThunderboltIP()
         discovery.stop()
         discovery.start()
+        armDiscoveryEscalation()
+    }
+
+    /// After a grace period with no peers, surface real guidance instead of a perpetual "Searching…".
+    private func armDiscoveryEscalation() {
+        discoveryEscalation?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.peers.isEmpty else { return }
+            self.searchedAWhileEmpty = true
+        }
+        discoveryEscalation = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 7, execute: work)
     }
 
     /// Debounced handling of the discovery browser stalling. A brief `.waiting` at startup is
@@ -337,6 +369,14 @@ final class SourceController: ObservableObject {
     private func pinnedExpectation(for advertisedId: String?) -> String? {
         guard let advertisedId, KeychainTrustStore.shared.pinned(for: advertisedId) != nil else { return nil }
         return advertisedId
+    }
+
+    /// Whether we've already paired with this peer — i.e. its advertised key is in the trust store,
+    /// so connecting needs no PIN. Drives the connect flow: a paired Mac connects in one click; an
+    /// unpaired one asks for the 6-digit code first. Updated as the trust store changes, so the UI
+    /// must re-read it (it observes `.sidewirePairedPeersChanged`).
+    func isPaired(_ peer: DiscoveredPeer) -> Bool {
+        pinnedExpectation(for: peer.deviceId) != nil
     }
 
     static let lastHostKey = "sidewire.lastHost"

@@ -59,12 +59,6 @@ private struct SourceMenu: View {
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2).foregroundStyle(.orange)
             }
-            // Match the main window: connecting requires the full 6-digit PIN (an empty PIN
-            // derives an empty PSK and silently fails the handshake).
-            if !controller.isConnected && controller.pairingPIN.count != 6 {
-                Text("Enter the 6-digit PIN in the main window to connect.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
             // A live link with no row to host its control (address connect, or a dropped peer) —
             // otherwise a menu-bar-only session has no Disconnect here at all.
             if controller.activeLinkNeedsStandaloneControl {
@@ -86,9 +80,18 @@ private struct SourceMenu: View {
                         // row read "Disconnect" and tapping any of them killed the one live session.
                         switch controller.rowState(forPeerId: peer.id) {
                         case .idle:
-                            Button("Connect") { controller.connect(to: peer) }
-                                .font(.caption)
-                                .disabled(controller.linkTarget != nil || controller.pairingPIN.count != 6)
+                            // A paired Mac connects in one click; an unpaired one needs the code,
+                            // which is entered inline in the main window (no room in a popover).
+                            if controller.isPaired(peer) {
+                                Button("Connect") { controller.connect(to: peer) }
+                                    .font(.caption)
+                                    .disabled(controller.linkTarget != nil)
+                            } else {
+                                Button("Pair…") { MainWindowOpener.show() }
+                                    .font(.caption)
+                                    .disabled(controller.linkTarget != nil)
+                                    .help("Enter this Mac's 6-digit code in the main window to pair.")
+                            }
                         case .connecting:
                             Button("Cancel") { controller.disconnect() }.font(.caption)
                         case .connected:

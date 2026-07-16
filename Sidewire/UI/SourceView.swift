@@ -14,6 +14,15 @@ struct SourceView: View {
     @EnvironmentObject var model: AppModel
     @State private var manualHost = SourceController.lastHost
 
+    // Pairing disclosure. There is no PIN field until the user picks an unpaired Mac: clicking it
+    // expands that row for the 6-digit code, and a Mac already paired connects in one click. This
+    // replaces the old always-present PIN box that sat above the peer list — before you'd chosen
+    // anyone — and the three Connect buttons that were dead until you filled it in.
+    @State private var pairingPeerId: String?      // the row currently expanded for code entry
+    @State private var pairingOverThunderbolt = false // that expansion targets the cable
+    @State private var pinDraft = ""               // the code being typed in that row
+    @FocusState private var pinFieldFocused: Bool
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -27,51 +36,42 @@ struct SourceView: View {
                 content.padding(24)
             }
         }
+        .onChange(of: controller.isConnected) { _, connected in
+            // A successful connect ends the pairing flow; the row becomes the connected row.
+            if connected { collapsePairing() }
+        }
+        .onChange(of: controller.linkTarget) { _, target in
+            // The link ended (target cleared) other than by success — e.g. a wrong code. Keep the
+            // row expanded so the "code incorrect" hint lands where it was typed and the user can
+            // retry; only collapse once there's nothing left to retry against.
+            if target == nil, !controller.pinRejected { collapsePairing() }
+        }
+        .onChange(of: controller.peers) { _, peers in
+            // The Mac we were entering a code for dropped off the network (slept, quit). Its row is
+            // gone, so its pairing form — and any "code incorrect" hint — would be orphaned with
+            // nowhere to render. Close it.
+            if let id = pairingPeerId, controller.linkTarget == nil,
+               !peers.contains(where: { $0.id == id }) {
+                collapsePairing()
+            }
+        }
+    }
+
+    private func collapsePairing() {
+        pairingPeerId = nil
+        pairingOverThunderbolt = false
+        pinDraft = ""
+        // pinRejected is one controller-wide flag. Leaving it set after the pairing row closes
+        // leaks its "Code incorrect" into the Connect-by-address section (whose error is gated on
+        // pairingPeerId == nil). Safe for every caller: the success/normal-close paths already have
+        // it false, and a fresh connect resets it in startLink.
+        controller.pinRejected = false
     }
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 16) {
             if controller.accessibilityRevoked {
                 accessibilityBanner
-            }
-
-            GroupBox("PIN (shown on your other Mac)") {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        TextField("6-digit PIN", text: $controller.pairingPIN)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 140)
-                            .disabled(controller.isConnected || controller.isConnecting)
-                            .onChange(of: controller.pairingPIN) { _, newValue in
-                                // Digits only, capped at 6 — the PIN is a 6-digit code.
-                                let filtered = String(newValue.filter(\.isNumber).prefix(6))
-                                if filtered != newValue { controller.pairingPIN = filtered }
-                            }
-                        // Gated on a real connection, not on the text field's length. Six digits
-                        // typed into a box encrypt nothing, and the PIN persists across launches —
-                        // so the old check lit this green on a cold start before anything had
-                        // connected, and again directly above "PIN incorrect".
-                        if controller.isConnected {
-                            Label("Encrypted (TLS)", systemImage: "lock.fill")
-                                .font(.caption).foregroundStyle(.green)
-                        } else if controller.pairingPIN.count < 6 {
-                            Text("Enter the PIN shown on your other Mac.")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                    }
-                    if controller.pinRejected {
-                        Label("PIN incorrect — check the code shown on your other Mac.",
-                              systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption).foregroundStyle(.red)
-                    } else if controller.isConnected {
-                        // Once paired, the peer's key is stored — the PIN is only needed to pair
-                        // a new Mac (or after "Forget" on either side).
-                        Label("Paired — the PIN is only needed to pair a Mac again.",
-                              systemImage: "checkmark.seal.fill")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
             }
 
             GroupBox("Macs that can be your screen") {
@@ -106,17 +106,36 @@ struct SourceView: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 200)
                             .disabled(controller.linkTarget != nil)
-                            .onSubmit { if canDialManualHost { controller.connect(manualAddress: manualHost) } }
+                            .onSubmit { dialManualHost() }
+                        // A typed address has no advertised identity, so we can't tell ahead of the
+                        // handshake whether it's already paired — the code sits right here with the
+                        // address it belongs to. (It's ignored when the Mac turns out to be paired.)
+                        if !controller.addressLinkActive {
+                            TextField("code", text: $controller.pairingPIN)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 80)
+                                .onChange(of: controller.pairingPIN) { _, newValue in
+                                    let filtered = String(newValue.filter(\.isNumber).prefix(6))
+                                    if filtered != newValue { controller.pairingPIN = filtered }
+                                }
+                        }
                         // The button belongs to THIS action: Cancel while this address is
                         // connecting, Disconnect once it's up (an address connect used to have a
                         // Disconnect nowhere in the whole window), Connect otherwise.
                         if controller.addressLinkActive {
                             Button(controller.isConnected ? "Disconnect" : "Cancel") { controller.disconnect() }
                         } else {
-                            Button("Connect") { controller.connect(manualAddress: manualHost) }
+                            Button("Connect") { dialManualHost() }
                                 .keyboardShortcut(.defaultAction)
                                 .disabled(!canDialManualHost)
                         }
+                    }
+                    // Only when the failure was an address connect — a discovered-peer wrong code
+                    // shows its error in that peer's expanded row instead (pairingPeerId set).
+                    if controller.pinRejected, controller.linkTarget == nil, pairingPeerId == nil {
+                        Label("Code incorrect — check the 6 digits shown on the other Mac.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.red)
                     }
                     // Refuse a malformed address here rather than dial it. Anything unparseable
                     // used to be handed to the network stack verbatim, fail as a "transient" DNS
@@ -179,23 +198,33 @@ struct SourceView: View {
                 // When connected by a typed address, discovery genuinely found nothing on the
                 // network — but "Searching…" alone next to a live connection reads as broken, so
                 // say what's actually true.
-                Label(controller.addressLinkActive ? "Connected by address — no other Macs found" : "Searching…",
+                Label(controller.addressLinkActive ? "Connected by address — no other Macs found"
+                        : (controller.searchedAWhileEmpty ? "No Macs found yet" : "Searching…"),
                       systemImage: controller.addressLinkActive ? "cable.connector" : "magnifyingglass")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if controller.discoveryLikelyBlocked {
+                if controller.discoveryLikelyBlocked && !controller.addressLinkActive {
                     // Discovery has been stuck with nothing found — almost always Local Network
-                    // permission denied (Bonjour returns nothing when it's off).
-                    HStack(alignment: .top, spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("No Macs found. Local Network permission may be off — turn it on for Sidewire on both Macs.")
-                                .font(.caption)
-                            if let url = Permissions.localNetworkSettingsURL {
-                                Link("Open Local Network settings", destination: url)
-                                    .font(.caption)
-                            }
+                    // permission denied (Bonjour returns nothing when it's off). Suppressed under a
+                    // live address connection, which already explains the empty list.
+                    emptyStateHint(icon: "exclamationmark.triangle.fill", tint: .orange) {
+                        Text("Local Network permission may be off — turn it on for Sidewire on both Macs.")
+                            .font(.caption)
+                        if let url = Permissions.localNetworkSettingsURL {
+                            Link("Open Local Network settings", destination: url).font(.caption)
                         }
+                    }
+                } else if controller.searchedAWhileEmpty && !controller.addressLinkActive {
+                    // The healthy-browser-but-empty case: the real reasons a Mac doesn't appear,
+                    // none of which the browser can detect. This is the guidance that used to be
+                    // missing entirely — the screen just said "Searching…" forever.
+                    emptyStateHint(icon: "questionmark.circle", tint: .secondary) {
+                        Text("Open Sidewire on your other Mac and choose **“Make this Mac the screen.”**")
+                            .font(.caption)
+                        Text("Both Macs must be on the same Wi-Fi, or joined by a Thunderbolt cable. A VPN can hide one from the other.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("On the cable? Use **Connect by address** below.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -217,40 +246,133 @@ struct SourceView: View {
         }
     }
 
-    /// One row. `peer` is nil only for the orphan-active safety row (no live DiscoveredPeer to
-    /// reconnect from), which is why its buttons are limited to Disconnect.
+    /// A leading-icon guidance block for the empty discovered list.
+    @ViewBuilder
+    private func emptyStateHint<Content: View>(icon: String, tint: Color,
+                                               @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: icon).foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 2) { content() }
+        }
+    }
+
+    /// One row of the ConnectCard. `peer` is nil only for the orphan-active safety row (no live
+    /// DiscoveredPeer to reconnect from), which is why it only ever shows Disconnect. An idle
+    /// unpaired peer expands in place for the pairing code; a paired one connects in one click.
     @ViewBuilder
     private func peerRow(name: String, state: SourceController.RowState,
                          thunderbolt: String?, peer: DiscoveredPeer?) -> some View {
-        HStack {
-            Image(systemName: "display")
-            Text(name)
-            Spacer()
-            switch state {
-            case .idle:
-                // Thunderbolt quick-connect: only when nothing else is active, and only if this
-                // Mac has a cable bridge to route over.
-                if let tb = thunderbolt, let peer, controller.localThunderboltIP != nil,
-                   controller.linkTarget == nil {
-                    Button {
-                        controller.connect(to: peer, forceThunderbolt: true)
-                    } label: {
-                        Label("Thunderbolt", systemImage: "cable.connector")
-                    }
-                    .tint(.green)
-                    .disabled(controller.pairingPIN.count != 6)
-                    .help("Connect over the Thunderbolt cable (\(tb))")
-                }
-                Button("Connect") { if let peer { controller.connect(to: peer) } }
-                    // A link elsewhere is up/connecting, or no PIN yet → can't start this one.
-                    .disabled(peer == nil || controller.linkTarget != nil || controller.pairingPIN.count != 6)
-            case .connecting:
-                Button("Cancel") { controller.disconnect() } // under the same cursor that started it
-            case .connected:
-                Button("Disconnect") { controller.disconnect() }
+        let isExpanded = peer.map { pairingPeerId == $0.id } ?? false
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "display")
+                Text(name)
+                Spacer()
+                rowControl(name: name, state: state, thunderbolt: thunderbolt,
+                           peer: peer, isExpanded: isExpanded)
+            }
+            // The pairing code lives right under the Mac it belongs to, only while that row is
+            // being paired and hasn't started connecting yet.
+            if isExpanded, state == .idle, let peer {
+                pairingForm(for: peer)
             }
         }
         .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private func rowControl(name: String, state: SourceController.RowState,
+                            thunderbolt: String?, peer: DiscoveredPeer?, isExpanded: Bool) -> some View {
+        switch state {
+        case .connected:
+            Button("Disconnect") { controller.disconnect() }
+        case .connecting:
+            Button("Cancel") { controller.disconnect() } // under the same cursor that started it
+        case .idle where isExpanded:
+            Button("Cancel") { collapsePairing() } // back out of pairing this Mac
+        case .idle:
+            // Thunderbolt quick-connect: only when nothing else is active and this Mac has a cable
+            // bridge. For a paired peer it dials immediately; for an unpaired one it opens the code
+            // form (remembering to use the cable when it connects).
+            if let tb = thunderbolt, let peer, controller.localThunderboltIP != nil,
+               controller.linkTarget == nil {
+                Button {
+                    beginConnect(peer, thunderbolt: true)
+                } label: {
+                    Label("Thunderbolt", systemImage: "cable.connector")
+                }
+                .tint(.green)
+                .help("Connect over the Thunderbolt cable (\(tb))")
+            }
+            Button("Connect") { if let peer { beginConnect(peer, thunderbolt: false) } }
+                // Never gated on the PIN — an unpaired Mac reveals the code field instead of
+                // sitting dead. Only a link already active elsewhere disables it.
+                .disabled(peer == nil || controller.linkTarget != nil)
+        }
+    }
+
+    /// Start connecting to `peer`: a paired Mac needs no code and connects straight away; an
+    /// unpaired one expands this row for the 6-digit code.
+    private func beginConnect(_ peer: DiscoveredPeer, thunderbolt: Bool) {
+        if controller.isPaired(peer) {
+            collapsePairing() // a different row may have been mid-pairing; don't leave its form open
+            controller.connect(to: peer, forceThunderbolt: thunderbolt)
+        } else {
+            controller.pinRejected = false
+            pinDraft = ""
+            pairingOverThunderbolt = thunderbolt
+            pairingPeerId = peer.id // replaces any other expanded row (only one at a time)
+            // Focus AFTER this mutation inserts the field — setting @FocusState in the same pass
+            // that reveals the target view is a known SwiftUI no-op.
+            DispatchQueue.main.async { pinFieldFocused = true }
+        }
+    }
+
+    /// The inline pairing sub-form: the code field + Connect, and the "code incorrect" hint right
+    /// where the code was typed (it used to live in a box 200pt above, phrased as a fact).
+    @ViewBuilder
+    private func pairingForm(for peer: DiscoveredPeer) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Enter the 6-digit code shown on \(peer.name)")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                TextField("6-digit code", text: $pinDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 130)
+                    .focused($pinFieldFocused)
+                    .onChange(of: pinDraft) { _, newValue in
+                        let filtered = String(newValue.filter(\.isNumber).prefix(6))
+                        if filtered != newValue { pinDraft = filtered }
+                    }
+                    .onSubmit { commitPairing(peer) }
+                Button("Connect") { commitPairing(peer) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(pinDraft.count != 6)
+            }
+            if controller.pinRejected {
+                Label("Code incorrect — check the 6 digits shown on \(peer.name).",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red)
+            }
+        }
+        .padding(.leading, 24)
+        .padding(.top, 2)
+    }
+
+    private func commitPairing(_ peer: DiscoveredPeer) {
+        guard pinDraft.count == 6 else { return }
+        controller.pairingPIN = pinDraft // startLink reads this to derive the pairing proof
+        controller.connect(to: peer, forceThunderbolt: pairingOverThunderbolt)
+        // Stay expanded: on success onChange collapses; on a wrong code the row keeps the field so
+        // the user can fix it.
+    }
+
+    /// Dial the typed address, first closing any peer row that was mid-pairing — otherwise a wrong
+    /// code from THIS address connect would be attributed to that still-expanded peer's row.
+    private func dialManualHost() {
+        guard canDialManualHost else { return }
+        collapsePairing()
+        controller.connect(manualAddress: manualHost)
     }
 
     /// The address has to parse before the button lights up — same parse the controller performs,
@@ -277,7 +399,8 @@ struct SourceView: View {
                     Label {
                         Text("via \(controller.connectionInterface)" +
                              (controller.rttMs > 0 ? " · \(Int(controller.rttMs)) ms" : "") +
-                             (controller.currentBitrateMbps > 0 ? " · \(String(format: "%.0f", controller.currentBitrateMbps)) Mbps" : ""))
+                             (controller.currentBitrateMbps > 0 ? " · \(String(format: "%.0f", controller.currentBitrateMbps)) Mbps" : "") +
+                             " · Encrypted") // honest now: tied to a live TLS link, not a field's length
                     } icon: {
                         Image(systemName: controller.connectionInterface.hasPrefix("Thunderbolt") ? "cable.connector" : "wifi")
                     }
