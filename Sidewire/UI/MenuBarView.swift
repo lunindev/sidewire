@@ -65,18 +65,35 @@ private struct SourceMenu: View {
                 Text("Enter the 6-digit PIN in the main window to connect.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            if controller.peers.isEmpty {
+            // A live link with no row to host its control (address connect, or a dropped peer) —
+            // otherwise a menu-bar-only session has no Disconnect here at all.
+            if controller.activeLinkNeedsStandaloneControl {
+                HStack {
+                    Text(controller.peerName ?? String(localized: "Connected Mac")).font(.callout)
+                    Spacer()
+                    Button(controller.isConnected ? "Disconnect" : "Cancel") { controller.disconnect() }
+                        .font(.caption)
+                }
+            }
+            if controller.peers.isEmpty && !controller.activeLinkNeedsStandaloneControl {
                 Text("Searching for Macs…").font(.caption).foregroundStyle(.secondary)
-            } else {
+            } else if !controller.peers.isEmpty {
                 ForEach(controller.peers) { peer in
                     HStack {
                         Text(peer.name).font(.callout)
                         Spacer()
-                        Button(controller.isConnected ? "Disconnect" : (controller.isConnecting ? "Connecting…" : "Connect")) {
-                            controller.isConnected ? controller.disconnect() : controller.connect(to: peer)
+                        // Per-row state, like the main window — otherwise, while connected, EVERY
+                        // row read "Disconnect" and tapping any of them killed the one live session.
+                        switch controller.rowState(forPeerId: peer.id) {
+                        case .idle:
+                            Button("Connect") { controller.connect(to: peer) }
+                                .font(.caption)
+                                .disabled(controller.linkTarget != nil || controller.pairingPIN.count != 6)
+                        case .connecting:
+                            Button("Cancel") { controller.disconnect() }.font(.caption)
+                        case .connected:
+                            Button("Disconnect") { controller.disconnect() }.font(.caption)
                         }
-                        .font(.caption)
-                        .disabled(controller.isConnecting || (!controller.isConnected && controller.pairingPIN.count != 6))
                     }
                 }
             }

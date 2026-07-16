@@ -127,6 +127,45 @@ final class SourceController: ObservableObject {
     @Published var isStreaming = false
     @Published var isConnecting = false
     @Published var peerName: String?
+
+    /// Which peer or address the current link is for. There is only ever one link, so pairing this
+    /// with `isConnecting`/`isConnected` tells each row and the address field its OWN state —
+    /// instead of every one of them reading the same link-global bools, which is why, while
+    /// connected, every row in the list used to read "Disconnect" and why an address connect (no
+    /// row) left Disconnect nowhere at all. nil ⇒ no link; set in `startLink`, cleared on teardown.
+    enum LinkTarget: Equatable {
+        case peer(id: String)   // a discovered row (DiscoveredPeer.id)
+        case address(String)    // a hand-typed / auto-connect host — belongs to no row
+    }
+    @Published private(set) var linkTarget: LinkTarget?
+
+    /// The state of one discovered row: only the row that IS the current target is ever non-idle.
+    enum RowState { case idle, connecting, connected }
+    func rowState(forPeerId id: String) -> RowState {
+        guard linkTarget == .peer(id: id) else { return .idle }
+        if isConnected { return .connected }
+        return isConnecting ? .connecting : .idle
+    }
+
+    /// True while the active link is a hand-typed/auto-connect address (so the address field, not a
+    /// row, owns its Cancel/Disconnect). During a reconnect `isConnecting` is true and `isConnected`
+    /// false, so this stays true across a blip.
+    var addressLinkActive: Bool {
+        if case .address = linkTarget { return isConnecting || isConnected }
+        return false
+    }
+
+    /// There's a live link but no discovered row to host its Cancel/Disconnect: an address connect,
+    /// or a peer discovery has since dropped from `peers`. Surfaces where a peer list alone can't —
+    /// the menu bar has no address field, so without this a menu-bar-only session couldn't be
+    /// ended from the menu at all.
+    var activeLinkNeedsStandaloneControl: Bool {
+        switch linkTarget {
+        case .none: return false
+        case .address: return true
+        case .peer(let id): return !peers.contains { $0.id == id }
+        }
+    }
     @Published var rttMs: Double = 0
     @Published var connectionInterface = ""
 
@@ -238,17 +277,33 @@ final class SourceController: ObservableObject {
         linkOrigin = .autoConnect // connect() set .manualAddress; this dial is the silent launch attempt
     }
 
-    func connect(to peer: DiscoveredPeer) {
+    /// Connect to a peer from the discovered list. `forceThunderbolt` dials the peer's advertised
+    /// cable IP instead of its mDNS endpoint (the old green "Thunderbolt" quick-connect button),
+    /// but the link is still tagged with the peer's identity so its row — not the address field —
+    /// owns the connection, and key pinning is still enforced (the host transport carries the
+    /// expected device id too, which the previous host-based dial silently dropped).
+    func connect(to peer: DiscoveredPeer, forceThunderbolt: Bool = false) {
         linkOrigin = .discovered
         let iface = selectedInterface
         let identity = LocalIdentity.shared
         // If this peer is already paired, enforce public-key pinning against its advertised
         // device id (a changed key → "keyChanged"). Unpaired ⇒ nil (accept any key, pair via PIN).
         let expected = pinnedExpectation(for: peer.deviceId)
-        startLink(peerName: peer.name, expectedPeerId: expected) {
-            TCPTransport(endpoint: peer.endpoint, interface: iface, identity: identity,
-                         expectedPeerDeviceId: expected)
+        let makeTransport: () -> TCPTransport
+        if forceThunderbolt, let tb = peer.thunderboltIP {
+            let port = peer.port ?? ProtocolConstants.fallbackPort
+            makeTransport = {
+                TCPTransport(host: tb, port: port, interface: iface, identity: identity,
+                             expectedPeerDeviceId: expected)
+            }
+        } else {
+            makeTransport = {
+                TCPTransport(endpoint: peer.endpoint, interface: iface, identity: identity,
+                             expectedPeerDeviceId: expected)
+            }
         }
+        startLink(peerName: peer.name, target: .peer(id: peer.id),
+                  expectedPeerId: expected, makeTransport: makeTransport)
     }
 
     func connect(host: String, port: UInt16 = ProtocolConstants.fallbackPort) {
@@ -263,17 +318,12 @@ final class SourceController: ObservableObject {
         // (it may have laddered off the well-known port).
         UserDefaults.standard.set(host, forKey: SourceController.lastHostKey)
         UserDefaults.standard.set(Int(port), forKey: SourceController.lastPortKey)
-        startLink(peerName: host, expectedPeerId: nil) {
+        let label = port == ProtocolConstants.fallbackPort ? host : "\(host):\(port)"
+        startLink(peerName: host, target: .address(label), expectedPeerId: nil) {
             TCPTransport(host: host, port: port, interface: iface, identity: identity)
         }
     }
 
-    /// Dial a hand-typed address that may carry an explicit ":port" suffix (e.g. "169.254.3.4:5006"),
-    /// so a user can reach a Display that laddered off the well-known port. We treat a trailing
-    /// ":<digits>" as a port only when there is EXACTLY ONE ":" in the string — that unambiguously
-    /// covers plain IPv4 / hostnames. Anything with multiple colons (a bare IPv6 literal) is passed
-    /// through untouched and dials the default port; the discovery/mDNS path is the IPv6 route in
-    /// practice, so we don't try to parse bracketed IPv6:port here.
     /// Dial a hand-typed address. Unparseable input is refused rather than dialled — see
     /// `Address.parse` (SidewireProtocol) for why that distinction is load-bearing. The UI runs
     /// the same parse to gate its button, so this guard should never be the one that fires.
@@ -317,6 +367,7 @@ final class SourceController: ObservableObject {
         pinRejected = false
         accessibilityRevoked = false
         injector.injectionEnabled = true
+        linkTarget = nil
         statusText = String(localized: "Disconnected")
         peerName = nil
         rttMs = 0
@@ -332,23 +383,27 @@ final class SourceController: ObservableObject {
         let name = peerName ?? String(localized: "the last Mac")
         let expected = currentExpectedPeerId
         let wasProven = everEstablished
+        let target = linkTarget ?? .address(name) // re-dial the same target the D3 session had
+        let origin = linkOrigin
         Log.event(.source, "reconnecting to apply new quality settings")
-        disconnect() // clears currentMakeTransport — hence the local capture above
-        startLink(peerName: name, expectedPeerId: expected, makeTransport: make)
+        disconnect() // clears currentMakeTransport / linkTarget — hence the local captures above
+        startLink(peerName: name, target: target, expectedPeerId: expected, makeTransport: make)
         // We were streaming from this exact peer a moment ago, so it is proven and must keep the
         // unbounded self-healing retries. Without this, startLink's reset would drop a deliberate
         // re-dial onto the bounded first-connect path and give up on a Mac we know is right there.
         everEstablished = wasProven
+        linkOrigin = origin // preserve why the link exists, so a give-up message stays accurate
     }
 
     // MARK: - Connection
 
-    private func startLink(peerName: String, expectedPeerId: String?,
+    private func startLink(peerName: String, target: LinkTarget, expectedPeerId: String?,
                            makeTransport: @escaping () -> TCPTransport) {
         guard reconnector == nil else { return } // ignore re-entrant connects
         pinRejected = false // fresh attempt clears any prior wrong-PIN error
         everEstablished = false // a new link is unproven until its handshake completes
         self.peerName = peerName
+        self.linkTarget = target
         self.currentExpectedPeerId = expectedPeerId
         // Remember the transport factory so D3's reconnect can re-dial the same peer.
         currentMakeTransport = makeTransport
@@ -516,6 +571,7 @@ final class SourceController: ObservableObject {
             // survive into the next link — the monitor that would clear it stops below.
             accessibilityRevoked = false
             injector.injectionEnabled = true
+            linkTarget = nil // the link is gone — release every row/section that was tied to it
             tearDownEncoderCapture()
             virtualDisplay.destroy()
             activeSession = nil

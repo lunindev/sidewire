@@ -1,6 +1,6 @@
 import SwiftUI
 import SidewireCore
-import SidewireProtocol // ProtocolConstants.fallbackPort (the host-dial default when a peer advertises no "port")
+import SidewireProtocol // Address.parse — validates the manual-connect field before dialling
 
 /// The Main Mac's window: find the spare Mac, connect, and see how the extra screen is doing.
 ///
@@ -84,65 +84,14 @@ struct SourceView: View {
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
+                    // Refresh wipes the list before re-scanning; doing that while a link is up would
+                    // yank the connected row (and its Disconnect) out from under the user.
+                    .disabled(controller.linkTarget != nil)
                 }
                 .padding(.bottom, 4)
                 Divider()
 
-                if controller.peers.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("Searching…", systemImage: "magnifyingglass")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if controller.discoveryLikelyBlocked {
-                            // Discovery has been stuck with nothing found — almost always Local
-                            // Network permission denied (Bonjour returns nothing when it's off).
-                            HStack(alignment: .top, spacing: 6) {
-                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("No Macs found. Local Network permission may be off — turn it on for Sidewire on both Macs.")
-                                        .font(.caption)
-                                    if let url = Permissions.localNetworkSettingsURL {
-                                        Link("Open Local Network settings", destination: url)
-                                            .font(.caption)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .padding(.vertical, 6)
-                } else {
-                    VStack(spacing: 0) {
-                        ForEach(controller.peers) { peer in
-                            HStack {
-                                Image(systemName: "display")
-                                Text(peer.name)
-                                Spacer()
-                                if let tb = peer.thunderboltIP,
-                                   controller.localThunderboltIP != nil, // this Mac has a TB bridge to route to it
-                                   !controller.isConnected {
-                                    Button {
-                                        // Force the Thunderbolt cable by dialing the peer's TB IP,
-                                        // but at the port it actually advertised (it may have
-                                        // laddered off 5005); fall back to fallbackPort if absent.
-                                        controller.connect(host: tb, port: peer.port ?? ProtocolConstants.fallbackPort)
-                                    } label: {
-                                        Label("Thunderbolt", systemImage: "cable.connector")
-                                    }
-                                    .tint(.green)
-                                    .disabled(controller.isConnecting || controller.pairingPIN.count != 6)
-                                    .help("Connect over the Thunderbolt cable (\(tb))")
-                                }
-                                Button(connectTitle) {
-                                    if controller.isConnected { controller.disconnect() }
-                                    else { controller.connect(to: peer) }
-                                }
-                                .disabled(controller.isConnecting || (!controller.isConnected && controller.pairingPIN.count != 6))
-                            }
-                            .padding(.vertical, 6)
-                            Divider()
-                        }
-                    }
-                }
+                peerList
             }
 
             // "Connect by address" — NOT "forces Thunderbolt", which was simply false:
@@ -156,10 +105,18 @@ struct SourceView: View {
                         TextField("169.254.x.x[:port]", text: $manualHost)
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 200)
+                            .disabled(controller.linkTarget != nil)
                             .onSubmit { if canDialManualHost { controller.connect(manualAddress: manualHost) } }
-                        Button("Connect") { controller.connect(manualAddress: manualHost) }
-                            .keyboardShortcut(.defaultAction)
-                            .disabled(!canDialManualHost)
+                        // The button belongs to THIS action: Cancel while this address is
+                        // connecting, Disconnect once it's up (an address connect used to have a
+                        // Disconnect nowhere in the whole window), Connect otherwise.
+                        if controller.addressLinkActive {
+                            Button(controller.isConnected ? "Disconnect" : "Cancel") { controller.disconnect() }
+                        } else {
+                            Button("Connect") { controller.connect(manualAddress: manualHost) }
+                                .keyboardShortcut(.defaultAction)
+                                .disabled(!canDialManualHost)
+                        }
                     }
                     // Refuse a malformed address here rather than dial it. Anything unparseable
                     // used to be handed to the network stack verbatim, fail as a "transient" DNS
@@ -205,16 +162,104 @@ struct SourceView: View {
         }
     }
 
-    private var connectTitle: String {
-        if controller.isConnected { return "Disconnect" }
-        return controller.isConnecting ? "Connecting…" : "Connect"
+    /// The discovered-Macs list. Each row derives its own state from the controller's `linkTarget`,
+    /// so exactly one row is ever "connecting"/"connected" and the rest stay plain "Connect".
+    @ViewBuilder
+    private var peerList: some View {
+        // A peer we're connected to that discovery has since dropped from its list would take its
+        // Disconnect with it — so if the active peer target isn't in `peers`, keep a row for it.
+        let activePeerId: String? = {
+            if case .peer(let id) = controller.linkTarget { return id }
+            return nil
+        }()
+        let orphanActive = activePeerId != nil && !controller.peers.contains { $0.id == activePeerId }
+
+        if controller.peers.isEmpty && !orphanActive {
+            VStack(alignment: .leading, spacing: 6) {
+                // When connected by a typed address, discovery genuinely found nothing on the
+                // network — but "Searching…" alone next to a live connection reads as broken, so
+                // say what's actually true.
+                Label(controller.addressLinkActive ? "Connected by address — no other Macs found" : "Searching…",
+                      systemImage: controller.addressLinkActive ? "cable.connector" : "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if controller.discoveryLikelyBlocked {
+                    // Discovery has been stuck with nothing found — almost always Local Network
+                    // permission denied (Bonjour returns nothing when it's off).
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("No Macs found. Local Network permission may be off — turn it on for Sidewire on both Macs.")
+                                .font(.caption)
+                            if let url = Permissions.localNetworkSettingsURL {
+                                Link("Open Local Network settings", destination: url)
+                                    .font(.caption)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 6)
+        } else {
+            VStack(spacing: 0) {
+                if orphanActive {
+                    peerRow(name: controller.peerName ?? String(localized: "Connected Mac"),
+                            state: controller.rowState(forPeerId: activePeerId!), thunderbolt: nil, peer: nil)
+                    Divider()
+                }
+                ForEach(controller.peers) { peer in
+                    peerRow(name: peer.name,
+                            state: controller.rowState(forPeerId: peer.id),
+                            thunderbolt: peer.thunderboltIP, peer: peer)
+                    Divider()
+                }
+            }
+        }
+    }
+
+    /// One row. `peer` is nil only for the orphan-active safety row (no live DiscoveredPeer to
+    /// reconnect from), which is why its buttons are limited to Disconnect.
+    @ViewBuilder
+    private func peerRow(name: String, state: SourceController.RowState,
+                         thunderbolt: String?, peer: DiscoveredPeer?) -> some View {
+        HStack {
+            Image(systemName: "display")
+            Text(name)
+            Spacer()
+            switch state {
+            case .idle:
+                // Thunderbolt quick-connect: only when nothing else is active, and only if this
+                // Mac has a cable bridge to route over.
+                if let tb = thunderbolt, let peer, controller.localThunderboltIP != nil,
+                   controller.linkTarget == nil {
+                    Button {
+                        controller.connect(to: peer, forceThunderbolt: true)
+                    } label: {
+                        Label("Thunderbolt", systemImage: "cable.connector")
+                    }
+                    .tint(.green)
+                    .disabled(controller.pairingPIN.count != 6)
+                    .help("Connect over the Thunderbolt cable (\(tb))")
+                }
+                Button("Connect") { if let peer { controller.connect(to: peer) } }
+                    // A link elsewhere is up/connecting, or no PIN yet → can't start this one.
+                    .disabled(peer == nil || controller.linkTarget != nil || controller.pairingPIN.count != 6)
+            case .connecting:
+                Button("Cancel") { controller.disconnect() } // under the same cursor that started it
+            case .connected:
+                Button("Disconnect") { controller.disconnect() }
+            }
+        }
+        .padding(.vertical, 6)
     }
 
     /// The address has to parse before the button lights up — same parse the controller performs,
-    /// so the button can never be enabled for something that would be silently rejected.
+    /// so the button can never be enabled for something that would be silently rejected. Gated on
+    /// linkTarget (not just the bools): startLink sets linkTarget synchronously but isConnecting
+    /// only flips a runloop hop later, so without this the button lags one frame behind the field.
     private var canDialManualHost: Bool {
         Address.parse(manualHost) != nil
-            && !controller.isConnected && !controller.isConnecting
+            && controller.linkTarget == nil
             && controller.pairingPIN.count == 6
     }
 
@@ -241,9 +286,8 @@ struct SourceView: View {
                 }
             }
             Spacer()
-            if controller.isConnecting {
-                Button("Cancel") { controller.disconnect() }
-            }
+            // No Cancel/Disconnect here any more — it lives at the row or address field that
+            // started the connection, so the control is under the same cursor as the action.
             Button("Change…") { model.switchRole() }
                 .help("Choose whether this Mac is the main one or the extra screen.")
         }
