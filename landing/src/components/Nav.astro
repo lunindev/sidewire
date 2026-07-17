@@ -1,0 +1,107 @@
+---
+import { nav, links, site } from '../data/site';
+import Icon from './Icon.astro';
+---
+
+<header class="nav">
+  <div class="container nav-inner">
+    <a href="#top" class="brand" aria-label={`${site.name} home`}>
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">{site.name}</span>
+    </a>
+
+    <nav class="nav-links" aria-label="Primary">
+      {nav.map((l) => <a href={l.href}>{l.label}</a>)}
+    </nav>
+
+    <div class="nav-actions">
+      <a class="icon-link" href={links.github} target="_blank" rel="noopener" aria-label="GitHub">
+        <Icon name="github" size={20} />
+      </a>
+      <a class="btn btn-primary btn-sm" href={links.download}>Download</a>
+    </div>
+  </div>
+</header>
+
+<style>
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    backdrop-filter: saturate(140%) blur(12px);
+    background: color-mix(in srgb, var(--bg) 72%, transparent);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 64px;
+    gap: 20px;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+  .brand-mark {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    background: var(--accent-grad);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 8px 20px -8px var(--accent-glow);
+    position: relative;
+  }
+  .brand-mark::after {
+    content: "";
+    position: absolute;
+    inset: 6px 2px;
+    border-left: 2px solid rgba(6, 18, 27, 0.85);
+    border-right: 2px solid rgba(6, 18, 27, 0.85);
+  }
+  .brand-name {
+    font-size: 1.05rem;
+  }
+  .nav-links {
+    display: flex;
+    gap: 28px;
+    font-size: 0.94rem;
+    color: var(--ink-dim);
+  }
+  .nav-links a {
+    transition: color 0.15s ease;
+  }
+  .nav-links a:hover {
+    color: var(--ink);
+  }
+  .nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .icon-link {
+    color: var(--ink-dim);
+    display: inline-flex;
+    transition: color 0.15s ease;
+  }
+  .icon-link:hover {
+    color: var(--ink);
+  }
+  .btn-sm {
+    padding: 9px 16px;
+    font-size: 0.9rem;
+    border-radius: 10px;
+  }
+  @media (max-width: 760px) {
+    .nav-links {
+      display: none;
+    }
+  }
+  @media (max-width: 420px) {
+    .icon-link {
+      display: none;
+    }
+  }
+</style>

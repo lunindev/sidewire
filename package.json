@@ -1,0 +1,20 @@
+{
+  "name": "sidewire-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sidewire — give your main Mac a second screen. Monorepo root: the native macOS app lives in app/, the marketing site in landing/.",
+  "scripts": {
+    "dev": "pnpm -C landing dev",
+    "build": "pnpm -C landing build",
+    "check": "pnpm -C landing check",
+    "version:patch": "node scripts/release.mjs patch",
+    "version:minor": "node scripts/release.mjs minor",
+    "version:major": "node scripts/release.mjs major",
+    "version:dry": "node scripts/release.mjs minor --dry-run",
+    "release:undo": "node scripts/release-undo.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.13.1"
+}

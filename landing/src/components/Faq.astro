@@ -1,0 +1,72 @@
+---
+import { faqs } from '../data/site';
+---
+
+<section class="section" id="faq">
+  <div class="container faq-wrap">
+    <div class="section-head">
+      <span class="eyebrow">Questions</span>
+      <h2>The stuff people ask first.</h2>
+    </div>
+
+    <div class="faq-list">
+      {faqs.map((f) => (
+        <details class="card faq">
+          <summary>
+            <span>{f.q}</span>
+            <span class="chev" aria-hidden="true"></span>
+          </summary>
+          <p>{f.a}</p>
+        </details>
+      ))}
+    </div>
+  </div>
+</section>
+
+<style>
+  .faq-wrap {
+    max-width: 800px;
+  }
+  .faq-list {
+    display: grid;
+    gap: 12px;
+  }
+  .faq {
+    padding: 0 22px;
+  }
+  .faq summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 20px 0;
+    font-weight: 550;
+    font-size: 1.04rem;
+  }
+  .faq summary::-webkit-details-marker {
+    display: none;
+  }
+  .chev {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    border-right: 2px solid var(--ink-mut);
+    border-bottom: 2px solid var(--ink-mut);
+    transform: rotate(45deg);
+    transition: transform 0.2s ease;
+    margin-top: -4px;
+  }
+  .faq[open] .chev {
+    transform: rotate(-135deg);
+    margin-top: 4px;
+    border-color: var(--cyan);
+  }
+  .faq p {
+    padding: 0 0 22px;
+    color: var(--ink-dim);
+    font-size: 0.99rem;
+    max-width: 66ch;
+  }
+</style>

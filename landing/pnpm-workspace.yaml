@@ -1,0 +1,6 @@
+# pnpm settings for the landing package. pnpm 11 reads build-script approvals from here (not from
+# package.json). Approving the native postinstalls Astro's toolchain uses lets `pnpm install` /
+# `pnpm build` run non-interactively in CI and in the Docker build.
+allowBuilds:
+  esbuild: true
+  sharp: true

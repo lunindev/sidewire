@@ -1,0 +1,191 @@
+---
+// Hero illustration: two Macs — a "Main Mac" and an "Extra screen" — joined by a wire with a
+// current flowing across it, and a window sliding onto the second desktop. Pure SVG + CSS so it
+// renders identically offline in the container. Motion is disabled under prefers-reduced-motion.
+---
+
+<div class="diagram card">
+  <svg viewBox="0 0 760 360" role="img" aria-label="A main Mac gaining a second screen that lives on a spare Mac, connected by a wire.">
+    <!-- ── Main Mac ─────────────────────────────────────────── -->
+    <g class="mac">
+      <rect class="bezel" x="58" y="66" width="284" height="180" rx="16" />
+      <rect class="screen" x="70" y="78" width="260" height="156" rx="8" />
+      <line class="menubar" x1="70" y1="98" x2="330" y2="98" />
+      <circle class="dot-r" cx="82" cy="88" r="2.4" />
+      <circle class="dot-y" cx="92" cy="88" r="2.4" />
+      <circle class="dot-g" cx="102" cy="88" r="2.4" />
+      <rect class="win" x="92" y="116" width="120" height="86" rx="6" />
+      <rect class="win win-2" x="150" y="140" width="150" height="80" rx="6" />
+      <rect class="stand" x="188" y="246" width="24" height="16" rx="2" />
+      <rect class="foot" x="162" y="262" width="76" height="6" rx="3" />
+    </g>
+
+    <!-- ── The wire + flowing current ───────────────────────── -->
+    <g class="link">
+      <line class="wire" x1="342" y1="156" x2="418" y2="156" />
+      <circle class="spark" cx="380" cy="156" r="13" />
+      <path class="bolt" d="M382 148l-8 10h6l-2 8 8-10h-6l2-8z" />
+      <circle class="flow f1" cx="342" cy="156" r="3" />
+      <circle class="flow f2" cx="342" cy="156" r="3" />
+      <circle class="flow f3" cx="342" cy="156" r="3" />
+    </g>
+
+    <!-- ── Extra screen (the spare Mac) ─────────────────────── -->
+    <g class="mac mac-extra">
+      <rect class="bezel" x="418" y="66" width="284" height="180" rx="16" />
+      <rect class="screen screen-extra" x="430" y="78" width="260" height="156" rx="8" />
+      <line class="menubar" x1="430" y1="98" x2="690" y2="98" />
+      <rect class="win win-new" x="470" y="120" width="180" height="96" rx="6" />
+      <rect class="stand" x="548" y="246" width="24" height="16" rx="2" />
+      <rect class="foot" x="522" y="262" width="76" height="6" rx="3" />
+    </g>
+
+    <!-- ── The window being dragged across onto the new desktop ─ -->
+    <rect class="drag-win" x="0" y="0" width="96" height="60" rx="7" />
+  </svg>
+
+  <div class="diagram-labels">
+    <span class="dlabel">Main Mac</span>
+    <span class="dlabel dlabel-dim">Extra screen</span>
+  </div>
+</div>
+
+<style>
+  .diagram {
+    padding: 20px clamp(12px, 3vw, 28px) 16px;
+    background: radial-gradient(120% 120% at 50% 0%, rgba(99, 102, 241, 0.1), transparent 60%),
+      linear-gradient(180deg, var(--panel-2), var(--panel));
+  }
+  svg {
+    width: 100%;
+    height: auto;
+  }
+
+  .bezel {
+    fill: #0d1017;
+    stroke: var(--line-strong);
+    stroke-width: 1.5;
+  }
+  .screen {
+    fill: #0a0d14;
+    stroke: rgba(34, 211, 238, 0.12);
+    stroke-width: 1;
+  }
+  .screen-extra {
+    fill: #0a1016;
+    stroke: rgba(34, 211, 238, 0.28);
+  }
+  .menubar {
+    stroke: rgba(255, 255, 255, 0.1);
+    stroke-width: 1;
+  }
+  .dot-r { fill: #ff5f57; }
+  .dot-y { fill: #febc2e; }
+  .dot-g { fill: #28c840; }
+
+  .win {
+    fill: rgba(255, 255, 255, 0.05);
+    stroke: var(--line-strong);
+    stroke-width: 1;
+  }
+  .win-2 {
+    fill: rgba(99, 102, 241, 0.12);
+    stroke: rgba(129, 140, 248, 0.35);
+  }
+  .win-new {
+    fill: rgba(34, 211, 238, 0.12);
+    stroke: rgba(34, 211, 238, 0.5);
+    stroke-width: 1.4;
+  }
+  .stand,
+  .foot {
+    fill: #171a22;
+    stroke: var(--line);
+    stroke-width: 1;
+  }
+
+  .wire {
+    stroke: rgba(255, 255, 255, 0.14);
+    stroke-width: 2;
+  }
+  .spark {
+    fill: #0d1017;
+    stroke: var(--bolt);
+    stroke-width: 1.6;
+  }
+  .bolt {
+    fill: var(--bolt);
+  }
+  .flow {
+    fill: var(--cyan);
+    filter: drop-shadow(0 0 4px var(--accent-glow));
+  }
+
+  .drag-win {
+    fill: rgba(34, 211, 238, 0.16);
+    stroke: rgba(34, 211, 238, 0.6);
+    stroke-width: 1.4;
+    opacity: 0;
+    transform: translate(150px, 120px);
+  }
+
+  .diagram-labels {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 8%;
+    margin-top: 2px;
+  }
+  .dlabel {
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    letter-spacing: 0.08em;
+    color: var(--cyan);
+  }
+  .dlabel-dim {
+    color: var(--ink-mut);
+  }
+
+  /* ── Motion ───────────────────────────────────────────────── */
+  .flow {
+    animation: flow 2.4s linear infinite;
+  }
+  .f2 { animation-delay: 0.8s; }
+  .f3 { animation-delay: 1.6s; }
+  @keyframes flow {
+    0% { transform: translateX(0); opacity: 0; }
+    12% { opacity: 1; }
+    88% { opacity: 1; }
+    100% { transform: translateX(76px); opacity: 0; }
+  }
+
+  .spark,
+  .bolt {
+    animation: pulse 2.4s ease-in-out infinite;
+    transform-origin: 380px 156px;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.8; }
+    50% { opacity: 1; transform: scale(1.08); }
+  }
+
+  .drag-win {
+    animation: drag 6s ease-in-out infinite;
+  }
+  @keyframes drag {
+    0%, 8% { transform: translate(120px, 130px); opacity: 0; }
+    18% { opacity: 1; }
+    46% { transform: translate(520px, 130px); opacity: 1; }
+    58% { transform: translate(520px, 130px); opacity: 0; }
+    100% { transform: translate(520px, 130px); opacity: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .flow, .spark, .bolt, .drag-win {
+      animation: none;
+    }
+    .flow { opacity: 1; }
+    .f2 { transform: translateX(38px); }
+    .f3 { transform: translateX(76px); }
+    .drag-win { opacity: 0; }
+  }
+</style>

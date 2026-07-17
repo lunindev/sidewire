@@ -6,16 +6,21 @@
 #
 # One-time setup (you, once — enters your Apple credentials, which this script never sees):
 #   xcrun notarytool store-credentials sidewire-notary \
-#       --apple-id "<your-apple-id-email>" --team-id <YOUR_TEAM_ID> \
+#       --apple-id "<your-apple-id-email>" --team-id "$SIDEWIRE_TEAM_ID" \
 #       --password <app-specific-password from appleid.apple.com → App-Specific Passwords>
+#
+# Signing identity and team are read from the environment so this script carries no personal
+# account details. Export them once in your shell profile (or pass them per invocation):
+#   export SIDEWIRE_SIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)"
+#   export SIDEWIRE_TEAM_ID="TEAMID"
 #
 # Then just:  ./scripts/release.sh
 # Without the notary profile it still builds+signs+DMGs and tells you what to run.
 set -euo pipefail
 
 # ---- config ----------------------------------------------------------------
-IDENTITY="Developer ID Application: <Your Name> (<YOUR_TEAM_ID>)"
-TEAM_ID="<YOUR_TEAM_ID>"
+IDENTITY="${SIDEWIRE_SIGN_IDENTITY:?set SIDEWIRE_SIGN_IDENTITY to your 'Developer ID Application: NAME (TEAMID)'}"
+TEAM_ID="${SIDEWIRE_TEAM_ID:?set SIDEWIRE_TEAM_ID to your Apple Developer Team ID}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-sidewire-notary}"
 SCHEME="Sidewire"
 APP_NAME="Sidewire"

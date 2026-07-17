@@ -1,6 +1,6 @@
 # 10 — Fix Backlog
 
-*Produced 2026-07-12 by a full code review (all file:line references verified against the working tree at commit `b1071de`). This is the Phase 6 work list referenced by [09-next-stage.md](09-next-stage.md). Items are grouped by area and tagged **P0** (broken/misleading — fix before anything else), **P1** (real-world failure modes users will hit), **P2** (debt/polish). Each item is self-contained so it can be picked up independently.*
+*Produced 2026-07-12 by a full code review (all file:line references verified against the working tree at the time of writing). This is the Phase 6 work list referenced by [09-next-stage.md](09-next-stage.md). Items are grouped by area and tagged **P0** (broken/misleading — fix before anything else), **P1** (real-world failure modes users will hit), **P2** (debt/polish). Each item is self-contained so it can be picked up independently.*
 
 Security items that are part of the protocol-v2 migration live in doc 09 §D11/Phase 7, not here (except where a small local fix is possible now, e.g. A2's error surfacing).
 

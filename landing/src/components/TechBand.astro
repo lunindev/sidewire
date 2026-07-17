@@ -1,0 +1,60 @@
+---
+import { specs } from '../data/site';
+---
+
+<section class="section specs" id="specs">
+  <div class="container">
+    <div class="section-head">
+      <span class="eyebrow">Under the hood</span>
+      <h2>Serious plumbing, quietly.</h2>
+      <p>
+        The network, media and pairing layers are the mature part — hardware encoding, encrypted
+        transport, and a real key exchange. You never have to think about any of it.
+      </p>
+    </div>
+
+    <dl class="spec-grid">
+      {specs.map((s) => (
+        <div class="spec card">
+          <dt>{s.label}</dt>
+          <dd>{s.value}</dd>
+        </div>
+      ))}
+    </dl>
+  </div>
+</section>
+
+<style>
+  .spec-grid {
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  .spec {
+    padding: 20px 20px;
+  }
+  .spec dt {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--cyan);
+  }
+  .spec dd {
+    margin: 10px 0 0;
+    font-size: 0.98rem;
+    color: var(--ink);
+    line-height: 1.45;
+  }
+  @media (max-width: 900px) {
+    .spec-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+  @media (max-width: 480px) {
+    .spec-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

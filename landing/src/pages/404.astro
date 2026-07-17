@@ -1,0 +1,51 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import { links } from '../data/site';
+---
+
+<Base title="Not found">
+  <Nav />
+  <main class="nf">
+    <div class="container nf-inner">
+      <span class="eyebrow">404 · signal lost</span>
+      <h1>That wire goes nowhere.</h1>
+      <p>The page you’re after isn’t here — the current didn’t reach the other end.</p>
+      <a class="btn btn-primary" href="/">Back to the start</a>
+      <a class="ghost-link" href={links.github} target="_blank" rel="noopener">Or head to GitHub →</a>
+    </div>
+  </main>
+</Base>
+
+<style>
+  .nf {
+    min-height: 70vh;
+    display: grid;
+    place-items: center;
+    text-align: center;
+  }
+  .nf-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+  h1 {
+    font-size: clamp(2rem, 6vw, 3.2rem);
+    margin-top: 8px;
+  }
+  p {
+    color: var(--ink-dim);
+    max-width: 40ch;
+  }
+  .btn {
+    margin-top: 12px;
+  }
+  .ghost-link {
+    color: var(--ink-mut);
+    font-size: 0.92rem;
+  }
+  .ghost-link:hover {
+    color: var(--ink);
+  }
+</style>

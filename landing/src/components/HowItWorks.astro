@@ -1,0 +1,99 @@
+---
+import { steps, links } from '../data/site';
+import Icon from './Icon.astro';
+---
+
+<section class="section how" id="how">
+  <div class="container">
+    <div class="section-head">
+      <span class="eyebrow">How it works</span>
+      <h2>Two Macs, three steps, one extra screen.</h2>
+      <p>The same app on both machines. No hub, no dongle, no account to create.</p>
+    </div>
+
+    <ol class="steps">
+      {steps.map((s) => (
+        <li class="card step">
+          <span class="step-n">{s.n}</span>
+          <div>
+            <h3>{s.title}</h3>
+            <p>{s.body}</p>
+          </div>
+        </li>
+      ))}
+    </ol>
+
+    <a class="btn btn-primary how-cta" href={links.download}>
+      <Icon name="arrow" size={18} />
+      Get Sidewire
+    </a>
+  </div>
+</section>
+
+<style>
+  .how {
+    background:
+      radial-gradient(50rem 30rem at 100% 0%, rgba(34, 211, 238, 0.06), transparent 60%);
+  }
+  .steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+    counter-reset: step;
+  }
+  .step {
+    padding: 28px 26px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    position: relative;
+  }
+  .step::after {
+    /* faint connective current between steps on wide layouts */
+    content: "";
+    position: absolute;
+    top: 44px;
+    right: -9px;
+    width: 18px;
+    height: 1px;
+    background: linear-gradient(90deg, var(--line-strong), transparent);
+  }
+  .steps li:last-child::after {
+    display: none;
+  }
+  .step-n {
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #06121b;
+    background: var(--accent-grad);
+    width: 40px;
+    height: 40px;
+    border-radius: 11px;
+    display: grid;
+    place-items: center;
+    box-shadow: 0 8px 22px -12px var(--accent-glow);
+  }
+  .step h3 {
+    font-size: 1.16rem;
+  }
+  .step p {
+    margin-top: 8px;
+    color: var(--ink-dim);
+    font-size: 0.98rem;
+  }
+  .how-cta {
+    margin-top: 34px;
+  }
+  @media (max-width: 820px) {
+    .steps {
+      grid-template-columns: 1fr;
+    }
+    .step::after {
+      display: none;
+    }
+  }
+</style>

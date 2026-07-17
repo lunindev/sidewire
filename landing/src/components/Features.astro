@@ -1,0 +1,85 @@
+---
+import { features } from '../data/site';
+import Icon from './Icon.astro';
+---
+
+<section class="section" id="features">
+  <div class="container">
+    <div class="section-head">
+      <span class="eyebrow">What you get</span>
+      <h2>An extra monitor, minus the monitor.</h2>
+      <p>
+        Everything a plugged‑in display does — a real desktop, window snapping, your input across
+        both machines — powered by a Mac that was gathering dust.
+      </p>
+    </div>
+
+    <div class="grid">
+      {features.map((f) => (
+        <article class:list={['card', 'feat', { 'feat-wide': f.wide }]}>
+          <span class="feat-icon">
+            <Icon name={f.icon} size={22} />
+          </span>
+          <h3>{f.title}</h3>
+          <p>{f.body}</p>
+        </article>
+      ))}
+    </div>
+  </div>
+</section>
+
+<style>
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+  }
+  .feat {
+    padding: 26px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    transition: transform 0.18s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .feat:hover {
+    transform: translateY(-3px);
+    border-color: var(--line-strong);
+  }
+  .feat-wide {
+    grid-column: span 2;
+  }
+  .feat-icon {
+    width: 42px;
+    height: 42px;
+    border-radius: 11px;
+    display: grid;
+    place-items: center;
+    color: var(--cyan);
+    background: rgba(34, 211, 238, 0.08);
+    border: 1px solid rgba(34, 211, 238, 0.18);
+  }
+  .feat h3 {
+    font-size: 1.14rem;
+    margin-top: 2px;
+  }
+  .feat p {
+    color: var(--ink-dim);
+    font-size: 0.98rem;
+  }
+  @media (max-width: 900px) {
+    .grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .feat-wide {
+      grid-column: span 2;
+    }
+  }
+  @media (max-width: 580px) {
+    .grid {
+      grid-template-columns: 1fr;
+    }
+    .feat-wide {
+      grid-column: span 1;
+    }
+  }
+</style>

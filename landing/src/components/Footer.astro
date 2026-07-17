@@ -1,0 +1,88 @@
+---
+import { nav, links, site } from '../data/site';
+import Icon from './Icon.astro';
+
+const year = new Date().getFullYear();
+---
+
+<footer class="footer">
+  <hr class="wire-rule" />
+  <div class="container footer-inner">
+    <div class="footer-brand">
+      <a href="#top" class="brand" aria-label={`${site.name} home`}>
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>{site.name}</span>
+      </a>
+      <p>{site.tagline}</p>
+    </div>
+
+    <nav class="footer-nav" aria-label="Footer">
+      {nav.map((l) => <a href={l.href}>{l.label}</a>)}
+      <a href={links.docs} target="_blank" rel="noopener">Docs</a>
+      <a href={links.github} target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+
+  <div class="container footer-base">
+    <span>© {year} {site.name}. MIT‑licensed.</span>
+    <a class="icon-link" href={links.github} target="_blank" rel="noopener" aria-label="GitHub">
+      <Icon name="github" size={18} />
+    </a>
+  </div>
+</footer>
+
+<style>
+  .footer {
+    padding-bottom: 40px;
+  }
+  .footer-inner {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 28px;
+    padding-top: 44px;
+  }
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 650;
+  }
+  .brand-mark {
+    width: 18px;
+    height: 18px;
+    border-radius: 6px;
+    background: var(--accent-grad);
+  }
+  .footer-brand p {
+    margin-top: 12px;
+    color: var(--ink-mut);
+    font-size: 0.92rem;
+  }
+  .footer-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 26px;
+    align-items: flex-start;
+    font-size: 0.94rem;
+    color: var(--ink-dim);
+  }
+  .footer-nav a:hover {
+    color: var(--ink);
+  }
+  .footer-base {
+    margin-top: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--ink-mut);
+    font-size: 0.86rem;
+  }
+  .icon-link {
+    color: var(--ink-mut);
+    display: inline-flex;
+  }
+  .icon-link:hover {
+    color: var(--ink);
+  }
+</style>

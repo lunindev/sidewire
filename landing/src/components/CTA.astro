@@ -1,0 +1,55 @@
+---
+import { links } from '../data/site';
+import Icon from './Icon.astro';
+---
+
+<section class="section">
+  <div class="container">
+    <div class="cta card">
+      <h2>Your spare Mac has a job now.</h2>
+      <p>
+        Download Sidewire, launch it on both Macs, and drag a window onto a screen that wasn’t there
+        a minute ago. Free and open source.
+      </p>
+      <div class="cta-actions">
+        <a class="btn btn-primary" href={links.download}>
+          <Icon name="arrow" size={18} />
+          Download for macOS
+        </a>
+        <a class="btn btn-ghost" href={links.github} target="_blank" rel="noopener">
+          <Icon name="github" size={18} />
+          View source
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .cta {
+    text-align: center;
+    padding: clamp(40px, 7vw, 76px) clamp(24px, 5vw, 56px);
+    background:
+      radial-gradient(80% 140% at 50% 0%, rgba(34, 211, 238, 0.14), transparent 62%),
+      linear-gradient(180deg, var(--panel-hi), var(--panel));
+    border-color: var(--line-strong);
+  }
+  .cta h2 {
+    font-size: clamp(1.9rem, 4.6vw, 3rem);
+    max-width: 18ch;
+    margin-inline: auto;
+  }
+  .cta p {
+    margin: 18px auto 0;
+    max-width: 52ch;
+    color: var(--ink-dim);
+    font-size: 1.06rem;
+  }
+  .cta-actions {
+    margin-top: 30px;
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+</style>

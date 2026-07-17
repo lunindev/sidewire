@@ -18,5 +18,15 @@ xcuserdata/
 .idea/
 .vscode/
 
-# Release artifacts (Developer ID DMG, notarization staging)
+# Release artifacts (Developer ID DMG, notarization staging) — also covers landing/dist (Astro output)
 dist/
+
+# Node / Astro (landing/)
+node_modules/
+.astro/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+npm-debug.log*
+pnpm-debug.log*

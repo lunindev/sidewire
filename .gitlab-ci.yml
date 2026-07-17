@@ -1,0 +1,32 @@
+# Sidewire CI — builds the marketing landing site (landing/) into a container image and
+# publishes it to the GitLab registry on every git tag. Adapted from the multi-service
+# template: this repo ships a single web artifact (the landing), so only build:landing remains.
+#
+# The native macOS app (app/) is NOT built here — it needs Apple signing / notarization and
+# is built by GitHub Actions (app CI) and scripts/release.sh. GitLab only handles the web side.
+#
+# Releases are cut with `pnpm version:patch|minor|major`, which bumps every version in lockstep
+# and creates the `vX.Y.Z` tag that triggers this pipeline.
+
+stages:
+  - build
+
+variables:
+  DOCKER_HOST: "unix:///var/run/docker.sock"
+  REGISTRY: $CI_REGISTRY_IMAGE
+
+build:landing:
+  stage: build
+  image: docker:latest
+  tags:
+    - local
+  only:
+    - tags
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - echo "Building Landing for $CI_COMMIT_TAG"
+    - docker build --platform linux/amd64 --target landing-prod -f landing/Dockerfile -t $REGISTRY/landing:$CI_COMMIT_TAG -t $REGISTRY/landing:latest landing
+    - docker push $REGISTRY/landing:$CI_COMMIT_TAG
+    - docker push $REGISTRY/landing:latest
+    - echo "Image published $REGISTRY/landing:$CI_COMMIT_TAG"
