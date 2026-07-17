@@ -5,8 +5,11 @@
 //! * *(default)* listen — the real Display: bind a TLS 1.3 listener, print the pairing PIN, then
 //!   **re-listen in a loop** (docs/03: the Display re-listens on a drop; the Source is the
 //!   reconnecting dialer): accept a Source, pair (CPace), reach CONFIG, then stream — receive VIDEO →
-//!   decode → render, **send captured INPUT** (M3), and run the ≤2.5 s heartbeat/watchdog. `F11`
-//!   toggles borderless fullscreen; `Esc` exits it (both stay local). (End-to-end needs a live Mac.)
+//!   decode → render (with the Source's out-of-band cursor drawn as an overlay), **send captured
+//!   INPUT** (M3), and run the ≤2.5 s heartbeat/watchdog. `F11` toggles borderless fullscreen; `Esc`
+//!   exits it; `Ctrl+D` disconnects the current Source but keeps listening (all stay local). The
+//!   device identity + trust store persist under the config dir, so a paired Source is remembered
+//!   across restarts. (End-to-end needs a live Mac.)
 //! * `--handshake-only [port]` — the M1 behavior, preserved: accept one connection, drive it to
 //!   CONFIG, log the negotiated config, exit. No window.
 //! * `--discover [secs]` — M4 diagnostic: browse `_sidewire._tcp` and print nearby Sidewire
@@ -29,13 +32,101 @@ use sidewire_viewer::rate_limiter::PairingRateLimiter;
 use sidewire_viewer::session::{HeartbeatConfig, PairingConfig, Session};
 use sidewire_viewer::stats::{FrameStats, LatencyTracker};
 use sidewire_viewer::tls;
-use sidewire_viewer::trust_store::{InMemoryTrustStore, TrustStoring};
+use sidewire_viewer::trust_store::{FileTrustStore, TrustStoring};
 use sidewire_viewer::window::{self, FrameProducer};
 use sidewire_viewer::wire::Wire;
+use std::path::{Path, PathBuf};
 
 /// The Display's human-facing name — used both as the HELLO `deviceName` and the mDNS instance name
 /// (mirrors the Swift Display advertising its `deviceName`).
 const DISPLAY_NAME: &str = "Sidewire Rust Display";
+
+/// Where persistent state (the device identity + trust store) lives. Derived from platform env vars
+/// so we add no `dirs`-style dependency: `$SIDEWIRE_CONFIG_DIR` overrides everything; else
+/// `$XDG_CONFIG_HOME/sidewire-viewer`, `%APPDATA%\sidewire-viewer` (Windows), or
+/// `$HOME/.config/sidewire-viewer`; failing all, a local `.sidewire-viewer`.
+fn config_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("SIDEWIRE_CONFIG_DIR") {
+        if !d.is_empty() {
+            return PathBuf::from(d);
+        }
+    }
+    if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
+        if !x.is_empty() {
+            return PathBuf::from(x).join("sidewire-viewer");
+        }
+    }
+    #[cfg(windows)]
+    if let Ok(a) = std::env::var("APPDATA") {
+        if !a.is_empty() {
+            return PathBuf::from(a).join("sidewire-viewer");
+        }
+    }
+    if let Ok(h) = std::env::var("HOME") {
+        if !h.is_empty() {
+            return PathBuf::from(h).join(".config").join("sidewire-viewer");
+        }
+    }
+    PathBuf::from(".sidewire-viewer")
+}
+
+/// Write `bytes` to `path` atomically (temp file + rename) so a crash mid-write can't leave a
+/// partial file — a truncated identity key would force a new device_id and make the Source see
+/// `keyChanged`, the very regression persistence exists to avoid. On unix the temp file is created
+/// with `mode` (e.g. 0600 for the private key) so it is never briefly world-readable.
+fn write_file_atomic(path: &Path, bytes: &[u8], mode: Option<u32>) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    if let Some(m) = mode {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(m);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    {
+        let mut f = opts.open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)
+}
+
+/// Load this device's persistent identity, or generate and save one on first run. A stable identity
+/// is what lets a Source that paired with us keep recognizing us across restarts (its pin is keyed
+/// on our device id / SPKI); regenerating every launch made the Source re-pair and see `keyChanged`.
+fn load_or_create_identity() -> Result<Identity, Box<dyn std::error::Error>> {
+    let dir = config_dir();
+    let cert_path = dir.join("identity_cert.pem");
+    let key_path = dir.join("identity_key.pem");
+    if let (Ok(cert), Ok(key)) = (
+        std::fs::read_to_string(&cert_path),
+        std::fs::read_to_string(&key_path),
+    ) {
+        if let Ok(id) = Identity::from_pem(&cert, &key) {
+            // Re-assert tight perms on the key in case it was written loosely by an older build.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600));
+            }
+            return Ok(id);
+        }
+        log::warn!("identity files present but unparsable — regenerating");
+    }
+    let id = Identity::generate()?;
+    std::fs::create_dir_all(&dir)?;
+    write_file_atomic(&cert_path, id.cert_pem.as_bytes(), None)?;
+    write_file_atomic(&key_path, id.key_pem.as_bytes(), Some(0o600))?; // 0600 from creation
+    Ok(id)
+}
+
+/// The persistent trust store at the config dir.
+fn open_trust_store() -> FileTrustStore {
+    FileTrustStore::open(config_dir().join("trust.json"))
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -138,8 +229,8 @@ fn codec_for_file(path: &str, data: &[u8]) -> Option<Codec> {
 // ---------------------------------------------------------------------------
 
 fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let identity = Identity::generate()?;
-    let trust_store = Arc::new(InMemoryTrustStore::new());
+    let identity = load_or_create_identity()?;
+    let trust_store = Arc::new(open_trust_store());
     let rate_limiter = Arc::new(PairingRateLimiter::default_config());
     let pin = random_pin();
     let server_config = Arc::new(tls::server_config(&identity)?);
@@ -175,7 +266,8 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             }
         };
     println!("  a window opens once a Source connects and streaming begins.");
-    println!("  keys: F11 = toggle fullscreen, Esc = exit fullscreen (both stay local; ⌘/Esc are never sent).");
+    println!("  keys: F11 = toggle fullscreen, Esc = exit fullscreen, Ctrl+D = disconnect this Mac");
+    println!("        (all stay local; ⌘/Ctrl+D/Esc are never sent to the Source).");
 
     window::run(
         "Sidewire — Display",
@@ -191,6 +283,8 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             // The window-close flag, threaded into each streaming session so an in-progress stream
             // (not just the between-sessions accept poll below) unwinds with BYE("user") on close.
             let stop = producer.stop_flag();
+            // The per-session Disconnect flag (Ctrl+D): ends the current Source but not the Display.
+            let session_stop = producer.session_stop_flag();
             while !producer.should_stop() {
                 let (tcp, peer_addr) = match listener.accept() {
                     Ok(v) => v,
@@ -250,9 +344,12 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                 let mut decoder: Option<Decoder> = None;
                 let mut decoder_failed = false;
                 let mut tracker = LatencyTracker::new(120);
+                // Clear any Ctrl+D from a previous session so this one starts live.
+                session_stop.store(false, std::sync::atomic::Ordering::Relaxed);
                 let outcome = session.run_streaming(
                     &input_rx,
                     &stop,
+                    &session_stop,
                     HeartbeatConfig::default(),
                     |nal, keyframe, pts| {
                         if decoder_failed {
@@ -306,6 +403,9 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     },
+                    |x, y| {
+                        producer.post_cursor(x, y); // draw the Source's out-of-band pointer
+                    },
                 );
                 println!(
                 "session ended: reason = {}, frames decoded = {} — re-listening for the next Source",
@@ -327,8 +427,8 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 // ---------------------------------------------------------------------------
 
 fn run_handshake_only(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let identity = Identity::generate()?;
-    let trust_store = Arc::new(InMemoryTrustStore::new());
+    let identity = load_or_create_identity()?;
+    let trust_store = Arc::new(open_trust_store());
     let rate_limiter = Arc::new(PairingRateLimiter::default_config());
     let pin = random_pin();
     let server_config = Arc::new(tls::server_config(&identity)?);

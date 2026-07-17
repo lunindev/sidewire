@@ -43,6 +43,30 @@ impl VideoPayload {
     }
 }
 
+/// CURSOR payload: the Source's pointer position over the streamed display — 8 bytes, two
+/// big-endian f32 `(x, y)`, normalized 0..1, TOP-LEFT origin (matches winit's coordinate space, so
+/// no Y-flip on the Display). Mirrors Swift `CursorPayload`. The Display renders a pointer overlay
+/// at this position within the video rect; it does NOT move the local OS cursor.
+pub struct CursorPayload;
+
+impl CursorPayload {
+    pub fn encode(x: f32, y: f32) -> Vec<u8> {
+        let mut d = Vec::with_capacity(8);
+        d.extend_from_slice(&x.to_be_bytes());
+        d.extend_from_slice(&y.to_be_bytes());
+        d
+    }
+
+    pub fn decode(payload: &[u8]) -> Option<(f32, f32)> {
+        if payload.len() < 8 {
+            return None;
+        }
+        let x = f32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        let y = f32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+        Some((x, y))
+    }
+}
+
 /// PING/PONG payload: an 8-byte big-endian monotonic nanosecond timestamp.
 pub struct HeartbeatPayload;
 
@@ -90,5 +114,25 @@ impl LtrAckPayload {
             i += 1;
         }
         tokens
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::CursorPayload;
+
+    #[test]
+    fn cursor_roundtrip_and_byte_layout() {
+        let bytes = CursorPayload::encode(0.25, 0.75);
+        assert_eq!(bytes.len(), 8);
+        // BE f32 x then y.
+        assert_eq!(&bytes[0..4], &0.25f32.to_be_bytes());
+        assert_eq!(&bytes[4..8], &0.75f32.to_be_bytes());
+        assert_eq!(CursorPayload::decode(&bytes), Some((0.25, 0.75)));
+    }
+
+    #[test]
+    fn cursor_rejects_short_payload() {
+        assert_eq!(CursorPayload::decode(&[0u8; 7]), None);
     }
 }

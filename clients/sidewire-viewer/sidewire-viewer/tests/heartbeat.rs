@@ -114,7 +114,7 @@ fn spawn_display(p: &Peers, heartbeat: HeartbeatConfig) -> std::thread::JoinHand
         let (_tx, rx) = mpsc::channel();
         // No window in these tests, so the stop flag is never set (the peer/watchdog drives close).
         let stop = std::sync::atomic::AtomicBool::new(false);
-        session.run_streaming(&rx, &stop, heartbeat, |_nal, _kf, _pts| {})
+        session.run_streaming(&rx, &stop, &std::sync::atomic::AtomicBool::new(false), heartbeat, |_nal, _kf, _pts| {}, |_x, _y| {})
     })
 }
 

@@ -100,6 +100,7 @@ fn run_video_loopback(fixture_name: &str, codec_name: &str, codec: Codec) -> Vec
         let outcome = session.run_streaming(
             &input_rx,
             &stop,
+            &std::sync::atomic::AtomicBool::new(false),
             HeartbeatConfig::default(),
             |nal, keyframe, pts| {
                 let decoded = decoder
@@ -114,6 +115,7 @@ fn run_video_loopback(fixture_name: &str, codec_name: &str, codec: Codec) -> Vec
                     });
                 }
             },
+            |_x, _y| {},
         );
         (outcome, frames)
     });

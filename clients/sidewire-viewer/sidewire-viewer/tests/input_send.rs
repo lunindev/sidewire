@@ -116,7 +116,7 @@ fn input_records_round_trip_display_to_source() {
         drop(tx);
         // No window here — the stop flag is never set; the Source's BYE ends the session.
         let stop = std::sync::atomic::AtomicBool::new(false);
-        session.run_streaming(&rx, &stop, HeartbeatConfig::default(), |_nal, _kf, _pts| {})
+        session.run_streaming(&rx, &stop, &std::sync::atomic::AtomicBool::new(false), HeartbeatConfig::default(), |_nal, _kf, _pts| {}, |_x, _y| {})
     });
 
     // --- Source: connect, reach CONFIG, collect the 3 INPUT records, then BYE("user").
@@ -147,4 +147,123 @@ fn input_records_round_trip_display_to_source() {
     );
     // Clean shutdown driven by the Source's BYE("user").
     assert_eq!(display_outcome.close_reason.as_deref(), Some("user"));
+}
+
+/// A key and a mouse button held when the session closes must be RELEASED on the wire, or the
+/// Source (which injects at the HID tap) is left with them stuck down. Mirrors the Swift Display's
+/// releaseHeldInput. The Display holds a KeyDown + MouseDown, then closes (window/stop); the Source
+/// must receive the matching KeyUp + MouseUp before the BYE.
+#[test]
+fn held_input_is_released_on_close() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let display_id = Identity::generate().unwrap();
+    let source_id = Identity::generate().unwrap();
+    let display_trust = Arc::new(InMemoryTrustStore::new());
+    let source_trust = Arc::new(InMemoryTrustStore::new());
+    source_trust.pin(TrustedPeer::new(
+        display_id.device_id.clone(),
+        hex::encode(display_id.spki_hash),
+        "D",
+    ));
+    display_trust.pin(TrustedPeer::new(
+        source_id.device_id.clone(),
+        hex::encode(source_id.spki_hash),
+        "S",
+    ));
+    let server_cfg = Arc::new(tls::server_config(&display_id).unwrap());
+    let client_cfg = Arc::new(tls::client_config(&source_id).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let mut key_down = InputEventRecord::new(InputEventType::KeyDown);
+    key_down.key_code = 0x04; // 'a'
+    let mut mouse_down = InputEventRecord::new(InputEventType::MouseDown);
+    mouse_down.x = 0.4;
+    mouse_down.y = 0.6;
+    // A held modifier crosses as FlagsChanged carrying the bitfield (this client never sends a
+    // modifier as KeyDown) — its release must be a FlagsChanged clearing the flags.
+    let mut mods = InputEventRecord::new(InputEventType::FlagsChanged);
+    mods.key_code = 0x00E1; // left Shift
+    mods.modifiers = hid_modifier::LEFT_SHIFT;
+
+    let display = std::thread::spawn(move || {
+        let (tcp, _) = listener.accept().expect("accept");
+        let (wire, tls_info) = Wire::accept(server_cfg, tcp, &display_id).expect("display TLS");
+        let hello = Hello::new(
+            Role::Display,
+            display_id.device_id.clone(),
+            "RustDisplay",
+            "sess-d",
+            caps(),
+        );
+        let pairing = PairingConfig::new("000000", display_trust, None);
+        let session = Session::new(Role::Display, hello, Some(display_info()), wire, tls_info, pairing);
+
+        let (tx, rx) = mpsc::channel();
+        tx.send(key_down).unwrap();
+        tx.send(mouse_down).unwrap();
+        tx.send(mods).unwrap();
+        drop(tx);
+
+        // Close from "the window" after the inputs have had time to drain — the stop flag is what
+        // triggers close_sending_bye → release_held_input.
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_timer = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            stop_timer.store(true, Ordering::Relaxed);
+        });
+        session.run_streaming(
+            &rx,
+            &stop,
+            &AtomicBool::new(false),
+            HeartbeatConfig::default(),
+            |_nal, _kf, _pts| {},
+            |_x, _y| {},
+        )
+    });
+
+    let tcp = TcpStream::connect(addr).expect("connect");
+    let (wire, tls_info) = Wire::connect(client_cfg, tcp, &source_id).expect("source TLS");
+    let hello = Hello::new(
+        Role::Source,
+        source_id.device_id.clone(),
+        "RustSource",
+        "sess-s",
+        caps(),
+    );
+    let pairing = PairingConfig::new("000000", source_trust, None);
+    // Read until the Display BYEs (no stop_after_inputs) so the releases are collected too.
+    let src: SourceStreamResult = Session::new(Role::Source, hello, None, wire, tls_info, pairing)
+        .run_source_stream(SourceStreamPlan {
+            echo_pong: true,
+            stop_after_inputs: None,
+            max_duration: Duration::from_secs(3),
+            ..Default::default()
+        });
+    let _ = display.join().unwrap();
+
+    let types: Vec<InputEventType> = src.inputs.iter().map(|r| r.event_type).collect();
+    assert_eq!(
+        types,
+        vec![
+            InputEventType::KeyDown,
+            InputEventType::MouseDown,
+            InputEventType::FlagsChanged, // the held modifier (forwarded as FlagsChanged)
+            InputEventType::MouseUp,      // released on close: buttons first…
+            InputEventType::KeyUp,        // …then keys…
+            InputEventType::FlagsChanged, // …then a modifier-clearing FlagsChanged
+        ],
+        "the Display must release the held button, key, AND modifier before closing"
+    );
+    // The releasing FlagsChanged clears all modifier flags.
+    let mod_clear = src.inputs.last().unwrap();
+    assert_eq!(mod_clear.modifiers, 0, "the modifier release must clear the flags");
+    // The key release names the held key.
+    assert_eq!(
+        src.inputs[src.inputs.len() - 2].key_code,
+        0x04,
+        "the released key must be the held one"
+    );
 }

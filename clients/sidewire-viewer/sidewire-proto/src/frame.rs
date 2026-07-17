@@ -77,11 +77,19 @@ pub enum ParseError {
 #[derive(Default)]
 pub struct FrameParser {
     buffer: Vec<u8>,
+    /// Offset of the first unconsumed byte. Frames advance this rather than draining the front, so
+    /// a burst of N small frames in one `append` costs O(total) rather than O(N × remaining) — a
+    /// front-drain per frame memmoves the whole tail each time and burned the single IO thread
+    /// under a flood of minimal frames. The consumed prefix is reclaimed once per `append`.
+    start: usize,
 }
 
 impl FrameParser {
     pub fn new() -> Self {
-        Self { buffer: Vec::new() }
+        Self {
+            buffer: Vec::new(),
+            start: 0,
+        }
     }
 
     /// Append incoming bytes and return all frames now fully available.
@@ -92,46 +100,76 @@ impl FrameParser {
         while let Some(frame) = self.parse_one()? {
             frames.push(frame);
         }
+        // Reclaim consumed bytes exactly once — a single memmove regardless of how many frames
+        // were parsed. Skipped when nothing was consumed (a partial frame still buffering).
+        if self.start > 0 {
+            self.buffer.drain(..self.start);
+            self.start = 0;
+        }
         Ok(frames)
     }
 
     /// Bytes buffered but not yet forming a complete frame (for diagnostics/tests).
     pub fn pending_byte_count(&self) -> usize {
-        self.buffer.len()
+        self.buffer.len() - self.start
     }
 
     fn parse_one(&mut self) -> Result<Option<Frame>, ParseError> {
-        if self.buffer.len() < FRAME_HEADER_BYTES {
+        let buf = &self.buffer[self.start..];
+        if buf.len() < FRAME_HEADER_BYTES {
             return Ok(None);
         }
-        let raw_type = self.buffer[0];
-        let flags = self.buffer[1];
+        let raw_type = buf[0];
+        let flags = buf[1];
         // bytes 2,3 reserved (ignored)
-        let length = u32::from_be_bytes([
-            self.buffer[4],
-            self.buffer[5],
-            self.buffer[6],
-            self.buffer[7],
-        ]);
-        let seq = u32::from_be_bytes([
-            self.buffer[8],
-            self.buffer[9],
-            self.buffer[10],
-            self.buffer[11],
-        ]);
+        let length = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        let seq = u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]);
 
         if length as usize > MAX_FRAME_BYTES {
             return Err(ParseError::FrameTooLarge(length));
         }
 
         let total = FRAME_HEADER_BYTES + length as usize;
-        if self.buffer.len() < total {
+        if buf.len() < total {
             return Ok(None);
         }
 
-        let payload = self.buffer[FRAME_HEADER_BYTES..total].to_vec();
-        // Drop the consumed bytes.
-        self.buffer.drain(..total);
+        let payload = buf[FRAME_HEADER_BYTES..total].to_vec();
+        self.start += total; // consumed; the prefix is reclaimed at the end of append()
         Ok(Some(Frame::new(raw_type, flags, seq, payload)))
+    }
+}
+
+#[cfg(test)]
+mod parser_burst_tests {
+    use super::*;
+    use crate::MessageType;
+
+    #[test]
+    fn burst_of_minimal_frames_parses_all_and_leaves_no_pending() {
+        // A flood of zero-payload frames in one append — the O(n^2) path this rewrite fixes.
+        let mut chunk = Vec::new();
+        for seq in 0..1000u32 {
+            chunk.extend_from_slice(&encode_typed(MessageType::Ping, 0, seq, &[]));
+        }
+        let mut parser = FrameParser::new();
+        let frames = parser.append(&chunk).unwrap();
+        assert_eq!(frames.len(), 1000);
+        assert_eq!(frames[0].seq, 0);
+        assert_eq!(frames[999].seq, 999);
+        assert_eq!(parser.pending_byte_count(), 0);
+    }
+
+    #[test]
+    fn partial_tail_after_burst_is_preserved_across_appends() {
+        let whole = encode_typed(MessageType::Ping, 0, 7, &[]);
+        let (head, tail) = whole.split_at(5);
+        let mut parser = FrameParser::new();
+        assert!(parser.append(head).unwrap().is_empty());
+        assert_eq!(parser.pending_byte_count(), 5);
+        let frames = parser.append(tail).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].seq, 7);
+        assert_eq!(parser.pending_byte_count(), 0);
     }
 }

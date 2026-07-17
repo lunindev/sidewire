@@ -8,14 +8,15 @@
 //! (never sends first). For M1 the state machine runs until CONFIG is reached (or the session
 //! closes); heartbeat/streaming arrive in later milestones.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use sidewire_proto::{
-    video_flags, Config, DisplayInfo, FrameParser, HeartbeatPayload, Hello, InputEventRecord,
-    MessageType, ReasonMessage, Role, VideoPayload,
+    video_flags, Config, CursorPayload, DisplayInfo, FrameParser, HeartbeatPayload, Hello,
+    InputEventRecord, InputEventType, MessageType, ReasonMessage, Role, VideoPayload,
 };
 
 use crate::rate_limiter::PairingRateLimiter;
@@ -236,6 +237,24 @@ pub struct Session {
 
     closed: bool,
     close_reason: Option<String>,
+
+    /// Input we've forwarded that the Source is holding down. The Source injects at the HID tap,
+    /// which persists after our socket dies, so unless we send the matching releases before every
+    /// close the remote Mac is left mid-drag / with a key stuck. Mirrors the Swift Display's
+    /// `releaseHeldInput`.
+    ///
+    /// NOTE this is a winit client: it forwards Ctrl/Shift/Alt as `FlagsChanged` (carrying the
+    /// modifier bitfield), NOT as KeyDown — so those live in `last_modifiers`, not `held_keys`.
+    /// `held_keys` holds only ordinary keys; ⌘/Super is reserved-local and never forwarded.
+    held_keys: HashSet<u16>,
+    held_left: bool,
+    held_right: bool,
+    /// The modifier bitfield carried by the last INPUT we forwarded. Non-zero at close ⇒ the Source
+    /// has Ctrl/Shift/Alt flagged and needs a clear (see `release_held_input`).
+    last_modifiers: u8,
+    /// Last pointer position we forwarded, so a synthesized MouseUp lands where the button is.
+    last_pointer: (f32, f32),
+
     events: Vec<WireEvent>,
     /// Whether to append to [`Session::events`]. On during the (short) handshake so tests can assert
     /// frame ordering; turned **off** once streaming begins so a long session's hot-path frames
@@ -274,6 +293,11 @@ impl Session {
             negotiated_config: None,
             closed: false,
             close_reason: None,
+            held_keys: HashSet::new(),
+            held_left: false,
+            held_right: false,
+            last_modifiers: 0,
+            last_pointer: (0.0, 0.0),
             events: Vec::new(),
             record_events: true,
         }
@@ -323,15 +347,18 @@ impl Session {
     /// the wire's socket timeout (a blocked read wakes on it, then the `stop` check breaks) — no BYE
     /// is sent then, which is fine: the peer is still pre-stream. Returns when the peer/watchdog
     /// closes. Consumes `self`.
-    pub fn run_streaming<F>(
+    pub fn run_streaming<F, G>(
         mut self,
         input_rx: &Receiver<InputEventRecord>,
         stop: &AtomicBool,
+        session_stop: &AtomicBool,
         heartbeat: HeartbeatConfig,
         mut on_video: F,
+        mut on_cursor: G,
     ) -> SessionOutcome
     where
         F: FnMut(&[u8], bool, u64),
+        G: FnMut(f32, f32),
     {
         self.begin_pairing_or_handshake();
         // Phase 1 — blocking handshake to CONFIG (milliseconds under the socket timeout in normal
@@ -339,8 +366,8 @@ impl Session {
         // below. Poll the window `stop` flag each iteration so a close during pairing unwinds within
         // the socket timeout instead of parking until the peer sends its next frame.
         while !self.ready && !self.closed {
-            if stop.load(Ordering::Relaxed) {
-                break; // window closed mid-handshake — bare close (pre-stream, no BYE expected)
+            if stop.load(Ordering::Relaxed) || session_stop.load(Ordering::Relaxed) {
+                break; // window closed / disconnected mid-handshake — bare close (no BYE expected)
             }
             match self.wire.read_frame() {
                 Ok(frame) => {
@@ -354,7 +381,7 @@ impl Session {
             }
         }
         if self.ready && !self.closed {
-            self.stream_loop(input_rx, stop, heartbeat, &mut on_video);
+            self.stream_loop(input_rx, stop, session_stop, heartbeat, &mut on_video, &mut on_cursor);
         }
         self.into_outcome()
     }
@@ -362,19 +389,28 @@ impl Session {
     /// The post-CONFIG streaming loop: send INPUT + heartbeat, receive VIDEO/PING/BYE, run the
     /// watchdog. Single IO thread, short-timeout reads so no duty starves another. Also polls the
     /// window `stop` flag so a window close unwinds the loop with `BYE("user")`.
-    fn stream_loop<F>(
+    fn stream_loop<F, G>(
         &mut self,
         input_rx: &Receiver<InputEventRecord>,
         stop: &AtomicBool,
+        session_stop: &AtomicBool,
         heartbeat: HeartbeatConfig,
         on_video: &mut F,
+        on_cursor: &mut G,
     ) where
         F: FnMut(&[u8], bool, u64),
+        G: FnMut(f32, f32),
     {
         // A live session runs for hours at 60 fps — stop growing the event log now (it is a
         // short-handshake test aid, not a hot-path buffer).
         self.record_events = false;
         let _ = self.wire.set_read_timeout(Some(STREAM_READ_TIMEOUT));
+
+        // Ask for a keyframe up front so the first paint doesn't wait for the Source's next natural
+        // IDR (the Swift Source honors REQUEST_IDR). Display-only — the Source is the encoder.
+        if self.role == Role::Display {
+            self.send(MessageType::RequestIdr, 0, &[]);
+        }
 
         let mut parser = FrameParser::new();
         let mut buf = [0u8; STREAM_READ_BUF];
@@ -383,9 +419,11 @@ impl Session {
         let mut last_inbound = now;
 
         while !self.closed {
-            // (0) The user closed the window: say a proper goodbye so the Source doesn't sit on its
-            // 2.5 s watchdog, then unwind. Checked first so a close is honored within one loop tick.
-            if stop.load(Ordering::Relaxed) {
+            // (0) The user closed the window OR pressed Disconnect: say a proper goodbye so the
+            // Source doesn't sit on its 2.5 s watchdog, then unwind. Both send BYE("user"); they
+            // differ only outside this loop — a window close also stops the accept loop, while a
+            // Disconnect leaves it re-listening for the next Source.
+            if stop.load(Ordering::Relaxed) || session_stop.load(Ordering::Relaxed) {
                 self.close_sending_bye("user");
                 break;
             }
@@ -394,7 +432,7 @@ impl Session {
             // closed channel (window/input source gone) just ends the drain; the video link stays up
             // until the peer or the watchdog ends it.
             while let Ok(rec) = input_rx.try_recv() {
-                self.send(MessageType::Input, 0, &rec.encode());
+                self.send_input(&rec);
                 if self.closed {
                     break;
                 }
@@ -433,7 +471,7 @@ impl Session {
                         for frame in frames {
                             last_inbound = Instant::now(); // ANY inbound frame resets the watchdog
                             self.record_recv(frame.raw_type);
-                            self.handle_stream_frame(frame, on_video);
+                            self.handle_stream_frame(frame, on_video, on_cursor);
                             if self.closed {
                                 break;
                             }
@@ -638,6 +676,8 @@ impl Session {
     /// EOF or transport failure. If the peer already told us a reason (BYE), keep it; otherwise this
     /// is a canonical transport failure.
     fn mark_transport_closed(&mut self) {
+        // Best-effort release before we give up on the socket (a clean EOF may still be writable).
+        self.release_held_input();
         if !self.closed {
             self.close_reason = Some("transport".to_string());
             self.closed = true;
@@ -654,9 +694,14 @@ impl Session {
 
     /// Streaming-phase dispatch (after CONFIG): VIDEO → decode callback; PING → PONG; BYE → close;
     /// PAUSE/RESUME acknowledged as liveness only. Unknown/reserved types are skipped.
-    fn handle_stream_frame<F>(&mut self, frame: sidewire_proto::Frame, on_video: &mut F)
-    where
+    fn handle_stream_frame<F, G>(
+        &mut self,
+        frame: sidewire_proto::Frame,
+        on_video: &mut F,
+        on_cursor: &mut G,
+    ) where
         F: FnMut(&[u8], bool, u64),
+        G: FnMut(f32, f32),
     {
         let msg_type = match frame.message_type() {
             Some(t) => t,
@@ -667,6 +712,13 @@ impl Session {
                 let keyframe = frame.flags & video_flags::KEYFRAME != 0;
                 if let Some((_ltr, pts, nal)) = VideoPayload::decode(&frame.payload) {
                     on_video(&nal, keyframe, pts);
+                }
+            }
+            // The Source's out-of-band pointer position — drives the cursor overlay (the Source
+            // bakes no cursor into the video). Normalized 0..1, top-left.
+            MessageType::Cursor => {
+                if let Some((x, y)) = CursorPayload::decode(&frame.payload) {
+                    on_cursor(x, y);
                 }
             }
             // Echo the exact 8 bytes back (docs/02 § PING/PONG) so the peer's RTT is on its clock.
@@ -708,6 +760,82 @@ impl Session {
         }
     }
 
+    /// Forward one INPUT record, tracking what the Source is now holding so we can release it on
+    /// close. The pointer position is remembered from every pointer event for a later MouseUp.
+    fn send_input(&mut self, rec: &InputEventRecord) {
+        match rec.event_type {
+            InputEventType::KeyDown => {
+                self.held_keys.insert(rec.key_code);
+            }
+            InputEventType::KeyUp => {
+                self.held_keys.remove(&rec.key_code);
+            }
+            InputEventType::MouseDown => self.held_left = true,
+            InputEventType::MouseUp => self.held_left = false,
+            InputEventType::RightMouseDown => self.held_right = true,
+            InputEventType::RightMouseUp => self.held_right = false,
+            _ => {}
+        }
+        match rec.event_type {
+            InputEventType::MouseMove
+            | InputEventType::MouseDown
+            | InputEventType::MouseUp
+            | InputEventType::MouseDragged
+            | InputEventType::RightMouseDown
+            | InputEventType::RightMouseUp
+            | InputEventType::RightMouseDragged => self.last_pointer = (rec.x, rec.y),
+            _ => {}
+        }
+        // Every record carries the current modifier bitfield; the Source's flag state follows it,
+        // so the last one is what we must clear on close.
+        self.last_modifiers = rec.modifiers;
+        self.send(MessageType::Input, 0, &rec.encode());
+    }
+
+    /// Send the matching release for everything the Source is holding, while the socket is still
+    /// open, so a disconnect never leaves a key or button stuck down on the remote Mac. Best-effort:
+    /// on a genuinely dead transport the first write fails and marks the session closed, and the
+    /// rest no-op — that case (a hard network drop) can only be fully healed by the Source releasing
+    /// its own injected state. Mirrors the Swift Display's releaseHeldInput; buttons then keys.
+    fn release_held_input(&mut self) {
+        if self.closed {
+            return;
+        }
+        let (x, y) = self.last_pointer;
+        if self.held_left {
+            self.held_left = false;
+            let mut r = InputEventRecord::new(InputEventType::MouseUp);
+            r.x = x;
+            r.y = y;
+            r.click_count = 1;
+            self.send(MessageType::Input, 0, &r.encode());
+        }
+        if self.held_right {
+            self.held_right = false;
+            let mut r = InputEventRecord::new(InputEventType::RightMouseUp);
+            r.x = x;
+            r.y = y;
+            r.click_count = 1;
+            r.button_number = 1;
+            self.send(MessageType::Input, 0, &r.encode());
+        }
+        for usage in std::mem::take(&mut self.held_keys) {
+            let mut r = InputEventRecord::new(InputEventType::KeyUp);
+            r.key_code = usage;
+            self.send(MessageType::Input, 0, &r.encode());
+        }
+        // Clear any held modifier (Ctrl/Shift/Alt): they cross as FlagsChanged, so a FlagsChanged
+        // with an empty modifier byte tells the Source to drop all flags. The Ctrl+D disconnect
+        // path always lands here with Ctrl still down. key_code names a real modifier usage so the
+        // Source can map it; the empty modifiers byte (record default) is what does the clearing.
+        if self.last_modifiers != 0 {
+            self.last_modifiers = 0;
+            let mut r = InputEventRecord::new(InputEventType::FlagsChanged);
+            r.key_code = 0x00E0; // HID usage: left Control — any valid modifier key works
+            self.send(MessageType::Input, 0, &r.encode());
+        }
+    }
+
     fn send_json<T: serde::Serialize>(&mut self, msg_type: MessageType, value: &T) {
         let payload = serde_json::to_vec(value).unwrap_or_default();
         self.send(msg_type, 0, &payload);
@@ -721,6 +849,12 @@ impl Session {
     /// Send a BYE(reason) then close. The BYE is flushed by [`Wire::write_frame`] before the socket
     /// is later dropped, so the peer receives the reason rather than a bare reset.
     fn close_sending_bye(&mut self, reason: &str) {
+        // Stake the reason first: if a synthesized release below fails to write, send() would else
+        // stamp "transport" and finish_close (guarded on `closed`) couldn't restore the real one.
+        if self.close_reason.is_none() {
+            self.close_reason = Some(reason.to_string());
+        }
+        self.release_held_input(); // let the remote Mac release held keys/buttons before we vanish
         self.send_bye(reason);
         self.finish_close(Some(reason.to_string()));
     }
@@ -1005,6 +1139,14 @@ impl Session {
         let reason = serde_json::from_slice::<ReasonMessage>(payload)
             .ok()
             .map(|r| r.reason);
+        // Stake the peer's reason before the (possibly failing) release, so a write error can't
+        // clobber it to "transport".
+        if self.close_reason.is_none() {
+            self.close_reason = reason.clone();
+        }
+        // The peer is ending the session; release anything still held before we finish, in case the
+        // Source teardown doesn't drop its own injected state.
+        self.release_held_input();
         self.finish_close(reason);
     }
 

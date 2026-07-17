@@ -20,4 +20,4 @@ pub use messages::{
     Capabilities, Config, DisplayInfo, Hello, HelloRejection, ProtocolVersion, ReasonMessage, Role,
     DEFAULT_INPUT_MAPPING,
 };
-pub use video::{HeartbeatPayload, LtrAckPayload, VideoPayload};
+pub use video::{CursorPayload, HeartbeatPayload, LtrAckPayload, VideoPayload};

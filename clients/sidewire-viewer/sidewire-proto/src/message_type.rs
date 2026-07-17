@@ -19,6 +19,12 @@ pub enum MessageType {
     Video = 0x10,
     Audio = 0x11, // reserved
     Input = 0x20,
+    /// The Source's pointer position over the streamed display, sent out-of-band so the pointer
+    /// tracks at network latency instead of the video's decode lag. Payload is [`crate::CursorPayload`]
+    /// (8 bytes: x, y as BE f32, normalized 0..1, top-left). The Source sets `showsCursor = false`,
+    /// so this is the ONLY way the remote pointer reaches a Display — a client that skips it shows
+    /// no cursor at all. Added after the golden vectors were frozen; not covered by them.
+    Cursor = 0x21,
     Ping = 0x30,
     Pong = 0x31,
     RequestIdr = 0x40,
@@ -42,6 +48,7 @@ impl MessageType {
             0x10 => Self::Video,
             0x11 => Self::Audio,
             0x20 => Self::Input,
+            0x21 => Self::Cursor,
             0x30 => Self::Ping,
             0x31 => Self::Pong,
             0x40 => Self::RequestIdr,

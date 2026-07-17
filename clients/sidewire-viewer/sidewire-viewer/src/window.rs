@@ -28,6 +28,7 @@ use crate::renderer::{Renderer, RendererError};
 
 /// A single-slot latest-frame mailbox. The worker overwrites it; the render thread takes it.
 type FrameMailbox = Arc<Mutex<Option<DecodedFrame>>>;
+type CursorMailbox = Arc<Mutex<Option<(f32, f32)>>>;
 
 /// Capacity of the captured-input channel (window → session). A session drains it every ~5 ms, so it
 /// only backs up while no session is active; `try_send` drops when full, bounding memory.
@@ -38,6 +39,9 @@ const INPUT_CHANNEL_CAPACITY: usize = 1024;
 pub enum AppEvent {
     /// A fresh frame is waiting in the mailbox — request a redraw.
     Frame,
+    /// The Source's pointer moved (out-of-band CURSOR feed) — repaint the overlay over the last
+    /// frame, so the remote cursor tracks even on a static screen.
+    Cursor,
     /// A Source session ended — reset the input translator's per-session state (held buttons /
     /// modifiers / suppressed keys) before the next Source connects, so nothing stuck leaks across
     /// (mirrors `InputCapture.stop()`).
@@ -59,10 +63,16 @@ pub enum WindowError {
 #[derive(Clone)]
 pub struct FrameProducer {
     mailbox: FrameMailbox,
+    /// Newest remote-pointer position (normalized 0..1 in the video rect), shared with the window
+    /// so a cursor-only update repaints without a new video frame.
+    cursor: CursorMailbox,
     proxy: EventLoopProxy<AppEvent>,
     /// Set by the window when it closes, so the worker's (re)listen loop knows to stop even while
     /// blocked between sessions (it can't observe a closed event loop through `post`).
     stop: Arc<AtomicBool>,
+    /// Set by the Disconnect hotkey to end the CURRENT session (BYE) without closing the window; the
+    /// accept loop clears it and keeps listening. Distinct from `stop`, which ends the whole Display.
+    session_stop: Arc<AtomicBool>,
 }
 
 impl FrameProducer {
@@ -74,6 +84,15 @@ impl FrameProducer {
             *slot = Some(frame);
         }
         self.proxy.send_event(AppEvent::Frame).is_ok()
+    }
+
+    /// Post the Source's latest pointer position (normalized 0..1 in the video rect, top-left) and
+    /// wake the loop to repaint the overlay. The Source only sends this when the pointer moves.
+    pub fn post_cursor(&self, x: f32, y: f32) {
+        if let Ok(mut slot) = self.cursor.lock() {
+            *slot = Some((x, y));
+        }
+        let _ = self.proxy.send_event(AppEvent::Cursor);
     }
 
     /// Ask the window to close (session ended).
@@ -101,6 +120,13 @@ impl FrameProducer {
     pub fn stop_flag(&self) -> Arc<AtomicBool> {
         self.stop.clone()
     }
+
+    /// The per-session Disconnect flag (Ctrl+D). The accept loop clears it before each session and
+    /// threads it into `run_streaming`; when set, the current Source is dropped with `BYE("user")`
+    /// but the Display keeps listening.
+    pub fn session_stop_flag(&self) -> Arc<AtomicBool> {
+        self.session_stop.clone()
+    }
 }
 
 /// Run a video window on this (main) thread, spawning `worker` on a background thread with a
@@ -113,11 +139,15 @@ where
     let event_loop = EventLoop::<AppEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
     let mailbox: FrameMailbox = Arc::new(Mutex::new(None));
+    let cursor: CursorMailbox = Arc::new(Mutex::new(None));
     let stop = Arc::new(AtomicBool::new(false));
+    let session_stop = Arc::new(AtomicBool::new(false));
     let producer = FrameProducer {
         mailbox: mailbox.clone(),
+        cursor: cursor.clone(),
         proxy,
         stop: stop.clone(),
+        session_stop: session_stop.clone(),
     };
     // Bounded so an open window with no session draining (between Source connections) can't grow the
     // queue without limit; `try_send` on the capture path drops when full. The session drains it
@@ -125,7 +155,7 @@ where
     let (input_tx, input_rx) = sync_channel::<InputEventRecord>(INPUT_CHANNEL_CAPACITY);
     let worker_handle = std::thread::spawn(move || worker(producer, input_rx));
 
-    let mut app = VideoApp::new(title.into(), mailbox, input_tx, stop);
+    let mut app = VideoApp::new(title.into(), mailbox, cursor, input_tx, stop, session_stop);
     let loop_result = event_loop.run_app(&mut app);
 
     // The event loop returned because the window closed. `shutdown` set the stop flag *before*
@@ -238,6 +268,12 @@ impl Gpu {
         self.renderer.video_rect()
     }
 
+    /// Set the remote-pointer overlay position for the next render (normalized 0..1 in the video
+    /// rect), or clear it.
+    fn set_cursor(&mut self, cursor: Option<(f32, f32)>) {
+        self.renderer.set_cursor(cursor);
+    }
+
     /// Render `frame` to the next surface texture.
     fn render(&mut self, frame: &DecodedFrame) {
         let surface_tex = match self.surface.get_current_texture() {
@@ -267,6 +303,7 @@ impl Gpu {
 struct VideoApp {
     title: String,
     mailbox: FrameMailbox,
+    cursor: CursorMailbox,
     window: Option<Arc<Window>>,
     gpu: Option<Gpu>,
     /// Captured input goes here; the worker's session drains it and sends INPUT frames. Bounded so an
@@ -275,6 +312,15 @@ struct VideoApp {
     input_tx: SyncSender<InputEventRecord>,
     translator: InputTranslator,
     fullscreen: bool,
+    /// Whether the window is focused. We forward pointer/scroll input only while focused, so hovering
+    /// or scrolling over the viewer while working in another app doesn't drive the remote Mac. winit
+    /// only delivers keyboard input to a focused window already; this closes the pointer gap.
+    focused: bool,
+    /// Ctrl held, tracked from ModifiersChanged, so Ctrl+D can be recognized as the Disconnect
+    /// hotkey (winit's KeyEvent doesn't carry modifier state).
+    ctrl_down: bool,
+    /// Set true by Ctrl+D to end the current session; the worker's accept loop reads and clears it.
+    session_stop: Arc<AtomicBool>,
     /// The most recently rendered frame, retained so a resize / fullscreen toggle on a static screen
     /// (no new VIDEO arriving) still repaints at the new size AND refreshes the letterbox video rect
     /// for input mapping — otherwise clicks map against a stale rect (see `draw_latest`).
@@ -287,17 +333,23 @@ impl VideoApp {
     fn new(
         title: String,
         mailbox: FrameMailbox,
+        cursor: CursorMailbox,
         input_tx: SyncSender<InputEventRecord>,
         stop: Arc<AtomicBool>,
+        session_stop: Arc<AtomicBool>,
     ) -> VideoApp {
         VideoApp {
             title,
             mailbox,
+            cursor,
             window: None,
             gpu: None,
             input_tx,
             translator: InputTranslator::new(),
             fullscreen: false,
+            focused: true, // winit sends Focused(true) on first activation; assume focused until told
+            ctrl_down: false,
+            session_stop,
             last_frame: None,
             stop,
         }
@@ -312,11 +364,13 @@ impl VideoApp {
         if let Some(f) = self.mailbox.lock().ok().and_then(|mut s| s.take()) {
             self.last_frame = Some(f);
         }
+        let cursor = self.cursor.lock().ok().and_then(|c| *c);
         let rect = {
             let (gpu, frame) = match (self.gpu.as_mut(), self.last_frame.as_ref()) {
                 (Some(g), Some(f)) => (g, f),
                 _ => return, // no GPU yet, or nothing rendered so far
             };
+            gpu.set_cursor(cursor);
             gpu.render(frame);
             gpu.video_rect()
         };
@@ -355,6 +409,15 @@ impl VideoApp {
                 }
                 true
             }
+            // Ctrl+D — disconnect the current Source but keep the Display listening. Consumed so the
+            // 'd' never reaches the Source; the still-held Ctrl is cleared by release_held_input's
+            // FlagsChanged-clear on close (Ctrl crosses as a modifier flag, not a key).
+            KeyCode::KeyD if self.ctrl_down => {
+                if key.state == ElementState::Pressed && !key.repeat {
+                    self.session_stop.store(true, Ordering::Relaxed);
+                }
+                true
+            }
             KeyCode::Escape => {
                 if key.state == ElementState::Pressed && self.fullscreen {
                     self.set_fullscreen(false);
@@ -378,7 +441,9 @@ impl ApplicationHandler<AppEvent> for VideoApp {
             Ok(w) => Arc::new(w),
             Err(e) => {
                 log::error!("failed to create window: {e}");
-                event_loop.exit();
+                // shutdown(), not a bare exit(): it also sets the stop flag, or the worker spins in
+                // its accept loop forever and the join() after run_app() hangs the process.
+                self.shutdown(event_loop);
                 return;
             }
         };
@@ -386,7 +451,7 @@ impl ApplicationHandler<AppEvent> for VideoApp {
             Ok(gpu) => self.gpu = Some(gpu),
             Err(e) => {
                 log::error!("failed to init GPU: {e}");
-                event_loop.exit();
+                self.shutdown(event_loop);
                 return;
             }
         }
@@ -399,17 +464,29 @@ impl ApplicationHandler<AppEvent> for VideoApp {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::Frame => {
+            AppEvent::Frame | AppEvent::Cursor => {
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
             }
-            AppEvent::ResetInput => self.translator.reset(),
+            AppEvent::ResetInput => {
+                self.translator.reset();
+                // Drop the last Source's pointer so its stale cursor doesn't sit on the next
+                // session's first frame.
+                if let Ok(mut c) = self.cursor.lock() {
+                    *c = None;
+                }
+            }
             AppEvent::Close => self.shutdown(event_loop),
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // Track Ctrl for the Ctrl+D disconnect hotkey; this event still falls through to the
+        // translator below (it forwards the modifier state to the Source).
+        if let WindowEvent::ModifiersChanged(m) = &event {
+            self.ctrl_down = m.state().control_key();
+        }
         match &event {
             WindowEvent::CloseRequested => {
                 self.shutdown(event_loop);
@@ -430,6 +507,17 @@ impl ApplicationHandler<AppEvent> for VideoApp {
                 self.draw_latest();
                 return;
             }
+            WindowEvent::Focused(focused) => {
+                self.focused = *focused;
+                if !*focused {
+                    // Leaving the viewer: release anything held so the remote Mac isn't left
+                    // mid-drag / key-down while the user works elsewhere.
+                    for rec in self.translator.release_records() {
+                        let _ = self.input_tx.try_send(rec);
+                    }
+                }
+                return;
+            }
             // Viewer controls (F11 toggle) are consumed here; Escape returns `false` from the hotkey
             // handler so it falls through to the translator, which drops it (reserved-local) keeping
             // its key state balanced.
@@ -438,12 +526,15 @@ impl ApplicationHandler<AppEvent> for VideoApp {
             }
             _ => {}
         }
-        // Pointer / wheel / modifiers / non-hotkey keys → translate + forward to the worker. Bounded
-        // channel: drop when full (no session draining) or disconnected — never block the UI thread.
-        if let Some(record) = self.translator.translate(&event) {
-            match self.input_tx.try_send(record) {
-                Ok(()) | Err(TrySendError::Full(_)) => {}
-                Err(TrySendError::Disconnected(_)) => {}
+        // Pointer / wheel / modifiers / non-hotkey keys → translate + forward to the worker — but only
+        // while focused, so hover/scroll over an unfocused viewer doesn't reach the remote Mac.
+        // Bounded channel: drop when full (no session draining) or disconnected — never block the UI.
+        if self.focused {
+            if let Some(record) = self.translator.translate(&event) {
+                match self.input_tx.try_send(record) {
+                    Ok(()) | Err(TrySendError::Full(_)) => {}
+                    Err(TrySendError::Disconnected(_)) => {}
+                }
             }
         }
     }

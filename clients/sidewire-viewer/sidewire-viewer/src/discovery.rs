@@ -36,6 +36,10 @@ pub const SERVICE_TYPE_DOMAIN: &str = "_sidewire._tcp.local.";
 pub const TXT_KEY_DID: &str = "did";
 /// TXT key carrying the Display's optional Thunderbolt link-local IP (mirrors `Discovery.swift` "tb").
 pub const TXT_KEY_TB: &str = "tb";
+/// TXT key carrying the bound port, mirroring the Swift Display, which merges `port=effectivePort`.
+/// The SRV record already carries the port (and is what the mDNS/auto-connect path dials), so this
+/// is additive for parity — the Swift Source only reads TXT `port` on its Thunderbolt-force path.
+pub const TXT_KEY_PORT: &str = "port";
 
 /// Errors advertising or browsing over mDNS.
 #[derive(Debug, thiserror::Error)]
@@ -68,7 +72,7 @@ pub struct DiscoveredPeer {
 /// (`""` = none; the live [`Advertiser`] passes `""` then [`ServiceInfo::enable_addr_auto`] so
 /// mdns-sd fills in — and keeps updated — this host's real interface addresses).
 ///
-/// TXT is `{did}` plus optional `{tb}` (only when non-empty), matching `DisplayController.swift`.
+/// TXT is `{did, port}` plus optional `{tb}` (only when non-empty), matching `DisplayController.swift`.
 pub fn service_info(
     device_name: &str,
     device_id: &str,
@@ -78,6 +82,7 @@ pub fn service_info(
 ) -> Result<ServiceInfo, DiscoveryError> {
     let mut props: HashMap<String, String> = HashMap::new();
     props.insert(TXT_KEY_DID.to_string(), device_id.to_string());
+    props.insert(TXT_KEY_PORT.to_string(), port.to_string());
     if let Some(tb) = thunderbolt_ip {
         if !tb.is_empty() {
             props.insert(TXT_KEY_TB.to_string(), tb.to_string());
@@ -267,6 +272,7 @@ mod tests {
         assert_eq!(info.get_port(), 5005);
         assert_eq!(info.get_property_val_str(TXT_KEY_DID), Some(DID));
         assert_eq!(info.get_property_val_str(TXT_KEY_TB), Some(TB));
+        assert_eq!(info.get_property_val_str(TXT_KEY_PORT), Some("5005"));
     }
 
     /// (b1) `peer_from_service_info` recovers did + tb + port + instance from a constructed service.

@@ -109,6 +109,30 @@ pub struct Renderer {
     /// skipped rather than passed to `create_texture`, which would otherwise trip wgpu's uncaptured-
     /// error handler and panic the (main) render thread — reachable from an imperfect/hostile Source.
     max_dim: u32,
+    // Remote-pointer overlay (the Source sends the cursor out-of-band; it isn't in the video).
+    cursor_pipeline: wgpu::RenderPipeline,
+    cursor_uniform_buffer: wgpu::Buffer,
+    cursor_bind_group: wgpu::BindGroup,
+    /// The pointer position from the last CURSOR feed, normalized 0..1 within the video rect
+    /// (top-left origin), or `None` when there's been no feed yet.
+    cursor: Option<(f32, f32)>,
+}
+
+/// Per-instance data for the cursor overlay (drop shadow + fill). `repr(C)` for a stable GPU layout.
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CursorInstance {
+    scale: [f32; 2],
+    offset: [f32; 2],
+    color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CursorUniform {
+    tip: [f32; 2],
+    _pad: [f32; 2],
+    inst: [CursorInstance; 2],
 }
 
 impl Renderer {
@@ -227,6 +251,72 @@ impl Renderer {
         );
         let dummy_view = dummy.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Cursor overlay: a tiny arrow drawn over the video from the out-of-band CURSOR feed.
+        let cursor_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("cursor-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("cursor.wgsl").into()),
+        });
+        let cursor_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("cursor-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let cursor_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("cursor-pl"),
+            bind_group_layouts: &[&cursor_bgl],
+            push_constant_ranges: &[],
+        });
+        let cursor_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("cursor-pipeline"),
+            layout: Some(&cursor_pl),
+            vertex: wgpu::VertexState {
+                module: &cursor_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &cursor_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING), // the shadow is semi-transparent
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let cursor_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cursor-uniforms"),
+            size: std::mem::size_of::<CursorUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let cursor_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cursor-bind-group"),
+            layout: &cursor_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: cursor_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         Renderer {
             device: device.clone(),
             queue: queue.clone(),
@@ -243,7 +333,17 @@ impl Renderer {
                 height: 0.0,
             },
             max_dim: device.limits().max_texture_dimension_2d,
+            cursor_pipeline,
+            cursor_uniform_buffer,
+            cursor_bind_group,
+            cursor: None,
         }
+    }
+
+    /// Update the remote pointer position (normalized 0..1 within the video rect, top-left origin),
+    /// or `None` to hide it. Drawn as an overlay on the next `render`.
+    pub fn set_cursor(&mut self, cursor: Option<(f32, f32)>) {
+        self.cursor = cursor;
     }
 
     /// Create a fully headless renderer (its own device/queue, `Rgba8Unorm` target) for tests /
@@ -334,6 +434,46 @@ impl Renderer {
             None => return,
         };
 
+        // The remote pointer overlay: place the arrow tip at the CURSOR feed's normalized position
+        // within the video rect, converted to clip space (top-left, y-down → clip y-up).
+        let draw_cursor = if let Some((nx, ny)) = self.cursor {
+            let (tw, th) = (target_size.0 as f32, target_size.1 as f32);
+            if tw > 0.0 && th > 0.0 {
+                let px = rect.x + nx.clamp(0.0, 1.0) * rect.width;
+                let py = rect.y + ny.clamp(0.0, 1.0) * rect.height;
+                let tip = [px / tw * 2.0 - 1.0, 1.0 - py / th * 2.0];
+                // ~22px tall arrow; a matching-pixel width via the shader's local 0..0.7 x-extent.
+                let s = [22.0 / tw * 2.0, 22.0 / th * 2.0];
+                let sh = [1.5 / tw * 2.0, -1.5 / th * 2.0]; // shadow offset: down-right in screen space
+                let u = CursorUniform {
+                    tip,
+                    _pad: [0.0, 0.0],
+                    inst: [
+                        CursorInstance {
+                            scale: s,
+                            offset: sh,
+                            color: [0.0, 0.0, 0.0, 0.5], // drop shadow
+                        },
+                        CursorInstance {
+                            scale: s,
+                            offset: [0.0, 0.0],
+                            color: [1.0, 1.0, 1.0, 1.0], // white fill
+                        },
+                    ],
+                };
+                self.queue.write_buffer(
+                    &self.cursor_uniform_buffer,
+                    0,
+                    bytemuck::bytes_of(&u),
+                );
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -358,6 +498,12 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..6, 0..1);
+
+            if draw_cursor {
+                pass.set_pipeline(&self.cursor_pipeline);
+                pass.set_bind_group(0, &self.cursor_bind_group, &[]);
+                pass.draw(0..3, 0..2); // instance 0 = shadow, instance 1 = fill
+            }
         }
         self.queue.submit(std::iter::once(encoder.finish()));
     }

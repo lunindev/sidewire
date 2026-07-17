@@ -129,6 +129,44 @@ impl InputTranslator {
         self.forwarded_keys.clear();
     }
 
+    /// Release records for everything currently held — a MouseUp/RightMouseUp for held buttons and a
+    /// KeyUp for each forwarded key — clearing the local held state. The window sends these when it
+    /// loses focus, so the Source doesn't stay mid-drag / key-down while the user works elsewhere
+    /// (mirrors the Swift Display dropping its input grab on deactivate). The Session's own
+    /// send-side tracking sees these and stays consistent.
+    pub fn release_records(&mut self) -> Vec<InputEventRecord> {
+        let mut out = Vec::new();
+        if self.left_down {
+            self.left_down = false;
+            let mut r = self.pointer_record(InputEventType::MouseUp);
+            r.click_count = 1;
+            out.push(r);
+        }
+        if self.right_down {
+            self.right_down = false;
+            let mut r = self.pointer_record(InputEventType::RightMouseUp);
+            r.button_number = 1;
+            r.click_count = 1;
+            out.push(r);
+        }
+        for usage in std::mem::take(&mut self.forwarded_keys) {
+            let mut r = self.pointer_record(InputEventType::KeyUp);
+            r.key_code = usage;
+            out.push(r);
+        }
+        // Clear held modifiers (Ctrl/Shift/Alt cross as FlagsChanged, not keys): an empty modifier
+        // byte drops all flags on the Source.
+        if self.modifiers != 0 {
+            self.modifiers = 0;
+            let mut r = self.pointer_record(InputEventType::FlagsChanged); // pointer_record fills modifiers…
+            r.modifiers = 0; // …so force it empty
+            r.key_code = 0x00E0; // left Control usage
+            out.push(r);
+        }
+        self.suppressed_keys.clear();
+        out
+    }
+
     /// Translate one window event into an input record, or `None` if the event produces no wire
     /// event (a reserved-local key, an unmapped key, a dropped mouse button, or a state-only update
     /// like `ModifiersChanged`).
