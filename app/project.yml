@@ -18,12 +18,20 @@ settings:
     # Universal 2 (arm64 + x86_64) so one build runs on the M4 Max source and Intel i9 display.
     ARCHS: "arm64 x86_64"
     ONLY_ACTIVE_ARCH: "NO"
-    # Sign with a stable Apple Development identity (by cert hash, so no Xcode account /
-    # provisioning profile is required) — this keeps Screen Recording / Accessibility TCC
-    # grants alive across rebuilds. Developer ID + notarization for distribution is Phase 5.
+    # Ad-hoc signing by default, so a fresh clone builds for anyone — no Apple account, no
+    # provisioning profile, no certificate. Distribution signing is a separate concern handled
+    # by scripts/release.sh (Developer ID Application + hardened runtime + notarization).
+    #
+    # Trade-off: an ad-hoc signature changes on every build, so macOS resets the app's Screen
+    # Recording / Accessibility (TCC) grants each time you rebuild. If you are iterating locally
+    # and that gets tiresome, sign with a stable identity of your own — pass it on the command
+    # line rather than editing this file, so the checked-in default stays buildable for everyone:
+    #
+    #   security find-identity -v -p codesigning        # find your identity's SHA-1
+    #   xcodebuild … CODE_SIGN_IDENTITY=<sha1> CODE_SIGNING_REQUIRED=YES
     CODE_SIGN_STYLE: Manual
-    CODE_SIGN_IDENTITY: "3A28D3256EEB6B7E4378E0540CB26C02CF883941"
-    CODE_SIGNING_REQUIRED: "YES"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: "NO"
     CODE_SIGNING_ALLOWED: "YES"
     # G1 — hardened runtime in dev builds too, so hardened-only failures (notably the
     # --vd-helper self-re-exec) surface here rather than first in a shipped build. release.sh
