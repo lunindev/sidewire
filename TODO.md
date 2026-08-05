@@ -86,6 +86,23 @@ These are things an outside reader hits in the first sixty seconds.
       `app/clients/sidewire-viewer/.gitignore`, but a root-level rule is cheap insurance.
       **Done.**
 
+- [x] **Keychain certificate leak — the cause of a system-wide `trustd` meltdown.**
+      Found while investigating a machine where `trustd` sat at ~98% CPU: 645 self-signed
+      `CN=Sidewire` certificates had accumulated in the login keychain. `loadOrCreateCertificate`
+      looked its cache up by `kSecAttrLabel`, but macOS derives that attribute from the subject
+      common name for certificate items and ignores the label given to `SecItemAdd` — so the
+      lookup could never match, a fresh leaf was minted and stored on *every* initialisation, and
+      `destroy()` (deleting by the same absent label) removed nothing. Rate: one per app launch
+      plus ~35 per full test-suite run. Once a few hundred share a subject, chain building becomes
+      a backtracking search with one ECDSA P-256 verification per candidate, and every `SecTrust`
+      consumer on the machine queues behind `trustd`.
+      **Fixed** by not storing the certificate at all — verified first that
+      `SecIdentityCreateWithCertificate` works with a leaf that has never been in any keychain.
+      Only the private key persists; peers pin the SPKI hash, so `deviceId` and the pinned
+      fingerprint stay stable. Measured: +35 certificates per suite run before, 0 after, stable
+      across three consecutive runs. `KeychainHygieneTests` is the regression guard, and
+      `LocalIdentity.purgeStoredCertificates()` cleans up what the old behaviour left behind.
+
 - [ ] **Add a screenshot or a short GIF to the README.**
       There is not one image or badge in any README. For a product whose entire pitch is *"a real
       second desktop"*, showing it is worth more than several paragraphs.
