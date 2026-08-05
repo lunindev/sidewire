@@ -7,16 +7,21 @@ import Icon from './Icon.astro';
   <div class="container">
     <div class="cross card">
       <div class="cross-copy">
-        <span class="eyebrow">Not just Macs</span>
+        <span class="eyebrow">Coming next · Not just Macs</span>
         <h2>Bring a PC to the party.</h2>
         <p>
-          Got a Windows or Linux laptop spare instead? It can be the extra screen too. The native
-          client speaks Sidewire’s exact wire protocol — pair it with a 6‑digit PIN and it decodes,
-          renders on the GPU, and forwards input just like a second Mac would.
+          Got a Windows or Linux laptop spare instead? It will be able to be the extra screen too.
+          The native Rust client speaks Sidewire’s exact wire protocol — pair it with a 6‑digit PIN
+          and it decodes, renders on the GPU, and forwards input just like a second Mac would.
         </p>
         <p class="cross-note">
-          The one rule: the machine that <em>gains</em> the screen is always a Mac — creating a
-          virtual display is macOS‑specific.
+          Honest status: the client is written and reproduces the protocol and pairing vectors
+          byte‑for‑byte, but no Windows or Linux binary has been built or released yet, and it has
+          not run against a live Mac. Read the source today; watch the repository for a build.
+        </p>
+        <p class="cross-note">
+          The one permanent rule: the machine that <em>gains</em> the screen is always a Mac —
+          creating a virtual display is macOS‑specific.
         </p>
         <a class="btn btn-ghost" href={links.github} target="_blank" rel="noopener">
           <Icon name="github" size={18} />
@@ -24,11 +29,15 @@ import Icon from './Icon.astro';
         </a>
       </div>
 
+      <!-- Every claim below is checked against app/clients/sidewire-viewer/README.md. Decode is
+           SOFTWARE (libavcodec); the GPU does the YUV→RGB conversion and present (wgpu). Hardware
+           decode is deferred. And the Rust client is always the DISPLAY, so it ADVERTISES
+           _sidewire._tcp and the Mac browses for it — it does not go looking for Macs. -->
       <ul class="cross-list">
         <li><span class="tick" aria-hidden="true"></span> Identical, byte‑exact protocol</li>
-        <li><span class="tick" aria-hidden="true"></span> GPU‑accelerated decode &amp; render</li>
+        <li><span class="tick" aria-hidden="true"></span> Software decode, GPU render</li>
         <li><span class="tick" aria-hidden="true"></span> Keyboard &amp; mouse forwarding</li>
-        <li><span class="tick" aria-hidden="true"></span> Discovers Macs on the LAN</li>
+        <li><span class="tick" aria-hidden="true"></span> Announces itself on the LAN</li>
       </ul>
     </div>
   </div>
@@ -94,7 +103,7 @@ import Icon from './Icon.astro';
     top: 3px;
     width: 4px;
     height: 8px;
-    border: solid #06121b;
+    border: solid var(--ink-on-accent);
     border-width: 0 2px 2px 0;
     transform: rotate(45deg);
   }

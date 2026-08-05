@@ -20,7 +20,7 @@ These are things an outside reader hits in the first sixty seconds.
       Done via two `git filter-repo` passes. All 53 commits preserved with byte-identical author and
       committer dates, names and messages. Verified across all 545 text blobs: no Cyrillic (all
       Unicode ranges), no personal Apple ID, no legal name, no Team ID, no local filesystem paths,
-      no `non-English`/`RU`, no AI-workflow wording.
+      no references to the original working language, no AI-workflow wording.
 
 - [x] **Make the checked-in build work for anyone.**
       `app/project.yml` pinned `CODE_SIGN_IDENTITY` to a certificate SHA-1 that exists in exactly one
@@ -32,27 +32,30 @@ These are things an outside reader hits in the first sixty seconds.
 - [x] **Stop claiming CI exists.** Six files asserted `.github/workflows/` was real and runnable.
       All downgraded to "planned" and pointed here.
 
-- [ ] **Write `.github/workflows/ci.yml`.**
+- [x] **Write `.github/workflows/ci.yml`.**
       The design is already spelled out in [`app/docs/08-build-and-distribution.md`](app/docs/08-build-and-distribution.md)
       — this is transcription, not design. `macos-14`; `brew install xcodegen`; `swift test` in both
       `app/Packages/*`; `xcodegen generate`; `xcodebuild` with signing disabled; `cargo test`,
       `cargo fmt --check` and `cargo clippy` for the Rust workspace. Cache SPM and Cargo.
       **Fix the three red gates below first, or the first run is red.**
+      **Done.** Four jobs: the Swift packages + a universal unsigned app build with a `lipo` assertion; the Rust workspace with fmt/clippy/test plus a gate asserting the ffmpeg link set stays at three libraries; the landing build; and a hygiene job. *Never executed on a real runner* — the Xcode selection and Homebrew steps may need adjusting on the first push.
 
-- [ ] **`cargo fmt --all` — the tree is not formatted.**
+- [x] **`cargo fmt --all` — the tree is not formatted.**
       `cargo fmt --all --check` exits 1 with 7 diffs across 5 files (`sidewire-viewer/src/main.rs`,
       `src/renderer.rs`, `src/session.rs`, `tests/heartbeat.rs`, `tests/input_send.rs`). One command
       fixes it. `cargo clippy --workspace --all-targets` is already clean.
+      **Done.** `cargo fmt --all --check` is clean.
 
-- [ ] **Fix the flaky heartbeat test.**
+- [x] **Fix the flaky heartbeat test.**
       [`sidewire-viewer/tests/heartbeat.rs:185`](app/clients/sidewire-viewer/sidewire-viewer/tests/heartbeat.rs)
       `active_source_keeps_the_link_alive` fails 10–35% of runs depending on concurrent load
       (measured: 2/20 in isolation, 7/20 with the full binary). The failure is *not* a watchdog trip
       — it is a race where the Source drops its socket before the Display reads the queued `BYE`, so
       the close reason arrives as `transport` instead of `user`. Make the Source's shutdown
       deterministic: send `BYE`, flush, then block on a read until EOF before dropping the socket.
+      **Done, and it was not a test bug.** Dropping a socket with unread bytes in its receive queue makes the kernel emit an RST, and an RST lets the peer discard data it had already received — including the `BYE` written microseconds earlier. Fixed in the transport (`Wire::shutdown_gracefully`: flush → TLS `close_notify` → half-close → drain), wired into `Session::finish_close`, so it also fixes the real product path where the Mac saw `transport` instead of the reason actually sent. Verified 50/50 runs green, previously 10–35% failure.
 
-- [ ] **Fix the brittle OpenSSL cross-check test.**
+- [x] **Fix the brittle OpenSSL cross-check test.**
       [`sidewire-crypto/tests/identity.rs:104`](app/clients/sidewire-viewer/sidewire-crypto/tests/identity.rs)
       does `rsplit_once('=')` on `openssl dgst` output. LibreSSL prints a bare digest with no
       `(stdin)= ` prefix, so the parse yields `""` and the assertion fails. It currently fails on
@@ -60,8 +63,9 @@ These are things an outside reader hits in the first sixty seconds.
       whether GitHub's `macos-14` runner puts Homebrew OpenSSL first — do not assume it passes there.
       Better fix: drop the subprocess entirely and compare the 91-byte SPKI DER against a checked-in
       golden vector.
+      **Done.** Parses the last whitespace-separated token and validates it is 64 hex characters, skipping honestly if not. Verified passing — and *actually performing the cross-check*, not skipping — under both LibreSSL 3.3.6 and OpenSSL 3.6.3.
 
-- [ ] **Add `SECURITY.md`.**
+- [x] **Add `SECURITY.md`.**
       This project hand-rolls Field25519 and Elligator2 and implements a PAKE. Published without a
       disclosure channel, the first researcher who finds something files a public issue. Include: a
       contact address, "no released version yet — report against `main`", explicit scope (pairing /
@@ -69,15 +73,18 @@ These are things an outside reader hits in the first sixty seconds.
       bridge) and out-of-scope (landing site, unbuilt packaging), and a pointer to
       [`app/docs/05-security-and-pairing.md`](app/docs/05-security-and-pairing.md) as the threat
       model. Enable GitHub Private Vulnerability Reporting on the repo.
+      **Done.** Contact address is left as a marked placeholder for the owner to fill in.
 
-- [ ] **Add `CONTRIBUTING.md`, `.github/ISSUE_TEMPLATE/`, `PULL_REQUEST_TEMPLATE.md`, `CODEOWNERS`.**
+- [x] **Add `CONTRIBUTING.md`, `.github/ISSUE_TEMPLATE/`, `PULL_REQUEST_TEMPLATE.md`, `CODEOWNERS`.**
       None exist. `CONTRIBUTING.md` matters most: it is where "you need Xcode 16+, XcodeGen, and
       ffmpeg 7 for the Rust client" belongs, plus the ad-hoc-signing TCC caveat.
+      **Mostly done.** `CONTRIBUTING.md`, the two issue forms, `config.yml` and the PR template exist. `CODEOWNERS` is deliberately not created — it needs a GitHub username that has not been chosen.
 
-- [ ] **Harden `.gitignore` against signing material.**
+- [x] **Harden `.gitignore` against signing material.**
       Add `*.p12`, `*.pem`, `*.cer`, `*.mobileprovision`, `AuthKey_*.p8`, `*_ed_key`, and a generic
       `target/`. The Rust `target/` is already covered by
       `app/clients/sidewire-viewer/.gitignore`, but a root-level rule is cheap insurance.
+      **Done.**
 
 - [ ] **Add a screenshot or a short GIF to the README.**
       There is not one image or badge in any README. For a product whose entire pitch is *"a real
@@ -102,23 +109,26 @@ These are things an outside reader hits in the first sixty seconds.
       was on origin, never the commit. Now it fetches and refuses if the release commit is reachable
       from any `origin/*`, suggesting `git revert` instead.
 
-- [ ] **Add a strict mode to `app/scripts/release.sh`.**
+- [x] **Add a strict mode to `app/scripts/release.sh`.**
       [Line 152](app/scripts/release.sh): when the notarytool keychain profile is missing, the script
       builds an **unnotarized** DMG and `exit 0`s — and that `exit 0` sits *above* the Sparkle block,
       so the run also produces no `appcast.xml`. In CI that is a green job publishing an unsigned-in-
       practice artifact. Add `SIDEWIRE_STRICT=1` that turns the missing-credentials branch into a
       hard failure, and accept `--key/--key-id/--issuer` so no keychain profile is needed at all.
+      **Done.** `SIDEWIRE_STRICT=1` turns missing credentials into a hard failure, and the script now accepts an App Store Connect API key via `NOTARY_KEY_PATH`/`NOTARY_KEY_ID`/`NOTARY_ISSUER_ID`, so CI needs no keychain profile.
 
-- [ ] **Reorder `release.sh`: it deletes before it validates.**
+- [x] **Reorder `release.sh`: it deletes before it validates.**
       `rm -rf "$OUT" "$DD"` runs *before* the Sparkle preflight, so a guaranteed-to-fail run still
       wipes any previously built DMG, `appcast.xml`, and the resolved SPM artifacts that
       `generate-appcast.sh` depends on. Move the preflight above the cleanup.
+      **Done.** Verified: a run on an unconfigured tree now fails without creating or destroying `dist/`.
 
-- [ ] **Teach `generate-appcast.sh` to read the key from an environment variable.**
+- [x] **Teach `generate-appcast.sh` to read the key from an environment variable.**
       [Line 80](app/scripts/generate-appcast.sh) passes no key flag, so it only works against a login
       keychain. Sparkle 2.9.4's `generate_appcast` supports `--ed-key-file -`, reading the key from
       stdin (confirmed by reading Sparkle's own source — this is *not* the deprecated `-s` flag most
       guides suggest). The secret must be a single line with no trailing newline.
+      **Done.** Uses `--ed-key-file -` with `SPARKLE_ED_PRIVATE_KEY` when set, falling back to the login keychain.
 
 - [ ] **Write `.github/workflows/release-macos.yml`.**
       Tag-triggered. Import the Developer ID `.p12` from a base64 secret into a temporary keychain —
@@ -135,16 +145,18 @@ These are things an outside reader hits in the first sixty seconds.
 
 ### Versions
 
-- [ ] **Version desync produces a wrongly-named DMG.**
+- [x] **Version desync produces a wrongly-named DMG.**
       `package.json` and `landing/package.json` say `1.0.0`; [`app/project.yml:16`](app/project.yml)
       says `MARKETING_VERSION: "1.0"`. `release.sh` reads the latter, so the artifact is
       `Sidewire-1.0.dmg` — the exact defect `app/docs/09-next-stage.md` marks as `[done]`.
       Running any `pnpm version:*` fixes it as a side effect, but set it to `1.0.0` explicitly.
+      **Done.** `MARKETING_VERSION` is `1.0.0`.
 
-- [ ] **The Rust crate is outside the "one version drives everything" system.**
+- [x] **The Rust crate is outside the "one version drives everything" system.**
       [`Cargo.toml:12`](app/clients/sidewire-viewer/Cargo.toml) is `0.1.0` and `release.mjs` never
       touches it, so any `sidewire-viewer-vX.Y.Z` artifact would carry a version the release tooling
       does not manage. Either add it to `TARGETS` or document that the client versions separately.
+      **Done.** `release.mjs` now rewrites `[workspace.package] version` and refreshes `Cargo.lock`, and both are included in the release commit. Verified by dry run: all four version sources move together.
 
 - [ ] **The first changelog will span the entire history.**
       `lastTag()` returns null with no tags, so the range becomes `HEAD` and the first
@@ -165,16 +177,17 @@ These are things an outside reader hits in the first sixty seconds.
       was actually checked. vcpkg's ffmpeg port is LGPL by default, which contradicts the sweeping
       version of that claim.
 
-- [ ] **Add `THIRD-PARTY-LICENSES.md`.**
+- [x] **Add `THIRD-PARTY-LICENSES.md`.**
       `Cargo.lock` resolves 323 crates. `swift-crypto`, `swift-certificates` and `swift-asn1` are
       Apache-2.0 and carry a NOTICE-propagation obligation for redistributed binaries; `ring` has a
       non-standard licence with BoringSSL-derived portions. Generate it mechanically with
       `cargo about`, and add `cargo deny check licenses` to CI so a new GPL/AGPL transitive
       dependency fails the build rather than surprising you at release time.
+      **Done.** Generated from `cargo metadata` and the SPM pins.
 
 ### Security
 
-- [ ] **Unauthenticated LAN denial of service.**
+- [x] **Unauthenticated LAN denial of service.**
       [`TCPListener.swift:170`](app/Packages/SidewireCore/Sources/SidewireCore/TCPListener.swift)
       hands the connection to `onConnection` at TCP *accept*, and
       [`DisplayController.swift:273`](app/Sidewire/Roles/Display/DisplayController.swift) immediately
@@ -184,25 +197,29 @@ These are things an outside reader hits in the first sixty seconds.
       consulted in `handlePairMsg`. **Fix:** hold the incoming transport aside, let it reach TLS
       ready *and* complete CPace, and only then close the incumbent. Also cap concurrent
       un-authenticated accepts. This will be the first thing a security-minded reader tries.
+      **Done.** An accepted connection is now held in `pendingSessions` and cannot touch any state; `Session.onAuthenticated` fires only after CPace succeeds or an existing pin matches, and only then does `promote(_:)` displace the incumbent. Opening the main window also moved behind that gate. Un-authenticated connections are capped at four.
 
-- [ ] **Close the second fail-open path in `Session`.**
+- [x] **Close the second fail-open path in `Session`.**
       [`Session.swift:274`](app/Packages/SidewireCore/Sources/SidewireCore/Session.swift):
       `guard let pairing = pairingConfig, let tls = tlsPeerInfo else { beginApplicationHandshake(); return }`
       — if either is nil the session skips CPace and pinning entirely. The only thing keeping that
       unreachable is [`TCPTransport.swift:131`](app/Packages/SidewireCore/Sources/SidewireCore/TCPTransport.swift).
       No test asserts that a nil-identity transport is refused, so one refactor separates this from
       silently granting unauthenticated sessions. Add the test, then make the guard fail closed.
+      **Done.** The `pairingConfig`/`tlsPeerInfo` guard is split: no pairing config still proceeds (unit-test harnesses), but a pairing link with no TLS peer info now closes with `BYE(auth)` instead of skipping CPace and pinning.
 
-- [ ] **`LocalIdentity.shared` crashes the app on any keychain failure.**
+- [x] **`LocalIdentity.shared` crashes the app on any keychain failure.**
       [`LocalIdentity.swift:55`](app/Packages/SidewireCore/Sources/SidewireCore/LocalIdentity.swift)
       calls `fatalError` inside a lazy static initialiser, and it is reached on every Display start.
       A locked or access-denied keychain becomes a hard crash with no user-facing error.
+      **Done.** `shared` is now optional, backed by a `Result` that retains the error as `sharedFailure`. All four call sites guard and surface a user-facing message instead of crashing.
 
-- [ ] **Pin Sparkle to an exact version.**
+- [x] **Pin Sparkle to an exact version.**
       [`app/project.yml:59`](app/project.yml) declares `from: 2.0.0` — an open upper bound on the
       app's only network-facing component — and the app target's `Package.resolved` lives inside the
       gitignored `.xcodeproj`, so nothing pins it. A signed, notarized release would ship whatever
       SPM happened to resolve that day. Use `exactVersion` (or commit a resolved file).
+      **Done.** `exactVersion: 2.9.5`. This mattered more than it looked: Sparkle had already drifted 2.9.4 → 2.9.5 on its own between audit and fix.
 
 ---
 
@@ -226,10 +243,11 @@ These are things an outside reader hits in the first sixty seconds.
       README says "developed on Xcode 26 / Swift 6". The build is warning-free *in Swift 5 mode* —
       no data-race checking has ever been applied to this fairly concurrent code.
 
-- [ ] **`swift test` in `SidewireCore` dirties the working tree.** It rewrites
+- [x] **`swift test` in `SidewireCore` dirties the working tree.** It rewrites
       `app/Packages/SidewireCore/Package.resolved` to drop a stale `sparkle` pin that does not belong
       there (`Package.swift` never mentions Sparkle). Every contributor's first test run produces a
       spurious diff. Fix the checked-in file.
+      **Done, and the original diagnosis was incomplete.** The file does not merely hold a stale pin — it oscillates: `swift test` resolves the package alone and drops Sparkle, `xcodebuild` resolves the whole project and writes it back, so *whichever* version is committed leaves someone with a spurious diff. It is a library's resolved file, which SwiftPM ignores in consumers, so it is now untracked. The app's real lock is the exact Sparkle pin.
 
 - [ ] **Review the `--vd-helper` re-exec path.** `app/Sidewire/App/main.swift` dispatches on a bare
       `CommandLine.arguments.contains("--vd-helper")` with no ancestry check, and
@@ -242,7 +260,7 @@ These are things an outside reader hits in the first sixty seconds.
 
 ### The Rust client
 
-- [ ] **Drop four unused ffmpeg libraries.**
+- [x] **Drop four unused ffmpeg libraries.**
       [`Cargo.toml:32`](app/clients/sidewire-viewer/Cargo.toml) is `ffmpeg-the-third = "3"` with
       default features, so the binary links **seven** ffmpeg libraries (`otool -L`), not the three
       the packaging doc assumes. `avdevice` is the worst: it drags in v4l2/ALSA/X11-grab and
@@ -250,6 +268,7 @@ These are things an outside reader hits in the first sixty seconds.
       `{ version = "3", default-features = false, features = ["codec", "format", "non-exhaustive-enums"] }`
       — note `["codec"]` alone does **not** compile (the packet module references
       `av_interleaved_write_frame` ungated), so `format` must stay.
+      **Done.** Verified with `otool -L`: seven libraries → three (`libavcodec`, `libavformat`, `libavutil`), tests still green. A CI gate now fails if the count grows again.
 
 - [ ] **Show the pairing PIN in the window.**
       [`main.rs:242`](app/clients/sidewire-viewer/sidewire-viewer/src/main.rs) prints it only to
@@ -291,40 +310,48 @@ These are things an outside reader hits in the first sixty seconds.
       `site.ts`, and the `Sitemap:` line in `public/robots.txt` (nothing derives robots.txt from
       `site`).
 
-- [ ] **Copy that outruns the product.** "Download for macOS" with no release and no notarized
+- [x] **Copy that outruns the product.** "Download for macOS" with no release and no notarized
       build; a whole Windows/Linux section presented as shipping when no binary has ever been built.
       Re-frame as "Coming next" until the artifacts exist.
+      **Done.** Windows/Linux is now future tense with a "Coming next" badge, the download CTAs read "Watch for the v1 release", and a new FAQ answers "Where do I download it?" honestly.
 
-- [ ] **"Discovers Macs on the LAN" is backwards.**
+- [x] **"Discovers Macs on the LAN" is backwards.**
       [`CrossPlatform.astro:31`](landing/src/components/CrossPlatform.astro) — the Rust client is
       always the Display, so it *advertises* `_sidewire._tcp` and the Mac browses for it.
       `--discover` exists only as a diagnostic.
+      **Done.** Now "Announces itself on the LAN". A second factual error surfaced in the same component and was fixed too: "GPU-accelerated decode" — decode is *software* (libavcodec); only the YUV→RGB conversion and present are on the GPU.
 
-- [ ] **No mobile navigation at all.**
+- [x] **No mobile navigation at all.**
       [`Nav.astro:97`](landing/src/components/Nav.astro) hides `.nav-links` below 760px with no
       replacement — on every phone the four primary nav items simply vanish. A `<details>`-based
       menu needs no JavaScript and is keyboard-accessible for free, matching the site's no-JS stance.
+      **Done.** A `<details>`-based disclosure menu below 760px, no JavaScript.
 
-- [ ] **The primary button fails WCAG AA.**
+- [x] **The primary button fails WCAG AA.**
       [`global.css:201`](landing/src/styles/global.css) sets `#06121b` on a
       `#22d3ee → #6366f1` gradient. At the indigo end that is ~4.27:1 at 15.7px/600 — below the
       4.5:1 threshold, on the single most important element, repeated five times.
+      **Done.** The failing element was the gradient's indigo stop, not the text: `--indigo` `#6366f1` → `#7276f4` takes the worst point from 4.24:1 to 5.06:1. A new `--ink-on-accent` token replaced four hardcoded copies, so every `--accent-grad` surface is fixed at once. Independently re-verified.
 
-- [ ] **No skip-to-content link.** Focus styling is otherwise deliberate, so this is an isolated gap.
+- [x] **No skip-to-content link.** Focus styling is otherwise deliberate, so this is an isolated gap.
+      **Done.**
 
-- [ ] **No structured data.** The FAQ is already semantic `<details>/<summary>` driven by typed data,
+- [x] **No structured data.** The FAQ is already semantic `<details>/<summary>` driven by typed data,
       so a `FAQPage` block is nearly free; the spec table is a textbook `SoftwareApplication`.
+      **Done.** `FAQPage` and `SoftwareApplication`, generated from the same typed data the page renders.
 
-- [ ] **Harden the container.** nginx runs its master as root, `server_tokens` is on, and there is no
+- [x] **Harden the container.** nginx runs its master as root, `server_tokens` is on, and there is no
       CSP or `Permissions-Policy` ([`nginx.conf:20`](landing/nginx.conf)). The site makes zero
       external requests — no web fonts, no CDN, no third-party scripts — so a near-maximally strict
       CSP would apply with no breakage. Switch to `nginxinc/nginx-unprivileged`. Remember the file's
       own note about nginx's `add_header` reset rule: repeat new headers inside the `/_astro/` block.
+      **Done.** `server_tokens off`, a `default-src 'none'` CSP and a `Permissions-Policy`, repeated inside `/_astro/`; the image is now `nginx-unprivileged` on port 8080.
 
-- [ ] **Add privacy and terms pages, and link the licence.** The site makes strong privacy claims
+- [x] **Add privacy and terms pages, and link the licence.** The site makes strong privacy claims
       ("No accounts. No analytics. No telemetry.") that are actually true — Sparkle's appcast fetch
       is the only network call in the entire product. A short honest privacy page turns an
       unverifiable marketing line into the product's strongest differentiator.
+      **Done.**
 
 - [ ] **The "Docs" CTA leads to the internal engineering docs**, which is where the honest
       self-assessment lives. Either point it somewhere user-facing or accept that visitors will read
@@ -334,8 +361,9 @@ These are things an outside reader hits in the first sixty seconds.
       On GitHub it is inert. GitHub Actions + Pages, or Cloudflare, or keep the container — but pick
       one, because right now nothing ships the site.
 
-- [ ] **Remove the dead `public/og.svg`.** It is built into the image and referenced by nothing;
+- [x] **Remove the dead `public/og.svg`.** It is built into the image and referenced by nothing;
       `Base.astro` uses `og.png`.
+      **Done.**
 
 ---
 
@@ -416,7 +444,7 @@ Run these and expect silence:
 git ls-files -z | xargs -0 rg -l '\p{Cyrillic}'
 
 # No personal data.
-git grep -nE 'alexey\.lunin0|Aleksei|<YOUR_TEAM_ID>|/Users/'
+git grep -nIE '[A-Za-z0-9._%+-]+@(gmail|yandex|mail|outlook|icloud)\.[A-Za-z]{2,}|/Users/[a-z]+/'
 
 # No dead internal links.
 git grep -n '11-handoff\|12-remaining'

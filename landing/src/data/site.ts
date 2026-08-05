@@ -9,11 +9,22 @@
 // ─── Owner-set links ────────────────────────────────────────────────────────────────────────
 // Set to the repo's actual owner (github.com/lunindev/sidewire). `download` points at the latest
 // release page; once you publish signed assets, GitHub serves them there.
+//
+// NOTE ON TENSE: there is no published release yet, so nothing on this page may promise a binary.
+// `download` is deliberately labelled as "watch for the release" wherever it appears — keep it that
+// way until a signed, notarized artifact actually exists on that page.
 export const links = {
   github: 'https://github.com/lunindev/sidewire',
   download: 'https://github.com/lunindev/sidewire/releases/latest',
   docs: 'https://github.com/lunindev/sidewire/tree/main/app/docs',
+  license: 'https://github.com/lunindev/sidewire/blob/main/LICENSE',
 } as const;
+
+/** In-repo legal pages, linked from the footer. */
+export const legal = [
+  { label: 'Privacy', href: '/privacy' },
+  { label: 'Terms', href: '/terms' },
+] as const;
 
 export const site = {
   name: 'Sidewire',
@@ -29,11 +40,13 @@ export interface NavLink {
   readonly href: string;
 }
 
+// Root-relative rather than bare fragments, so the same Nav/Footer work from /privacy, /terms and
+// /404. From the home page these are still same-document navigations, so smooth scrolling is kept.
 export const nav: readonly NavLink[] = [
-  { label: 'Features', href: '#features' },
-  { label: 'How it works', href: '#how' },
-  { label: 'Specs', href: '#specs' },
-  { label: 'FAQ', href: '#faq' },
+  { label: 'Features', href: '/#features' },
+  { label: 'How it works', href: '/#how' },
+  { label: 'Specs', href: '/#specs' },
+  { label: 'FAQ', href: '/#faq' },
 ];
 
 // ─── Feature grid ───────────────────────────────────────────────────────────────────────────
@@ -52,6 +65,11 @@ export interface Feature {
     | 'refresh';
   /** Feature cards that should span two columns on wide layouts. */
   readonly wide?: boolean;
+  /**
+   * Short badge for anything that is not shipping yet. Present on a card = the card describes
+   * work in progress, and its copy must be written in the future tense.
+   */
+  readonly badge?: string;
 }
 
 export const features: readonly Feature[] = [
@@ -88,8 +106,9 @@ export const features: readonly Feature[] = [
   },
   {
     icon: 'devices',
-    title: 'A PC can play too',
-    body: 'A spare Windows or Linux machine can be the extra screen via the native client — it speaks the identical wire protocol. (The main machine, the one gaining a screen, is always a Mac.)',
+    title: 'A PC will play too',
+    badge: 'Coming next',
+    body: 'A native Rust client will let a spare Windows or Linux machine be the extra screen — it already speaks the identical wire protocol. No Windows or Linux build has been published yet. (The main machine, the one gaining a screen, is always a Mac.)',
   },
   {
     icon: 'refresh',
@@ -135,7 +154,7 @@ export const specs: readonly Spec[] = [
   { label: 'Transport', value: 'TCP · TLS 1.3 · CPace PAKE pairing' },
   { label: 'Link', value: 'Thunderbolt direct or LAN · adaptive bitrate' },
   { label: 'Platform', value: 'Universal 2 (Apple silicon + Intel) · macOS 14+' },
-  { label: 'Extra‑screen client', value: 'macOS, or native Windows / Linux (Rust)' },
+  { label: 'Extra‑screen client', value: 'macOS · native Windows / Linux (Rust) in development' },
   { label: 'Updates', value: 'Sparkle 2 · EdDSA‑signed appcast' },
   { label: 'Privacy', value: '100% local · no accounts · no telemetry' },
 ];
@@ -161,7 +180,11 @@ export const faqs: readonly Faq[] = [
   },
   {
     q: 'Can I use a Windows or Linux PC as the extra screen?',
-    a: 'Yes, with the native client — it pairs with a Mac and speaks the exact same protocol. The one rule: the machine that gains the screen (the “Main Mac”) has to be a Mac, because creating a virtual display is macOS‑specific.',
+    a: 'Not yet — that client is still in development. The native Rust client is written and matches the protocol byte for byte, but no Windows or Linux build has been published, so today the extra screen has to be a Mac. The one permanent rule: the machine that gains the screen (the “Main Mac”) has to be a Mac, because creating a virtual display is macOS‑specific.',
+  },
+  {
+    q: 'Where do I download it?',
+    a: 'Nowhere yet — there is no released build. The full source is on GitHub and you can build it yourself; watch the repository to hear about the first signed release.',
   },
   {
     q: 'Is my screen data sent anywhere?',

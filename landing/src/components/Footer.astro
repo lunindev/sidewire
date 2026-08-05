@@ -1,5 +1,5 @@
 ---
-import { nav, links, site } from '../data/site';
+import { nav, links, legal, site } from '../data/site';
 import Icon from './Icon.astro';
 
 const year = new Date().getFullYear();
@@ -9,7 +9,7 @@ const year = new Date().getFullYear();
   <hr class="wire-rule" />
   <div class="container footer-inner">
     <div class="footer-brand">
-      <a href="#top" class="brand" aria-label={`${site.name} home`}>
+      <a href="/#top" class="brand" aria-label={`${site.name} home`}>
         <span class="brand-mark" aria-hidden="true"></span>
         <span>{site.name}</span>
       </a>
@@ -20,11 +20,15 @@ const year = new Date().getFullYear();
       {nav.map((l) => <a href={l.href}>{l.label}</a>)}
       <a href={links.docs} target="_blank" rel="noopener">Docs</a>
       <a href={links.github} target="_blank" rel="noopener">GitHub</a>
+      {legal.map((l) => <a href={l.href}>{l.label}</a>)}
+      <a href={links.license} target="_blank" rel="noopener">Licence</a>
     </nav>
   </div>
 
   <div class="container footer-base">
-    <span>© {year} {site.name}. MIT‑licensed.</span>
+    <span>
+      © {year} {site.name}. <a href={links.license} target="_blank" rel="noopener">MIT‑licensed</a>.
+    </span>
     <a class="icon-link" href={links.github} target="_blank" rel="noopener" aria-label="GitHub">
       <Icon name="github" size={18} />
     </a>
@@ -77,6 +81,14 @@ const year = new Date().getFullYear();
     justify-content: space-between;
     color: var(--ink-mut);
     font-size: 0.86rem;
+  }
+  .footer-base span a {
+    text-decoration: underline;
+    text-decoration-color: var(--line-strong);
+    text-underline-offset: 3px;
+  }
+  .footer-base span a:hover {
+    color: var(--ink);
   }
   .icon-link {
     color: var(--ink-mut);

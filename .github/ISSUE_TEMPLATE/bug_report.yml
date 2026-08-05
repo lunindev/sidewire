@@ -1,0 +1,198 @@
+name: Bug report
+description: Something in the macOS app or the Rust client does not work
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing. Sidewire is pre-release and has never been run on two physical Macs,
+        so a report from real hardware is genuinely valuable.
+
+        **Security problems do not go here** — use GitHub's *Report a vulnerability* button on the
+        Security tab instead. `SECURITY.md` at the repository root has the details.
+
+        Sidewire involves two machines. Almost every unhelpful bug report is one that describes
+        only one of them, so the fields below ask about both.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+      placeholder: |
+        Expected: the Source connects and the second desktop appears.
+        Actual: the Display window opens black and the Source shows "reconnecting" in a loop.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: >
+        Numbered steps from launching the app. Say whether this was a first-time PIN pairing or a
+        reconnect to an already-paired peer — those take completely different code paths.
+      placeholder: |
+        1. Launch Sidewire on both Macs.
+        2. Pick Source on the MacBook, Display on the iMac.
+        3. First-time pairing: entered the 6-digit PIN on the Source.
+        4. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reliability
+    attributes:
+      label: How reliably does it reproduce?
+      options:
+        - Every time
+        - Most attempts
+        - Occasionally
+        - Saw it once
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: "### The Source machine (creates the virtual display, captures and encodes — always a Mac)"
+
+  - type: input
+    id: source-model
+    attributes:
+      label: Source — Mac model and chip
+      placeholder: "MacBook Pro 16\" 2023, M2 Max"
+    validations:
+      required: true
+
+  - type: input
+    id: source-os
+    attributes:
+      label: Source — macOS version
+      description: Apple menu → About This Mac. Sidewire requires macOS 14+.
+      placeholder: "macOS 15.3"
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: "### The Display machine (shows the stream, forwards keyboard and mouse)"
+
+  - type: dropdown
+    id: display-kind
+    attributes:
+      label: Display — what is it running?
+      options:
+        - A Mac running the Sidewire app
+        - Windows, running the Rust client (sidewire-viewer)
+        - Linux, running the Rust client (sidewire-viewer)
+    validations:
+      required: true
+
+  - type: input
+    id: display-model
+    attributes:
+      label: Display — machine model / chip, or PC spec + GPU
+      description: >
+        For a Mac, the model and chip. For the Rust client, the OS version, CPU and GPU — the
+        renderer is wgpu (Vulkan/D3D), so the GPU driver matters.
+      placeholder: "iMac 27\" 2019, Intel i9  —  or:  Windows 11 23H2, Ryzen 7 5800X, RTX 3070"
+    validations:
+      required: true
+
+  - type: input
+    id: display-os
+    attributes:
+      label: Display — OS version
+      placeholder: "macOS 14.7  —  or:  Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: "### Session details"
+
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      description: >
+        Thunderbolt is a direct cable (the Display advertises its 169.254.x.x cable IP and the
+        Source shows a green Thunderbolt button). Wi-Fi is discovery over Bonjour on the LAN.
+      options:
+        - Thunderbolt (direct cable)
+        - Wi-Fi / LAN
+        - Connect by IP, typed manually
+        - Both — it happens either way
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: codec
+    attributes:
+      label: Codec (Settings ⌘, → Codec)
+      options:
+        - "Auto (HEVC if available)"
+        - "HEVC (H.265)"
+        - "H.264"
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: rust-client
+    attributes:
+      label: Was the Rust client (sidewire-viewer) involved?
+      description: >
+        Live Rust↔Swift interop has never been exercised — only Rust↔Rust loopback and the
+        byte-exact protocol vectors. If the answer is yes, say so loudly; that is uncharted ground.
+      options:
+        - "No — Mac to Mac only"
+        - "Yes — Rust client as the Display against a Mac Source"
+        - "Yes — Rust client against another Rust client (loopback)"
+        - "Yes — Rust client with --file, --discover or --handshake-only (no live session)"
+    validations:
+      required: true
+
+  - type: input
+    id: resolution
+    attributes:
+      label: Resolution and frame-rate settings, if not the defaults
+      placeholder: "2560×1600, 60 fps, 30 Mbps, HiDPI"
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: >
+        There is no released version yet, so this is a git commit SHA. `git rev-parse --short HEAD`.
+      placeholder: "649ed3b"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, close reason, or console output
+      description: >
+        If the session ended, the close reason is the most useful single fact — `auth`,
+        `keyChanged`, `rateLimited`, `superseded`, `transport`, `protocol`, `role`, `error` or
+        `user`. For the Rust client, paste its stdout. This is rendered as a code block; no
+        backticks needed.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: >
+            I checked TODO.md — this is not one of the already-known open items (the flaky heartbeat
+            test, the unformatted Rust tree, the missing CI, the unbuilt packaging).
+          required: true
+        - label: This is not a security vulnerability. (Those go through private reporting.)
+          required: true

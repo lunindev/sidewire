@@ -1,0 +1,66 @@
+---
+/**
+ * JSON-LD for the home page, generated from the SAME typed data the page renders — never
+ * hand-written duplicates, so the markup cannot drift from the visible copy.
+ *
+ *  - FAQPage           ← `faqs`  (the <details> list in Faq.astro)
+ *  - SoftwareApplication ← `site` + `specs` (the table in TechBand.astro)
+ *
+ * Rendered as <script type="application/ld+json">, which browsers never execute — the HTML
+ * "prepare the script element" algorithm bails out before the CSP check because the type is not a
+ * JavaScript MIME type. That is why nginx can still ship `script-src 'none'` (see nginx.conf).
+ */
+import { site, links, specs, faqs } from '../data/site';
+
+const origin = (Astro.site ?? new URL(site.url)).origin;
+
+const faqPage = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: faqs.map((f) => ({
+    '@type': 'Question',
+    name: f.q,
+    acceptedAnswer: { '@type': 'Answer', text: f.a },
+  })),
+};
+
+/** The spec table, verbatim, as the feature list. */
+const featureList = specs.map((s) => `${s.label}: ${s.value}`);
+
+/** Read straight off the spec rows so the two can never disagree. */
+const operatingSystem = specs.find((s) => s.label === 'Platform')?.value ?? 'macOS';
+
+const softwareApplication = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: site.name,
+  alternateName: site.tagline,
+  description: site.description,
+  applicationCategory: 'UtilitiesApplication',
+  operatingSystem,
+  url: origin,
+  softwareHelp: links.docs,
+  codeRepository: links.github,
+  license: links.license,
+  isAccessibleForFree: true,
+  featureList,
+  // No release exists yet, so there is deliberately no `softwareVersion`, no `downloadUrl`, and
+  // no aggregateRating here. Add them when a signed build is actually published.
+  offers: {
+    '@type': 'Offer',
+    price: '0',
+    priceCurrency: 'USD',
+    availability: 'https://schema.org/PreOrder',
+    url: links.download,
+  },
+};
+
+/**
+ * `</script>` cannot appear inside a script element, whatever the type. The data is ours, but
+ * escaping it is one line and removes the whole class of problem.
+ */
+const encode = (value: unknown) => JSON.stringify(value).replace(/</g, '\\u003c');
+---
+
+<script type="application/ld+json" is:inline set:html={encode(softwareApplication)} />
+<script type="application/ld+json" is:inline set:html={encode(faqPage)} />

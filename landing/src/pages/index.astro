@@ -9,11 +9,13 @@ import TechBand from '../components/TechBand.astro';
 import Faq from '../components/Faq.astro';
 import CTA from '../components/CTA.astro';
 import Footer from '../components/Footer.astro';
+import StructuredData from '../components/StructuredData.astro';
 ---
 
 <Base>
+  <StructuredData slot="head" />
   <Nav />
-  <main>
+  <main id="main">
     <Hero />
     <Features />
     <HowItWorks />

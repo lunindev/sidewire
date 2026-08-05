@@ -26,15 +26,22 @@ import Icon from './Icon.astro';
       <div class="hero-cta">
         <a class="btn btn-primary" href={links.download}>
           <Icon name="arrow" size={18} />
-          Download for macOS
+          Watch for the v1 release
         </a>
         <a class="btn btn-ghost" href="#how">See how it works</a>
       </div>
 
+      <p class="hero-status">
+        There’s no packaged build yet — the source is open, and the release page above is where the
+        first signed macOS build will land.
+      </p>
+
       <ul class="hero-trust">
         <li>Universal 2 · macOS 14+</li>
         <li>100% local — no accounts</li>
-        <li>MIT‑licensed</li>
+        <li>
+          <a href={links.license} target="_blank" rel="noopener">MIT‑licensed</a>
+        </li>
       </ul>
     </div>
 
@@ -71,8 +78,14 @@ import Icon from './Icon.astro';
     flex-wrap: wrap;
     gap: 14px;
   }
+  .hero-status {
+    margin-top: 18px;
+    max-width: 46ch;
+    font-size: 0.9rem;
+    color: var(--ink-mut);
+  }
   .hero-trust {
-    margin: 28px 0 0;
+    margin: 22px 0 0;
     padding: 0;
     list-style: none;
     display: flex;
@@ -84,6 +97,14 @@ import Icon from './Icon.astro';
   .hero-trust li {
     position: relative;
     padding-left: 16px;
+  }
+  .hero-trust a {
+    text-decoration: underline;
+    text-decoration-color: var(--line-strong);
+    text-underline-offset: 3px;
+  }
+  .hero-trust a:hover {
+    color: var(--ink);
   }
   .hero-trust li::before {
     content: "";

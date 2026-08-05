@@ -1,0 +1,32 @@
+# Blank issues are disabled so that security reports cannot be filed as a public issue by
+# reflex. The first contact link below is the intended route for anything security-related.
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/lunindev/sidewire/security/advisories/new
+    about: >
+      Never file a security problem as a public issue. This project hand-rolls Field25519 and
+      Elligator2 arithmetic and implements a CPace PAKE over certificate-pinned TLS 1.3, and a peer
+      that gets past pairing gets remote control of the primary Mac. Use GitHub Private
+      Vulnerability Reporting; SECURITY.md has the scope, the known weaknesses, and the 90-day
+      coordinated disclosure window.
+
+  - name: Known gaps and the pre-release backlog
+    url: https://github.com/lunindev/sidewire/blob/main/TODO.md
+    about: >
+      There is no released version, no CI, no notarized build, and nothing has run on two physical
+      Macs. TODO.md lists all of it, including the unauthenticated LAN denial of service and the
+      fail-open path in Session.swift. Please check it before filing.
+
+  - name: Build and contribution setup
+    url: https://github.com/lunindev/sidewire/blob/main/CONTRIBUTING.md
+    about: >
+      Xcode 16+ and XcodeGen for the macOS app, ffmpeg@7 plus three environment variables for the
+      Rust client, pnpm for the landing site — plus the ad-hoc-signing caveat that resets your
+      Screen Recording and Accessibility grants on every rebuild.
+
+  - name: The specification
+    url: https://github.com/lunindev/sidewire/blob/main/app/docs/README.md
+    about: >
+      Architecture, the normative wire protocol, the media pipeline, and the security and pairing
+      design. Worth reading before proposing a protocol change.

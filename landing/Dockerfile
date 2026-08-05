@@ -20,11 +20,14 @@ COPY . .
 RUN pnpm build
 
 # ── serve stage ──────────────────────────────────────────────────────────────
-FROM nginx:1.27-alpine AS landing-prod
-# Replace the default server block with our static-site config.
+# `nginx-unprivileged` is the stock nginx image with the master process running as uid 101 instead
+# of root, its pid/temp paths moved somewhere that user can write, and the default server on 8080
+# (a non-root process cannot bind a privileged port). Same nginx, one fewer root process.
+FROM nginxinc/nginx-unprivileged:1.27-alpine AS landing-prod
+# Replace the default server block with our static-site config (it listens on 8080 to match).
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-  CMD wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1
+  CMD wget -qO- http://127.0.0.1:8080/ >/dev/null 2>&1 || exit 1
 CMD ["nginx", "-g", "daemon off;"]

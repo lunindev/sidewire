@@ -5,7 +5,7 @@ import Icon from './Icon.astro';
 
 <header class="nav">
   <div class="container nav-inner">
-    <a href="#top" class="brand" aria-label={`${site.name} home`}>
+    <a href="/#top" class="brand" aria-label={`${site.name} home`}>
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">{site.name}</span>
     </a>
@@ -18,7 +18,20 @@ import Icon from './Icon.astro';
       <a class="icon-link" href={links.github} target="_blank" rel="noopener" aria-label="GitHub">
         <Icon name="github" size={20} />
       </a>
-      <a class="btn btn-primary btn-sm" href={links.download}>Download</a>
+      <a class="btn btn-primary btn-sm" href={links.download}>Releases</a>
+
+      <!-- Mobile disclosure. <details> gives us open/close, Esc, and full keyboard operation with
+           zero JavaScript — the whole site ships none. Hidden again at >=760px, where .nav-links
+           takes over. -->
+      <details class="nav-menu">
+        <summary>
+          <span class="menu-bars" aria-hidden="true"></span>
+          <span class="menu-word">Menu</span>
+        </summary>
+        <nav class="nav-menu-panel" aria-label="Primary, compact">
+          {nav.map((l) => <a href={l.href}>{l.label}</a>)}
+        </nav>
+      </details>
     </div>
   </div>
 </header>
@@ -38,6 +51,8 @@ import Icon from './Icon.astro';
     justify-content: space-between;
     height: 64px;
     gap: 20px;
+    /* anchor for the mobile disclosure panel */
+    position: relative;
   }
   .brand {
     display: inline-flex;
@@ -58,8 +73,8 @@ import Icon from './Icon.astro';
     content: "";
     position: absolute;
     inset: 6px 2px;
-    border-left: 2px solid rgba(6, 18, 27, 0.85);
-    border-right: 2px solid rgba(6, 18, 27, 0.85);
+    border-left: 2px solid color-mix(in srgb, var(--ink-on-accent) 85%, transparent);
+    border-right: 2px solid color-mix(in srgb, var(--ink-on-accent) 85%, transparent);
   }
   .brand-name {
     font-size: 1.05rem;
@@ -94,14 +109,132 @@ import Icon from './Icon.astro';
     font-size: 0.9rem;
     border-radius: 10px;
   }
+
+  /* ── Mobile disclosure menu ──────────────────────────────────────────────────────────────
+     Off by default: above 760px the inline .nav-links are the navigation and this must not
+     appear at all. */
+  .nav-menu {
+    display: none;
+  }
+  .nav-menu summary {
+    /* Kill both default markers — the site draws its own (.menu-bars). */
+    list-style: none;
+    /* Containing block for the visually-hidden label at the narrowest width. The PANEL is
+       deliberately NOT anchored here — it hangs off .nav-inner so it can span the container. */
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line-strong);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--ink);
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+  .nav-menu summary::-webkit-details-marker {
+    display: none;
+  }
+  .nav-menu summary::marker {
+    content: "";
+  }
+  .nav-menu summary:hover {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.24);
+  }
+  .menu-word {
+    line-height: 1;
+  }
+
+  /* Hamburger → cross, drawn from one element and its two pseudo-elements. */
+  .menu-bars,
+  .menu-bars::before,
+  .menu-bars::after {
+    width: 16px;
+    height: 2px;
+    border-radius: 2px;
+    background: currentColor;
+  }
+  .menu-bars {
+    position: relative;
+    flex: none;
+    transition: background-color 0.18s ease;
+  }
+  .menu-bars::before,
+  .menu-bars::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    transition: transform 0.18s ease;
+  }
+  .menu-bars::before {
+    top: -5px;
+  }
+  .menu-bars::after {
+    top: 5px;
+  }
+  .nav-menu[open] .menu-bars {
+    background-color: transparent;
+  }
+  .nav-menu[open] .menu-bars::before {
+    transform: translateY(5px) rotate(45deg);
+  }
+  .nav-menu[open] .menu-bars::after {
+    transform: translateY(-5px) rotate(-45deg);
+  }
+
+  /* Drops out of the header, spanning the container's content width. */
+  .nav-menu-panel {
+    position: absolute;
+    top: calc(100% + 14px);
+    right: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 8px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--panel) 96%, transparent);
+    backdrop-filter: saturate(140%) blur(12px);
+    box-shadow: var(--shadow);
+    font-size: 1rem;
+    color: var(--ink-dim);
+  }
+  .nav-menu-panel a {
+    padding: 12px 14px;
+    border-radius: 10px;
+  }
+  .nav-menu-panel a:hover {
+    color: var(--ink);
+    background: rgba(255, 255, 255, 0.05);
+  }
+
   @media (max-width: 760px) {
     .nav-links {
       display: none;
+    }
+    .nav-menu {
+      display: block;
     }
   }
   @media (max-width: 420px) {
     .icon-link {
       display: none;
+    }
+    /* Brand + Releases + Menu is already tight here — the bars carry the meaning. */
+    .menu-word {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+    .nav-menu summary {
+      padding: 9px 11px;
     }
   }
 </style>

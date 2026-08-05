@@ -39,8 +39,13 @@ const ogImage = new URL('/og.png', Astro.site ?? site.url).href;
     <meta name="twitter:title" content={pageTitle} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImage} />
+
+    <!-- Per-page <head> extras (JSON-LD, etc.). See components/StructuredData.astro. -->
+    <slot name="head" />
   </head>
   <body>
+    <!-- First tab stop on every page. Every page's <main> must carry id="main". -->
+    <a class="skip-link" href="#main">Skip to content</a>
     <slot />
   </body>
 </html>

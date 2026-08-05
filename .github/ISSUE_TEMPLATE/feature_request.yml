@@ -1,0 +1,86 @@
+name: Feature request
+description: Suggest a capability or a change in behaviour
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sidewire is pre-release and the backlog is already long — `TODO.md` at the repository root
+        is the authoritative list, and it is honest about what is missing. Please skim it first:
+        packaging for Windows and Linux, the PIN overlay in the Rust client, hardware decode, and
+        additional locales are all already tracked.
+
+        The scope is deliberately narrow: **a real second desktop between two machines you own,
+        entirely local — no accounts, no cloud, no relay, no telemetry.** Requests that need a
+        server or a hosted service are out of scope by design, not by omission.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What are you trying to do that Sidewire makes hard or impossible today? Describe the
+        situation, not the solution.
+      placeholder: >
+        When I close the lid on the Display Mac the session dies and I have to re-connect manually.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the project?
+      options:
+        - The macOS app — Source role (virtual display, capture, encode, input injection)
+        - The macOS app — Display role (presentation, input capture)
+        - The macOS app — UI, settings or onboarding
+        - The wire protocol or pairing crypto
+        - The Rust client (Windows/Linux Display)
+        - Build, packaging or distribution
+        - The landing site
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: protocol-change
+    attributes:
+      label: Would this change the wire protocol?
+      description: >
+        Anything altering framing, message payloads, or the pairing exchange is a protocol change.
+        It means updating `app/docs/02-protocol.md` (normative), regenerating
+        `app/protocol-vectors/`, and implementing it in both Swift and Rust. Say so up front — it
+        changes the conversation entirely.
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including existing workarounds, and why they are not enough.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked TODO.md and this is not already tracked there.
+          required: true
+        - label: >
+            This does not require a cloud service, an account system, a relay server, or telemetry.
+          required: true

@@ -21,12 +21,23 @@
   --ink-dim: #a6adbb;
   --ink-mut: #7f8896;
 
-  /* Brand — the "wire current" */
+  /* Brand — the "wire current".
+     `--indigo` is the DARK end of the accent gradient, and every surface painted with
+     `--accent-grad` carries near-black ink (`--ink-on-accent`) on top: the primary button, the
+     step numerals, the brand mark, the check ticks. So the darkest point of the gradient sets the
+     contrast floor for the whole design.
+
+     It used to be #6366f1 (indigo-500), which is 4.24:1 against --ink-on-accent — under the 4.5:1
+     WCAG AA threshold for the 15.7px/600 button label. Lightened just far enough to clear it with
+     margin: #7276f4 is 5.06:1. The cyan end is 10.47:1, and sRGB interpolation between the two
+     stops is monotonic in luminance, so the endpoints bound the whole sweep. */
   --cyan: #22d3ee;
-  --indigo: #6366f1;
+  --indigo: #7276f4;
   --bolt: #34d399; /* echoes the app's green ⚡ Thunderbolt button */
   --accent-grad: linear-gradient(115deg, var(--cyan), var(--indigo));
   --accent-glow: rgba(34, 211, 238, 0.35);
+  /* The one ink allowed on top of --accent-grad. Never hardcode it — see the note above. */
+  --ink-on-accent: #06121b;
 
   /* Type */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
@@ -131,6 +142,30 @@ p {
   border-radius: 6px;
 }
 
+/* ── Skip to content ─────────────────────────────────────────────────────────────────────────
+   First focusable thing on every page (Base.astro). Kept out of the visual design until a
+   keyboard reaches it, then it drops in over the sticky nav wearing the same focus ring as
+   everything else. Not `display: none` — that would take it out of the tab order entirely. */
+.skip-link {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 100;
+  padding: 11px 18px;
+  border-radius: 10px;
+  font-size: 0.94rem;
+  font-weight: 600;
+  color: var(--ink-on-accent);
+  background: var(--accent-grad);
+  box-shadow: 0 10px 30px -12px var(--accent-glow);
+  transform: translateY(calc(-100% - 16px));
+  transition: transform 0.15s ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
 /* ── Layout primitives ───────────────────────────────────────────────────────────────────── */
 .container {
   width: 100%;
@@ -199,7 +234,7 @@ p {
 }
 
 .btn-primary {
-  color: #06121b;
+  color: var(--ink-on-accent);
   background: var(--accent-grad);
   box-shadow: 0 10px 30px -12px var(--accent-glow);
 }
@@ -238,6 +273,84 @@ p {
   background: rgba(255, 255, 255, 0.03);
   font-size: 0.82rem;
   color: var(--ink-dim);
+}
+
+/* ── Prose ───────────────────────────────────────────────────────────────────────────────────
+   Long-form body copy for the legal pages. Deliberately narrow and quiet — these pages are read,
+   not scanned. */
+.prose {
+  max-width: 68ch;
+}
+
+.prose h1 {
+  font-size: clamp(2rem, 5vw, 2.8rem);
+  margin-top: 14px;
+}
+
+.prose h2 {
+  font-size: clamp(1.25rem, 2.6vw, 1.5rem);
+  margin-top: 44px;
+}
+
+.prose h2 + p {
+  margin-top: 14px;
+}
+
+.prose p,
+.prose ul {
+  margin-top: 16px;
+  color: var(--ink-dim);
+  font-size: 1.01rem;
+}
+
+.prose ul {
+  padding-left: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.prose li {
+  position: relative;
+  padding-left: 20px;
+}
+
+.prose li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0.72em;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--cyan);
+}
+
+.prose a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+
+.prose a:hover {
+  text-decoration-color: var(--cyan);
+}
+
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+}
+
+.prose-meta {
+  margin-top: 18px;
+  color: var(--ink-mut);
+  font-size: 0.88rem;
 }
 
 /* A thin animated "current" line — a shared motif for section dividers. */

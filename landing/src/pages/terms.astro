@@ -1,0 +1,94 @@
+---
+/**
+ * Terms of use.
+ *
+ * Deliberately thin. The MIT licence in the repository is the operative legal document for the
+ * software; this page exists so a visitor is not left guessing what the site is promising. Do not
+ * add a company name, a postal address or a governing-law clause here — none has been decided, and
+ * inventing one would be worse than having none.
+ */
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import { site, links } from '../data/site';
+
+// Update by hand whenever the text below changes.
+const updated = '5 August 2026';
+---
+
+<Base
+  title="Terms"
+  description="Sidewire is MIT-licensed open-source software, provided as is. This page explains what this site does and does not promise."
+>
+  <Nav />
+  <main id="main" class="section">
+    <div class="container prose">
+      <span class="eyebrow">Legal</span>
+      <h1>Terms</h1>
+      <p class="prose-meta">Last updated {updated}</p>
+
+      <p>
+        {site.name} is free and open-source software. The document that actually governs your use of
+        it is the <a href={links.license} target="_blank" rel="noopener">MIT licence</a> in the
+        repository — this page only describes the site and sets expectations. Where the two differ,
+        the licence wins.
+      </p>
+
+      <h2>The software</h2>
+      <ul>
+        <li>
+          You may use, copy, modify and redistribute {site.name} under the terms of the MIT licence,
+          which asks only that the copyright and licence notice travel with it.
+        </li>
+        <li>
+          It is provided <strong>“as is”, without warranty of any kind</strong>, and the authors are
+          not liable for any claim or damages arising from it. That is the licence's language, and
+          it is meant literally.
+        </li>
+        <li>
+          {site.name} creates a virtual display and forwards keyboard and mouse input between
+          machines. Use it only on machines you own or are authorised to use, and in line with the
+          law where you are.
+        </li>
+      </ul>
+
+      <h2>Pre-release status</h2>
+      <p>
+        There is no released build yet. Nothing on this site is a commitment that a feature exists
+        today, that a particular platform will be supported, or that a release will arrive on any
+        date. Anything described as “coming next” is work in progress and may change or be dropped.
+        The <a href={links.docs} target="_blank" rel="noopener">project documentation</a> is the
+        honest, current account of what works and what does not.
+      </p>
+
+      <h2>This site</h2>
+      <ul>
+        <li>
+          It is informational. There are no accounts, no sign-ups, no payments and nothing to
+          submit — see the <a href="/privacy">privacy page</a>.
+        </li>
+        <li>
+          Links leave for third parties, chiefly the code host. Their terms and privacy policies
+          apply once you follow one; we do not control them.
+        </li>
+        <li>
+          The site is offered as is and may be changed, moved or taken down at any time.
+        </li>
+      </ul>
+
+      <h2>Third-party components</h2>
+      <p>
+        {site.name} builds on open-source components under their own licences, which are carried
+        with the source. Redistributing a build means honouring those too.
+      </p>
+
+      <h2>Changes</h2>
+      <p>
+        These terms may be updated as the project moves toward a release. The date at the top is the
+        date of the last change, and the history of this file is public in the
+        <a href={links.github} target="_blank" rel="noopener">repository</a>.
+      </p>
+    </div>
+  </main>
+  <Footer />
+</Base>

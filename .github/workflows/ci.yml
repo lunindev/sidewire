@@ -1,0 +1,222 @@
+name: CI
+
+# Build and test everything that can be built without Apple signing credentials. The signed,
+# notarized release path is deliberately NOT here — it needs secrets and runs from a tag. See
+# TODO.md (P1) for release-macos.yml.
+#
+# NOTE: this workflow has never run on a GitHub runner. It is written from a green local build on
+# macOS 15 / Xcode 26, but runner images differ — expect to adjust the Xcode selection and the
+# Homebrew steps on the first run, and do not treat a passing badge as proven until it has.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref — these are long macOS jobs and the minutes are billable.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── The native macOS app ────────────────────────────────────────────────────────────────────
+  swift:
+    name: macOS app + Swift packages
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # The two SPM packages hold all the Swift test coverage. Run them before the app build: they
+      # are fast, and a failure here is far easier to read than one buried in an xcodebuild log.
+      - name: Test SidewireProtocol
+        working-directory: app/Packages/SidewireProtocol
+        run: swift test
+
+      - name: Test SidewireCore
+        working-directory: app/Packages/SidewireCore
+        run: swift test
+
+      # .xcodeproj is generated and gitignored, so it must be produced before building.
+      - name: Generate the Xcode project
+        working-directory: app
+        run: xcodegen generate
+
+      # Signing is disabled outright: the runner has no Apple certificate, and this job's purpose is
+      # to prove the code compiles, that Sparkle links, and that its XPC services embed. A universal
+      # build is used because that is what ships — an arm64-only build would not catch an
+      # x86_64-specific compile error.
+      - name: Build (Release, universal, unsigned)
+        working-directory: app
+        run: |
+          xcodebuild -project Sidewire.xcodeproj -scheme Sidewire -configuration Release \
+            -destination 'generic/platform=macOS' -derivedDataPath build/ci-dd \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Assert the binary is universal
+        working-directory: app
+        run: |
+          BIN=build/ci-dd/Build/Products/Release/Sidewire.app/Contents/MacOS/Sidewire
+          ARCHS=$(lipo -archs "$BIN")
+          echo "archs: $ARCHS"
+          case "$ARCHS" in
+            *x86_64*arm64*|*arm64*x86_64*) echo "✓ universal" ;;
+            *) echo "✗ expected x86_64 and arm64, got: $ARCHS"; exit 1 ;;
+          esac
+
+  # ── The Rust Windows/Linux client ───────────────────────────────────────────────────────────
+  # macOS only for now. ubuntu-latest ships ffmpeg 6.x (libavcodec 60) and this crate targets 7.x,
+  # so a Linux job needs an ffmpeg 7 build of its own — see TODO.md (P2).
+  rust:
+    name: Rust client
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg 7
+        run: brew install ffmpeg@7 pkg-config
+
+      # ffmpeg@7 is keg-only, so it is not on the default search paths; only sidewire-media links it.
+      - name: Export the ffmpeg environment
+        run: |
+          FFMPEG_DIR="$(brew --prefix ffmpeg@7)"
+          {
+            echo "FFMPEG_DIR=$FFMPEG_DIR"
+            echo "PKG_CONFIG_PATH=$FFMPEG_DIR/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "DYLD_FALLBACK_LIBRARY_PATH=$FFMPEG_DIR/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/clients/sidewire-viewer
+
+      - name: Formatting
+        working-directory: app/clients/sidewire-viewer
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        working-directory: app/clients/sidewire-viewer
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: app/clients/sidewire-viewer
+        run: cargo test --workspace
+
+      # Guards the packaging story: the crate must keep linking only the three ffmpeg libraries it
+      # actually uses. Default features would silently pull in avdevice/avfilter/swscale/swresample
+      # again, and every one of those has to be bundled with a shipped binary.
+      - name: Assert the ffmpeg link set has not grown
+        working-directory: app/clients/sidewire-viewer
+        run: |
+          cargo build --release
+          LIBS=$(otool -L target/release/sidewire-viewer | grep -oE 'lib(av|sw)[a-z]+\.[0-9]+' | sort -u)
+          echo "$LIBS"
+          COUNT=$(echo "$LIBS" | grep -c . )
+          if [ "$COUNT" -ne 3 ]; then
+            echo "✗ expected exactly 3 ffmpeg libraries (avcodec, avformat, avutil), found $COUNT"
+            exit 1
+          fi
+
+  # ── The landing site ────────────────────────────────────────────────────────────────────────
+  landing:
+    name: Landing site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: landing/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: landing
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check
+        working-directory: landing
+        run: pnpm check
+
+      - name: Build
+        working-directory: landing
+        run: pnpm build
+
+  # ── Repository hygiene ──────────────────────────────────────────────────────────────────────
+  # This repo is English-only by policy and its history was rewritten once to make that true. This
+  # job keeps it true.
+  hygiene:
+    name: Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      # `git grep -P '\p{Cyrillic}'` silently matches NOTHING in a C locale — which is exactly how
+      # CI runs — so it would certify a repository full of Cyrillic as clean. ripgrep is correct
+      # regardless of locale. Self-test the matcher against a known-Cyrillic fixture first, so a
+      # silently broken check can never pass.
+      - name: Self-test the Cyrillic matcher
+        run: |
+          # Written as UTF-8 escapes on purpose: a literal Cyrillic string here would be found by
+          # the very next step, and this workflow file would fail its own check.
+          printf 'nothing to see\n\xd0\xbf\xd1\x80\xd0\xbe\xd0\xb2\xd0\xb5\xd1\x80\xd0\xba\xd0\xb0\n' > /tmp/cyrillic-fixture.txt
+          if ! rg -q '\p{Cyrillic}' /tmp/cyrillic-fixture.txt; then
+            echo "✗ the matcher failed to find Cyrillic in a file that contains it — check is broken"
+            exit 1
+          fi
+          echo "✓ matcher works"
+
+      - name: No Cyrillic in tracked files
+        run: |
+          # Search the checkout directly rather than piping `git ls-files` through xargs. A
+          # fresh checkout contains exactly the tracked files, and `rg` honours .gitignore, so the
+          # result is the same — while avoiding a construct that fails *open*: if `rg` is not
+          # resolvable, `xargs` errors, the pipeline reports non-zero, and a naive
+          # `|| echo clean` turns that into a pass. That false-clean is the failure mode this
+          # whole job exists to prevent.
+          #
+          # -I skips binary files: the PNG icons and the H.264/H.265 fixtures contain byte
+          # sequences that decode as Cyrillic by chance.
+          if rg -lI '\p{Cyrillic}' .; then
+            echo "✗ Cyrillic found in the files listed above. This repository is English-only."
+            exit 1
+          fi
+          echo "✓ no Cyrillic"
+
+      - name: No personal data or local paths
+        run: |
+          if git grep -nIE '[A-Za-z0-9._%+-]+@(gmail|yandex|mail|outlook|icloud)\.[A-Za-z]{2,}|/Users/[a-z]+/' -- ':!*.lock' ':!THIRD-PARTY-LICENSES.md'; then
+            echo "✗ personal email addresses or local filesystem paths found above."
+            exit 1
+          fi
+          echo "✓ clean"
+
+      - name: No unresolved placeholders in shipped configuration
+        run: |
+          # These two are the difference between a working updater and one that silently never
+          # updates. They are expected to be unset until the first release — this step reports
+          # them without failing, so the state is visible in every run.
+          grep -q 'github.com/OWNER/' app/Sidewire/Resources/Info.plist \
+            && echo "::warning::SUFeedURL still contains the OWNER placeholder (TODO.md, owner-gated)"
+          grep -q 'REPLACE_WITH_SUPublicEDKey' app/Sidewire/Resources/Info.plist \
+            && echo "::warning::SUPublicEDKey is still a placeholder — Sparkle will fail closed (TODO.md, owner-gated)"
+          exit 0

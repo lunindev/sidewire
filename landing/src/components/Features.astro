@@ -20,7 +20,10 @@ import Icon from './Icon.astro';
           <span class="feat-icon">
             <Icon name={f.icon} size={22} />
           </span>
-          <h3>{f.title}</h3>
+          <h3>
+            {f.title}
+            {f.badge && <span class="feat-badge">{f.badge}</span>}
+          </h3>
           <p>{f.body}</p>
         </article>
       ))}
@@ -61,6 +64,23 @@ import Icon from './Icon.astro';
   .feat h3 {
     font-size: 1.14rem;
     margin-top: 2px;
+  }
+  /* Marks a card that describes work in progress rather than shipped behaviour. */
+  .feat-badge {
+    display: inline-block;
+    vertical-align: 3px;
+    margin-left: 8px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid rgba(34, 211, 238, 0.28);
+    background: rgba(34, 211, 238, 0.08);
+    color: var(--cyan);
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    white-space: nowrap;
   }
   .feat p {
     color: var(--ink-dim);

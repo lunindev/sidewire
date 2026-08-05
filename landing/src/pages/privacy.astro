@@ -1,0 +1,120 @@
+---
+/**
+ * Privacy policy.
+ *
+ * Every factual claim on this page was checked against the source before it was written:
+ *  - `app/Sidewire/Resources/Info.plist` — `SUEnableAutomaticChecks` is `<false/>`, so Sparkle's
+ *    appcast fetch is opt-in and off until the user turns it on in Settings.
+ *  - The app's own Swift sources contain no `URLSession`, no HTTP client, and no analytics or
+ *    crash-reporting SDK of any kind. Sparkle is the only network-facing dependency.
+ * Do not add a claim here that you have not checked the same way.
+ */
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import { site, links } from '../data/site';
+
+// Update by hand whenever the text below changes.
+const updated = '5 August 2026';
+---
+
+<Base
+  title="Privacy"
+  description="Sidewire collects nothing. No accounts, no analytics, no telemetry — and the app's only network call is an opt-in update check."
+>
+  <Nav />
+  <main id="main" class="section">
+    <div class="container prose">
+      <span class="eyebrow">Legal</span>
+      <h1>Privacy</h1>
+      <p class="prose-meta">Last updated {updated}</p>
+
+      <p>
+        The short version: {site.name} collects nothing about you, because it has nowhere to put it.
+        There are no accounts, no servers of ours in the path, no analytics and no telemetry. What
+        follows is the long version, so you can check the claim rather than take it.
+      </p>
+
+      <h2>The app</h2>
+      <p>
+        {site.name} makes exactly one network call that is not the connection between your own two
+        machines: it asks a signed update feed whether a newer version exists.
+      </p>
+      <ul>
+        <li>
+          That update check is <strong>opt‑in and off by default</strong> — the app never reaches
+          the internet on its own until you turn on “Automatically check for updates”, or press the
+          check button yourself.
+        </li>
+        <li>
+          The request is an ordinary HTTPS fetch of a small XML file hosted alongside the project's
+          releases. Whoever hosts the file sees what any web server sees for a download: an IP
+          address, a timestamp and a user agent. It carries no identifier we created.
+        </li>
+        <li>
+          Updates are verified with an EdDSA signature before they are installed. An update that
+          does not verify is refused.
+        </li>
+        <li>
+          There is no other HTTP anywhere in the app: no analytics SDK, no crash reporter, no
+          licence check, no “anonymous usage statistics”.
+        </li>
+      </ul>
+
+      <h2>Your screen</h2>
+      <p>
+        The video of your second desktop and the keyboard and mouse events that go back the other
+        way travel <strong>directly between your two machines</strong>, over your cable or your own
+        network, inside a TLS 1.3 connection. None of it is routed through a service, stored, or
+        seen by anyone else. There is no cloud component to this product.
+      </p>
+
+      <h2>What stays on your machines</h2>
+      <ul>
+        <li>
+          A device identity keypair and the record of which machines you have paired with, so a
+          paired reconnect can skip the PIN. Both are kept locally.
+        </li>
+        <li>Your app settings.</li>
+      </ul>
+      <p>
+        Nothing above is transmitted anywhere. Deleting the app and its preferences removes it.
+        “Forget this Mac” drops a specific pairing.
+      </p>
+
+      <h2>This website</h2>
+      <p>
+        This page and the rest of the site are static files. There is no JavaScript, no cookie, no
+        web font, no CDN, no embedded video, no tracking pixel and no third‑party request of any
+        kind — everything you load comes from this one origin. Nothing here identifies you and
+        nothing is stored in your browser.
+      </p>
+      <p>
+        The web server that serves these files keeps the ordinary access log every web server keeps
+        (IP address, time, requested path, user agent, referrer) for operating and debugging the
+        site. That is the only record the site produces.
+      </p>
+
+      <h2>Sharing</h2>
+      <p>
+        We do not sell, share, rent or transfer personal data, because we do not collect any.
+      </p>
+
+      <h2>Children</h2>
+      <p>
+        {site.name} is a utility for connecting two computers you own and is not directed at
+        children. As above, it collects no personal data from anyone.
+      </p>
+
+      <h2>Questions and changes</h2>
+      <p>
+        This policy will change if the product does — for instance if a release ever introduces a
+        network feature this page does not describe. The date at the top is the date of the last
+        change, and the full history of this file is public in the
+        <a href={links.github} target="_blank" rel="noopener">repository</a>. Questions and
+        corrections are best raised as an issue there.
+      </p>
+    </div>
+  </main>
+  <Footer />
+</Base>
