@@ -27,6 +27,13 @@ const TARGETS = [
 // strictly newer than the last (Sparkle compares CFBundleVersion when deciding whether to update).
 const PROJECT_YML = resolve(ROOT, "app/project.yml");
 
+// The Rust Windows/Linux client. It ships as part of the same product and its release artifacts are
+// named after the tag, so it has to move with everything else — it was previously stranded at
+// 0.1.0 while the rest of the repo said 1.0.0. Only the `[workspace.package]` version is rewritten;
+// the member crates all inherit it via `version.workspace = true`.
+const CARGO_TOML = resolve(ROOT, "app/clients/sidewire-viewer/Cargo.toml");
+const CARGO_LOCK = resolve(ROOT, "app/clients/sidewire-viewer/Cargo.lock");
+
 const CHANGELOG = resolve(ROOT, "CHANGELOG.md");
 
 const TYPE_MAP = {
@@ -159,6 +166,26 @@ function writeProjectVersions(newVersion) {
   return { prevMarketing: info.marketing, prevBuild: info.build, nextBuild };
 }
 
+// --- app/clients/sidewire-viewer/Cargo.toml: [workspace.package] version ---
+// Anchored to the [workspace.package] section so it cannot accidentally rewrite a dependency's
+// version = "…" elsewhere in the file.
+const CARGO_VERSION_RE = /(\[workspace\.package\][^[]*?\nversion\s*=\s*")([^"]+)(")/;
+
+function readCargoVersion() {
+  if (!existsSync(CARGO_TOML)) return null;
+  const raw = readFileSync(CARGO_TOML, "utf8");
+  const m = raw.match(CARGO_VERSION_RE);
+  return m ? { raw, version: m[2] } : null;
+}
+
+function writeCargoVersion(newVersion) {
+  const info = readCargoVersion();
+  if (!info) return null;
+  const out = info.raw.replace(CARGO_VERSION_RE, `$1${newVersion}$3`);
+  if (!DRY_RUN) writeFileSync(CARGO_TOML, out);
+  return { prev: info.version };
+}
+
 function assertCleanTree() {
   if (DRY_RUN) return;
   try {
@@ -211,6 +238,10 @@ function main() {
       console.log(`  app/project.yml (MARKETING_VERSION): ${info.marketing} -> ${newVersion}`);
       if (info.build != null) console.log(`  app/project.yml (CURRENT_PROJECT_VERSION): ${info.build} -> ${nextBuild}`);
     }
+    const cargo = readCargoVersion();
+    if (cargo) {
+      console.log(`  app/clients/sidewire-viewer/Cargo.toml: ${cargo.version} -> ${newVersion}`);
+    }
     console.log(`\nRe-run without --dry-run to apply.`);
     return;
   }
@@ -233,11 +264,30 @@ function main() {
     if (proj.prevBuild != null) console.log(`app/project.yml (CURRENT_PROJECT_VERSION): ${proj.prevBuild} -> ${proj.nextBuild}`);
   }
 
+  const cargo = writeCargoVersion(newVersion);
+  if (cargo) {
+    console.log(`app/clients/sidewire-viewer/Cargo.toml: ${cargo.prev} -> ${newVersion}`);
+  }
+
   prependSection(section);
   console.log(`\nCHANGELOG.md updated with v${newVersion}`);
 
   try {
-    const files = [...TARGETS, PROJECT_YML, CHANGELOG].filter(existsSync).map((t) => `"${t}"`).join(" ");
+    // Cargo.lock records the workspace members' own versions, so bumping Cargo.toml makes it stale
+    // until the next build rewrites it. Refresh it here so the release commit is self-consistent
+    // and `cargo build` on a fresh clone of the tag does not immediately produce a diff.
+    try {
+      execSync("cargo update --workspace --offline", {
+        cwd: resolve(ROOT, "app/clients/sidewire-viewer"),
+        stdio: "ignore",
+      });
+    } catch {
+      console.warn("  (could not refresh Cargo.lock — commit it manually if it changed)");
+    }
+    const files = [...TARGETS, PROJECT_YML, CARGO_TOML, CARGO_LOCK, CHANGELOG]
+      .filter(existsSync)
+      .map((t) => `"${t}"`)
+      .join(" ");
     execSync(`git add ${files}`, { cwd: ROOT, stdio: "inherit" });
     execSync(`git commit -m "chore: release v${newVersion}"`, { cwd: ROOT, stdio: "inherit" });
     // Must be ANNOTATED: `git push --follow-tags` only pushes annotated tags, so a lightweight

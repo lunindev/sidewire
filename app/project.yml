@@ -13,7 +13,10 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
-    MARKETING_VERSION: "1.0"
+    # Keep this full semver (x.y.z) and in lockstep with the package.json files — release.sh reads
+    # it verbatim to name the DMG, so "1.0" produced Sidewire-1.0.dmg while everything else said
+    # 1.0.0. scripts/release.mjs rewrites this line on every version bump.
+    MARKETING_VERSION: "1.0.0"
     CURRENT_PROJECT_VERSION: "1"
     # Universal 2 (arm64 + x86_64) so one build runs on the M4 Max source and Intel i9 display.
     ARCHS: "arm64 x86_64"
@@ -49,14 +52,20 @@ packages:
     path: Packages/SidewireProtocol
   SidewireCore:
     path: Packages/SidewireCore
-  # Phase 9 — Sparkle 2 auto-update (EdDSA appcast on GitHub Releases). Resolves as 2.9.4
-  # today; its universal (arm64+x86_64) xcframework matches ARCHS. Xcode embeds + signs
-  # Sparkle's XPC services in the correct inside-out order automatically — NEVER `codesign
-  # --deep` (it corrupts those XPC signatures). Sparkle is the app's first and only
-  # network "phone-home"; everything else is 100% local (no accounts, no telemetry).
+  # Phase 9 — Sparkle 2 auto-update (EdDSA appcast on GitHub Releases). Its universal
+  # (arm64+x86_64) xcframework matches ARCHS. Xcode embeds + signs Sparkle's XPC services in the
+  # correct inside-out order automatically — NEVER `codesign --deep` (it corrupts those XPC
+  # signatures). Sparkle is the app's first and only network "phone-home"; everything else is
+  # 100% local (no accounts, no telemetry).
+  #
+  # PINNED EXACTLY, on purpose. `.xcodeproj` is generated and gitignored, so the app target's
+  # Package.resolved is never committed — this line IS the lock file. With a `from:` range, two
+  # clones a week apart could ship different Sparkle builds inside a signed, notarized artifact,
+  # and the one component that reaches the network is the last one where that should be left to
+  # chance. Bump this deliberately, and re-read Sparkle's release notes when you do.
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    from: 2.0.0
+    exactVersion: 2.9.5
 
 targets:
   Sidewire:

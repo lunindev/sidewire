@@ -15,7 +15,11 @@
 #   export SIDEWIRE_TEAM_ID="TEAMID"
 #
 # Then just:  ./scripts/release.sh
-# Without the notary profile it still builds+signs+DMGs and tells you what to run.
+# Without notarization credentials it still builds+signs+DMGs and tells you what to run.
+#
+# In CI set SIDEWIRE_STRICT=1 so that missing credentials FAIL instead of quietly producing an
+# unnotarized DMG, and pass an App Store Connect API key via NOTARY_KEY_PATH / NOTARY_KEY_ID /
+# NOTARY_ISSUER_ID (no keychain profile needed). See § 3 below.
 set -euo pipefail
 
 # ---- config ----------------------------------------------------------------
@@ -75,15 +79,20 @@ check_sparkle() {
 }
 
 echo "▸ Sidewire $VERSION → $DMG"
-rm -rf "$OUT" "$DD"; mkdir -p "$OUT"
 
 # ---- 0. preflight: fail before spending a whole build on an unconfigured tree ----
 # The Sparkle values are plain literals the build copies through untouched (unlike
 # $(MARKETING_VERSION), which it does resolve), so they can be judged from the source plist in a
 # second rather than after several minutes of universal Release build. Step 1c re-checks the built
 # bundle regardless — that is what actually ships, and it's the artifact that must be right.
+#
+# This MUST stay above the cleanup below. It used to run after it, so an unconfigured tree — the
+# state every fresh clone is in — destroyed the previous release's DMG and appcast.xml on its way
+# to failing, and took out the resolved SPM artifacts that generate-appcast.sh needs.
 check_sparkle "$ROOT/Sidewire/Resources/Info.plist" "source plist"
 echo "  ✓ Sparkle configured"
+
+rm -rf "$OUT" "$DD"; mkdir -p "$OUT"
 
 # ---- 1. regenerate + build (Developer ID + hardened runtime + secure timestamp) ----
 command -v xcodegen >/dev/null && xcodegen generate >/dev/null
@@ -149,18 +158,57 @@ make_dmg() {
 }
 
 # ---- 3. notarize (or stop with instructions) ----
-if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+# Credentials come from one of two places, in priority order:
+#
+#   1. An App Store Connect API key passed by environment (NOTARY_KEY_PATH / NOTARY_KEY_ID /
+#      NOTARY_ISSUER_ID). This is the CI path: notarytool takes the key directly, so no keychain
+#      profile and no interactive `store-credentials` is involved. It is also the better path
+#      interactively — an API key is revocable on its own and survives Apple ID password and 2FA
+#      changes, unlike an app-specific password.
+#   2. A local `store-credentials` keychain profile, for a developer who already set one up.
+#
+# SIDEWIRE_STRICT=1 turns "no credentials" from a soft stop into a hard failure. CI MUST set it.
+# Without it this script's friendly interactive behaviour — build the DMG anyway, explain, exit 0 —
+# is exactly wrong on a runner: the job goes green, an UNNOTARIZED DMG is sitting in dist/, and the
+# next step happily attaches it to a public release. Users then get Gatekeeper's "Apple cannot check
+# it for malicious software" on a build that looks signed. Note the exit 0 below also sits above the
+# Sparkle step, so that path produces no appcast.xml either — a release with no update feed at all.
+NOTARY_ARGS=()
+if [ -n "${NOTARY_KEY_PATH:-}" ]; then
+  : "${NOTARY_KEY_ID:?NOTARY_KEY_PATH is set, so NOTARY_KEY_ID must be too}"
+  : "${NOTARY_ISSUER_ID:?NOTARY_KEY_PATH is set, so NOTARY_ISSUER_ID must be too}"
+  [ -r "$NOTARY_KEY_PATH" ] || { echo "✗ NOTARY_KEY_PATH is not readable: $NOTARY_KEY_PATH"; exit 1; }
+  NOTARY_ARGS=(--key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
+  echo "  ✓ notarization via App Store Connect API key"
+elif xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+  NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+  echo "  ✓ notarization via keychain profile '$NOTARY_PROFILE'"
+elif [ "${SIDEWIRE_STRICT:-0}" = "1" ]; then
+  echo "✗ SIDEWIRE_STRICT=1 and no notarization credentials are available."
+  echo "  Set NOTARY_KEY_PATH + NOTARY_KEY_ID + NOTARY_ISSUER_ID (App Store Connect API key),"
+  echo "  or create the '$NOTARY_PROFILE' keychain profile. Refusing to produce an unnotarized build."
+  exit 1
+else
   make_dmg
   cat <<EOF
 
 ▸ Built + signed, DMG created (NOT yet notarized):
     $DMG
 
-To notarize, create the credentials profile once (this enters YOUR Apple password, not me):
+⚠️  This DMG will be BLOCKED by Gatekeeper on any Mac that downloads it. It is fine for copying to
+    your own machines, and not fine to publish.
+
+To notarize, either set up an App Store Connect API key (recommended):
+    export NOTARY_KEY_PATH=/path/to/AuthKey_XXXXXXXXXX.p8
+    export NOTARY_KEY_ID=XXXXXXXXXX
+    export NOTARY_ISSUER_ID=<issuer-uuid from App Store Connect → Integrations>
+
+…or create a keychain profile once from an app-specific password:
     xcrun notarytool store-credentials $NOTARY_PROFILE \\
         --apple-id "<your-apple-id-email>" --team-id $TEAM_ID \\
         --password <app-specific-password>
   (create the app-specific password at appleid.apple.com → Sign-In and Security → App-Specific Passwords)
+
 Then re-run: ./scripts/release.sh
 EOF
   exit 0
@@ -169,14 +217,14 @@ fi
 echo "▸ Notarizing the app…"
 ZIP="$OUT/$APP_NAME.zip"
 ditto -c -k --keepParent "$APP" "$ZIP"
-xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+xcrun notarytool submit "$ZIP" "${NOTARY_ARGS[@]}" --wait
 rm -f "$ZIP"
 echo "▸ Stapling the app…"
 xcrun stapler staple "$APP"
 
 echo "▸ Building + notarizing the DMG…"
 make_dmg
-xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+xcrun notarytool submit "$DMG" "${NOTARY_ARGS[@]}" --wait
 xcrun stapler staple "$DMG"
 
 # ---- 4. final Gatekeeper check ----

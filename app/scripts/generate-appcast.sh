@@ -75,9 +75,24 @@ if [ "$OWNER" = "OWNER" ]; then
   exit 1
 fi
 
-# generate_appcast reads the EdDSA PRIVATE key from the login keychain (stored by generate_keys)
-# and appends an sparkle:edSignature to each enclosure. Writes appcast.xml into $DIST.
-"$TOOL" --download-url-prefix "$DOWNLOAD_URL_PREFIX" "$DIST"
+# generate_appcast appends a sparkle:edSignature to each enclosure and writes appcast.xml into
+# $DIST. It needs the EdDSA PRIVATE key, from one of two places:
+#
+#   • SPARKLE_ED_PRIVATE_KEY (CI): Sparkle 2 accepts `--ed-key-file -` and reads the key from
+#     stdin, which is what makes appcast signing possible on a runner with no login keychain.
+#     Note this is NOT the deprecated `-s <key>` flag most guides still show — that puts the key
+#     in the process list. The key must be a SINGLE line: generate_appcast does one readLine(),
+#     so a stray newline truncates it. Produce it with `generate_keys -x <file>` and paste the
+#     file's contents verbatim into the secret.
+#   • Otherwise (local): the key in the login keychain, where generate_keys put it.
+if [ -n "${SPARKLE_ED_PRIVATE_KEY:-}" ]; then
+  echo "  ✓ signing with the EdDSA key from SPARKLE_ED_PRIVATE_KEY"
+  printf '%s\n' "$SPARKLE_ED_PRIVATE_KEY" \
+    | "$TOOL" --ed-key-file - --download-url-prefix "$DOWNLOAD_URL_PREFIX" "$DIST"
+else
+  echo "  ✓ signing with the EdDSA key from the login keychain"
+  "$TOOL" --download-url-prefix "$DOWNLOAD_URL_PREFIX" "$DIST"
+fi
 
 echo "✅ appcast.xml written to $DIST/appcast.xml"
 echo "   Next: upload $DIST/appcast.xml + the DMG(s) to the GitHub Release so"
