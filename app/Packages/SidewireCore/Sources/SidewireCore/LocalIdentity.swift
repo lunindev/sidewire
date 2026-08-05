@@ -71,6 +71,10 @@ public final class LocalIdentity: @unchecked Sendable {
         return nil
     }
 
+    /// The subject/issuer common name of every leaf we mint. Kept as a constant because the
+    /// Keychain cleanup below matches on it — nothing else may be deleted.
+    static let certificateCommonName = "Sidewire"
+
     static let defaultKeyTag = "com.kinocoder.sidewire.identity.key"
     static let defaultCertLabel = "Sidewire Device Identity"
 
@@ -80,7 +84,7 @@ public final class LocalIdentity: @unchecked Sendable {
         self.certLabel = certLabel
 
         let key = try Self.loadOrCreateKey(tag: keyTag)
-        let (secCert, der) = try Self.loadOrCreateCertificate(key: key, label: certLabel)
+        let (secCert, der) = try Self.makeCertificate(key: key)
         self.certificateDER = der
 
         var identity: SecIdentity?
@@ -105,9 +109,18 @@ public final class LocalIdentity: @unchecked Sendable {
     }
 
     /// Remove this identity's Keychain items (test cleanup; no-op-safe if already gone).
-    public func destroy() {
-        SecItemDelete([kSecClass: kSecClassKey, kSecAttrApplicationTag: keyTag] as CFDictionary)
-        SecItemDelete([kSecClass: kSecClassCertificate, kSecAttrLabel: certLabel] as CFDictionary)
+    ///
+    /// Only the private key needs removing: the certificate lives in memory and is never stored —
+    /// see `makeCertificate` for why that changed, and for what the old storing behaviour cost.
+    ///
+    /// Returns `true` if the key is gone afterwards, so tests can assert cleanup rather than hope
+    /// for it. The previous version deleted the certificate by `kSecAttrLabel`, silently matched
+    /// nothing, and returned no indication that it had failed.
+    @discardableResult
+    public func destroy() -> Bool {
+        let status = SecItemDelete([kSecClass: kSecClassKey,
+                                    kSecAttrApplicationTag: keyTag] as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 
     /// A fresh `sec_identity_t` for one TLS connection.
@@ -152,42 +165,78 @@ public final class LocalIdentity: @unchecked Sendable {
 
     // MARK: - Certificate
 
-    private static func loadOrCreateCertificate(key: SecKey, label: String) throws -> (SecCertificate, Data) {
-        // A previously stored cert for this identity?
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassCertificate,
-            kSecAttrLabel as String: label,
-            kSecReturnRef as String: true,
-        ]
-        var out: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let existing = out {
-            let cert = existing as! SecCertificate
-            let der = SecCertificateCopyData(cert) as Data
-            return (cert, der)
-        }
-
-        // Build a fresh self-signed certificate signed via the Keychain SecKey.
+    /// Mint the leaf certificate **in memory**. It is deliberately never added to the Keychain.
+    ///
+    /// It used to be stored, with a load-or-create lookup keyed on `kSecAttrLabel`. That lookup
+    /// could never match: for a certificate item macOS derives `kSecAttrLabel` from the subject
+    /// common name — ours is always `Sidewire` — and ignores the label passed to `SecItemAdd`. So
+    /// every single initialisation missed the cache, minted a fresh certificate, and added it.
+    /// A new serial each time meant not even `errSecDuplicateItem` fired. The result was one
+    /// permanent junk certificate per app launch and per test identity, accumulating forever.
+    ///
+    /// That is not a tidiness problem. Once a few hundred self-signed certificates share a subject,
+    /// `trustd` has to treat all of them as chain candidates: for anything with that issuer it
+    /// fetches every match and runs a full ECDSA P-256 verification per candidate, backtracking
+    /// across the lot. It pins a core at 100% and every `SecTrust` consumer on the machine — Safari,
+    /// Mail, most of the system — queues behind it.
+    ///
+    /// Storing it was never necessary. Verified empirically: `SecIdentityCreateWithCertificate`
+    /// pairs a certificate that has never been in any keychain with its private key (which *is*
+    /// persistent), and the resulting identity works with `sec_identity_create` for TLS. Nothing
+    /// pins the certificate either — peers pin the SPKI hash, which is derived from the key and is
+    /// therefore stable across launches even though the certificate is freshly minted each time.
+    private static func makeCertificate(key: SecKey) throws -> (SecCertificate, Data) {
         let der = try buildSelfSignedCertificate(key: key)
         guard let secCert = SecCertificateCreateWithData(nil, der as CFData) else {
             throw IdentityError.certificateParse
         }
-        let add: [String: Any] = [
-            kSecClass as String: kSecClassCertificate,
-            kSecValueRef as String: secCert,
-            kSecAttrLabel as String: label,
-        ]
-        let status = SecItemAdd(add as CFDictionary, nil)
-        // errSecDuplicateItem is fine (a concurrent creation won the race).
-        guard status == errSecSuccess || status == errSecDuplicateItem else {
-            throw IdentityError.certificateStore(status)
-        }
         return (secCert, der)
+    }
+
+    /// Delete every self-signed `Sidewire` leaf certificate left in the Keychain by the storing
+    /// behaviour described above, and return how many were removed.
+    ///
+    /// Only certificates whose subject summary is exactly `Sidewire` are considered, so this
+    /// cannot touch an Apple Development identity, a Developer ID certificate, or anything else.
+    /// Safe to call repeatedly; returns 0 once clean.
+    @discardableResult
+    public static func purgeStoredCertificates() -> Int {
+        var out: CFTypeRef?
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassCertificate,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnRef as String: true,
+        ]
+        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
+              let all = out as? [SecCertificate] else { return 0 }
+
+        var removed = 0
+        for cert in all where (SecCertificateCopySubjectSummary(cert) as String?) == certificateCommonName {
+            let status = SecItemDelete([kSecClass: kSecClassCertificate,
+                                        kSecValueRef: cert] as CFDictionary)
+            if status == errSecSuccess { removed += 1 }
+        }
+        return removed
+    }
+
+    /// How many `Sidewire` leaf certificates are currently in the Keychain. Exposed so tests can
+    /// assert the count does not grow — the regression guard for the leak above.
+    public static func storedCertificateCount() -> Int {
+        var out: CFTypeRef?
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassCertificate,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnRef as String: true,
+        ]
+        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
+              let all = out as? [SecCertificate] else { return 0 }
+        return all.filter { (SecCertificateCopySubjectSummary($0) as String?) == certificateCommonName }.count
     }
 
     private static func buildSelfSignedCertificate(key: SecKey) throws -> Data {
         let privateKey = try Certificate.PrivateKey(key)          // signs via SecKeyWrapper
         let publicKey = privateKey.publicKey
-        let name = try DistinguishedName { CommonName("Sidewire") }
+        let name = try DistinguishedName { CommonName(Self.certificateCommonName) }
         let now = Date()
         let cert = try Certificate(
             version: .v3,
