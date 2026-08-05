@@ -29,7 +29,18 @@ thiserror = "2"
 
 # media decode (ffmpeg 7.x — libavcodec 61). Only sidewire-media links ffmpeg; the rest of the
 # workspace stays ring-only. See README.md for the macOS keg-only ffmpeg@7 build/run env.
-ffmpeg-the-third = "3"
+#
+# default-features = false is deliberate and load-bearing for packaging. The crate's defaults pull
+# in `device`, `filter`, `software-resampling` and `software-scaling`, which made the binary link
+# SEVEN ffmpeg libraries instead of three — worst of all libavdevice, which drags in the platform
+# capture backends (v4l2/ALSA/X11-grab, dshow/gdigrab) into a program that never opens a capture
+# device. We only ever decode. `format` cannot be dropped alongside `codec`: ffmpeg-the-third 3.0.2's
+# packet module references av_interleaved_write_frame ungated, so `codec` alone fails to compile.
+ffmpeg-the-third = { version = "3", default-features = false, features = [
+    "codec",
+    "format",
+    "non-exhaustive-enums",
+] }
 
 # window / GPU render
 winit = "0.30"

@@ -116,7 +116,14 @@ fn input_records_round_trip_display_to_source() {
         drop(tx);
         // No window here — the stop flag is never set; the Source's BYE ends the session.
         let stop = std::sync::atomic::AtomicBool::new(false);
-        session.run_streaming(&rx, &stop, &std::sync::atomic::AtomicBool::new(false), HeartbeatConfig::default(), |_nal, _kf, _pts| {}, |_x, _y| {})
+        session.run_streaming(
+            &rx,
+            &stop,
+            &std::sync::atomic::AtomicBool::new(false),
+            HeartbeatConfig::default(),
+            |_nal, _kf, _pts| {},
+            |_x, _y| {},
+        )
     });
 
     // --- Source: connect, reach CONFIG, collect the 3 INPUT records, then BYE("user").
@@ -198,7 +205,14 @@ fn held_input_is_released_on_close() {
             caps(),
         );
         let pairing = PairingConfig::new("000000", display_trust, None);
-        let session = Session::new(Role::Display, hello, Some(display_info()), wire, tls_info, pairing);
+        let session = Session::new(
+            Role::Display,
+            hello,
+            Some(display_info()),
+            wire,
+            tls_info,
+            pairing,
+        );
 
         let (tx, rx) = mpsc::channel();
         tx.send(key_down).unwrap();
@@ -259,7 +273,10 @@ fn held_input_is_released_on_close() {
     );
     // The releasing FlagsChanged clears all modifier flags.
     let mod_clear = src.inputs.last().unwrap();
-    assert_eq!(mod_clear.modifiers, 0, "the modifier release must clear the flags");
+    assert_eq!(
+        mod_clear.modifiers, 0,
+        "the modifier release must clear the flags"
+    );
     // The key release names the held key.
     assert_eq!(
         src.inputs[src.inputs.len() - 2].key_code,

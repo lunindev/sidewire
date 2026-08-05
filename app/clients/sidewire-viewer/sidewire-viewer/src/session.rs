@@ -381,7 +381,14 @@ impl Session {
             }
         }
         if self.ready && !self.closed {
-            self.stream_loop(input_rx, stop, session_stop, heartbeat, &mut on_video, &mut on_cursor);
+            self.stream_loop(
+                input_rx,
+                stop,
+                session_stop,
+                heartbeat,
+                &mut on_video,
+                &mut on_cursor,
+            );
         }
         self.into_outcome()
     }
@@ -865,6 +872,10 @@ impl Session {
         }
         self.closed = true;
         self.close_reason = reason;
+        // Tear the socket down deliberately rather than letting `drop` do it. A bare drop with
+        // bytes still in the receive queue emits an RST, which lets the peer's stack throw away the
+        // BYE we just wrote — so the peer reports "transport" instead of the reason we sent.
+        self.wire.shutdown_gracefully();
     }
 
     // MARK: - Pairing decision (CPace, pre-HELLO)

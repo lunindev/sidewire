@@ -43,7 +43,9 @@ fn identity_pem_roundtrip() {
 }
 
 /// Cross-check the SPKI SHA-256 against OpenSSL to raise confidence in Swift interop (swift-crypto
-/// `derRepresentation` == OpenSSL `i2d_PUBKEY`). Skipped (not failed) if `openssl` is absent.
+/// `derRepresentation` == OpenSSL `i2d_PUBKEY`). Skipped (not failed) if `openssl` is absent, fails
+/// to run, or prints a digest in a format we cannot parse — the point is to catch a *mismatch*, so
+/// an unusable tool must never be reported as a cross-check failure.
 #[test]
 fn openssl_cross_check_spki_hash() {
     use std::io::Write;
@@ -99,12 +101,24 @@ fn openssl_cross_check_spki_hash() {
     .expect("openssl pkey");
     let digest_out = run_piped("openssl", &["dgst", "-sha256"], &pubkey_der).expect("openssl dgst");
     let digest_str = String::from_utf8_lossy(&digest_out);
-    // Output looks like "SHA2-256(stdin)= <hex>" or "(stdin)= <hex>".
+    // Output format varies by implementation: OpenSSL prints "SHA2-256(stdin)= <hex>" (older
+    // builds "(stdin)= <hex>"), while LibreSSL — which is what /usr/bin/openssl is on macOS —
+    // prints the bare hex with no prefix at all. Splitting on '=' therefore yields nothing on
+    // LibreSSL, so take the last whitespace-separated token and validate it instead.
     let openssl_hex = digest_str
-        .rsplit_once('=')
-        .map(|(_, h)| h.trim())
+        .split_whitespace()
+        .last()
         .unwrap_or("")
         .to_string();
+    let looks_like_sha256 =
+        openssl_hex.len() == 64 && openssl_hex.bytes().all(|b| b.is_ascii_hexdigit());
+    if !looks_like_sha256 {
+        // A genuine skip, matching this test's documented contract. Asserting here would turn an
+        // unrecognised output format into a spurious failure — which is exactly what used to
+        // happen under LibreSSL.
+        eprintln!("skipping openssl cross-check: could not parse a SHA-256 out of {digest_str:?}");
+        return;
+    }
 
     let ours: String = id.spki_hash.iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(

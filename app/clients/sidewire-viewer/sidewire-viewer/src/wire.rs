@@ -43,19 +43,64 @@ pub enum WireError {
 /// their public `sock` field (the `TcpStream`).
 trait WireStream: Read + Write + Send {
     fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()>;
+    /// Close the connection so the peer reads a clean EOF rather than a reset. See
+    /// [`Wire::shutdown_gracefully`] for why this is not just `drop`.
+    fn shutdown_gracefully(&mut self);
 }
 
-impl WireStream for StreamOwned<ServerConnection, TcpStream> {
-    fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
-        self.sock.set_read_timeout(dur)
+/// How long a graceful close will spend draining the peer's in-flight bytes before giving up. The
+/// peer is on the other end of a LAN (or loopback) and is already unwinding, so this is generous.
+const GRACEFUL_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Half-close `sock` and drain whatever the peer already sent.
+///
+/// This is the step that actually fixes the lost-BYE race: closing a socket whose receive queue
+/// still holds unread bytes makes the kernel emit an **RST**, and an RST permits the peer's stack to
+/// discard data it has already received but not yet delivered to the application — including the
+/// frame we just wrote. Shutting down the write side first sends a FIN, and draining afterwards
+/// keeps the final close from degenerating back into a reset.
+fn drain_and_half_close(sock: &mut TcpStream) {
+    let _ = sock.shutdown(std::net::Shutdown::Write);
+    let _ = sock.set_read_timeout(Some(GRACEFUL_CLOSE_TIMEOUT));
+    let deadline = std::time::Instant::now() + GRACEFUL_CLOSE_TIMEOUT;
+    let mut sink = [0u8; 2048];
+    loop {
+        // Read the raw socket rather than the TLS stream: the payload is irrelevant here, we only
+        // need the receive queue empty, and the peer may well have stopped mid-record.
+        match sock.read(&mut sink) {
+            Ok(0) => break, // peer's FIN — fully drained
+            Ok(_) if std::time::Instant::now() >= deadline => break,
+            Ok(_) => {}
+            Err(_) => break, // timeout, reset, anything else: nothing more we can usefully do
+        }
     }
 }
 
-impl WireStream for StreamOwned<ClientConnection, TcpStream> {
-    fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
-        self.sock.set_read_timeout(dur)
-    }
+/// Generates the teardown body for a concrete `StreamOwned`. A generic function would need the
+/// `ConnectionCommon`/`SideData` bounds spelled out; with exactly two connection types a macro is
+/// less machinery for the same result.
+macro_rules! impl_wire_stream {
+    ($conn:ty) => {
+        impl WireStream for StreamOwned<$conn, TcpStream> {
+            fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+                self.sock.set_read_timeout(dur)
+            }
+            fn shutdown_gracefully(&mut self) {
+                // (1) Push anything still in the TLS write buffer — typically the BYE just written.
+                let _ = self.flush();
+                // (2) `close_notify` marks this as a deliberate end of stream rather than a
+                //     truncation, so the peer's rustls surfaces a clean EOF instead of an error.
+                self.conn.send_close_notify();
+                let _ = self.flush();
+                // (3) FIN, then drain — see `drain_and_half_close`.
+                drain_and_half_close(&mut self.sock);
+            }
+        }
+    };
 }
+
+impl_wire_stream!(ServerConnection);
+impl_wire_stream!(ClientConnection);
 
 /// A framed TLS channel. Owns the `rustls` stream; the concrete server/client connection type is
 /// erased behind a [`WireStream`] object once the handshake (which needs the concrete type) is done.
@@ -197,6 +242,22 @@ impl Wire {
     /// bytes to a [`sidewire_proto::FrameParser`], which buffers partial frames across calls.
     pub fn read_available(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.stream.read(buf)
+    }
+
+    /// Close the connection so the last frame written actually reaches the peer.
+    ///
+    /// Dropping a `Wire` closes its socket immediately. If the receive queue still holds bytes the
+    /// peer sent (very likely — the peer is usually mid-heartbeat), the kernel answers that close
+    /// with an **RST**, and an RST permits the peer's stack to discard data it has already received
+    /// but not yet handed to the application. In practice that means a `BYE("user")` written
+    /// microseconds earlier is lost, and the peer reports a generic transport failure instead of the
+    /// clean reason we sent — the difference between "the other Mac disconnected" and a spurious
+    /// reconnect storm.
+    ///
+    /// Call this after the final [`Wire::write_frame`] and before the `Wire` goes out of scope.
+    /// It is idempotent-ish and never fails: teardown has nothing useful to report.
+    pub fn shutdown_gracefully(&mut self) {
+        self.stream.shutdown_gracefully();
     }
 }
 

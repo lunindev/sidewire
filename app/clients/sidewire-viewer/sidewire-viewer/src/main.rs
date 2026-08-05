@@ -266,7 +266,9 @@ fn run_listen_mode(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             }
         };
     println!("  a window opens once a Source connects and streaming begins.");
-    println!("  keys: F11 = toggle fullscreen, Esc = exit fullscreen, Ctrl+D = disconnect this Mac");
+    println!(
+        "  keys: F11 = toggle fullscreen, Esc = exit fullscreen, Ctrl+D = disconnect this Mac"
+    );
     println!("        (all stay local; ⌘/Ctrl+D/Esc are never sent to the Source).");
 
     window::run(

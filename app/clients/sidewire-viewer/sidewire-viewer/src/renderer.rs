@@ -461,11 +461,8 @@ impl Renderer {
                         },
                     ],
                 };
-                self.queue.write_buffer(
-                    &self.cursor_uniform_buffer,
-                    0,
-                    bytemuck::bytes_of(&u),
-                );
+                self.queue
+                    .write_buffer(&self.cursor_uniform_buffer, 0, bytemuck::bytes_of(&u));
                 true
             } else {
                 false
