@@ -61,6 +61,15 @@ public final class Session: @unchecked Sendable {
     /// Fired (on the session queue) when a peer is newly pinned via a successful PIN proof, so
     /// the UI can refresh its "Paired Macs" list. Not fired on a paired reconnect (no new pin).
     public var onPaired: ((TrustedPeer) -> Void)?
+    /// Fired (on the session queue) the moment this link is proven legitimate — either the CPace
+    /// PAKE completed or the peer was already pinned — and before any application data flows.
+    ///
+    /// Unlike `onPaired` this fires on **every** authenticated connection, including paired
+    /// reconnects where no new pin is written. It is the earliest point at which it is safe to let
+    /// an incoming connection disturb existing state: anything done before it is, by definition,
+    /// done on behalf of an unauthenticated stranger. The Display uses it to decide when a newcomer
+    /// may displace the session already streaming.
+    public var onAuthenticated: (() -> Void)?
     /// Fired (~2 Hz) with the round-trip time in ms, measured on a single clock.
     public var onRTT: ((Double) -> Void)?
     /// Fired once the transport is ready, with the network interface in use.
@@ -270,9 +279,20 @@ public final class Session: @unchecked Sendable {
     private func beginPairingOrHandshake() {
         guard !pairingDecided else { return } // one entry per connection (see pairingDecided)
         pairingDecided = true
-        // No pairing config (unit tests) or no TLS security context ⇒ trust the link as-is.
-        guard let pairing = pairingConfig, let tls = tlsPeerInfo else {
+        // No pairing config at all ⇒ this link was never meant to be authenticated (unit tests and
+        // other in-process harnesses), so there is nothing to prove and nothing to pin.
+        guard let pairing = pairingConfig else {
             beginApplicationHandshake()
+            return
+        }
+        // A pairing link with no TLS security context must FAIL CLOSED. Previously this fell into
+        // the same `guard` as the line above and silently skipped CPace *and* pinning — an
+        // unauthenticated session granted in full. Nothing reaches it today because
+        // TCPTransport refuses a connection with no verified peer identity, but that is one
+        // refactor away from becoming an auth bypass, so state the invariant here as well.
+        guard let tls = tlsPeerInfo else {
+            coreLog.error("session[\(self.role.rawValue, privacy: .public)] pairing configured but TLS peer info is missing → BYE(auth)")
+            closeSendingBye(SessionConstants.authFailureReason)
             return
         }
         let alreadyPaired = pairing.trustStore.pinned(for: tls.peerDeviceId)?.spkiHash == tls.peerSPKIHash.hexString
@@ -453,6 +473,10 @@ public final class Session: @unchecked Sendable {
         guard !appHandshakeStarted else { return }
         appHandshakeStarted = true
         coreLog.info("session[\(self.role.rawValue, privacy: .public)] transport ready → sending HELLO")
+        // Every route into this method has already established that the peer is who it claims to
+        // be: CPace confirmed, or an existing pin matched, or there is no pairing config at all.
+        // Announce that once, here, rather than duplicating the condition at each call site.
+        if pairingConfig != nil { onAuthenticated?() }
         startHeartbeat()
         sendHello()
         // DISPLAY_INFO is deferred until AFTER the peer's HELLO is received and validated (E6):

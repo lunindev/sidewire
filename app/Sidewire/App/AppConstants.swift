@@ -10,7 +10,10 @@ enum DeviceIdentity {
     /// device's public key, so a peer cannot claim this id without holding the matching private
     /// key; that binding is what lets the trust store pin by id. Advertised in HELLO and in the
     /// Bonjour "did" TXT record.
-    static var deviceId: String { LocalIdentity.shared.deviceId }
+    /// `nil` when the Keychain would not yield an identity — see `LocalIdentity.shared`. Callers
+    /// cannot connect in that state anyway, so they surface the error rather than substituting a
+    /// placeholder id that would advertise a device nobody can authenticate.
+    static var deviceId: String? { LocalIdentity.shared?.deviceId }
 
     /// The name shown to the other Mac (in HELLO) and advertised over Bonjour. A non-empty
     /// override from Settings (D4) wins — trimmed and capped at 40 chars — otherwise the
@@ -41,7 +44,10 @@ enum DeviceIdentity {
             hdr: false)
     }
 
-    static func makeHello(role: Role, sessionId: String) -> Hello {
+    /// Build this Mac's HELLO. `deviceId` is passed in rather than read from `LocalIdentity` here,
+    /// so the caller — which already had to obtain an identity to open a transport at all — proves
+    /// it has one instead of this silently substituting a placeholder.
+    static func makeHello(role: Role, deviceId: String, sessionId: String) -> Hello {
         Hello(role: role, deviceId: deviceId, deviceName: deviceName,
               sessionId: sessionId, capabilities: capabilities())
     }

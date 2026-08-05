@@ -44,17 +44,32 @@ public final class LocalIdentity: @unchecked Sendable {
     private let keyTag: Data
     private let certLabel: String
 
-    /// The app-wide singleton identity, generated once and reused across launches.
-    public static let shared: LocalIdentity = {
+    /// Computed once, on first access. Holds the failure rather than discarding it so callers can
+    /// tell the user *why* — a locked Keychain and a denied one need different advice.
+    private static let sharedResult: Result<LocalIdentity, Error> = {
         do {
-            return try LocalIdentity(keyTag: Data(LocalIdentity.defaultKeyTag.utf8),
-                                     certLabel: LocalIdentity.defaultCertLabel)
+            return .success(try LocalIdentity(keyTag: Data(LocalIdentity.defaultKeyTag.utf8),
+                                              certLabel: LocalIdentity.defaultCertLabel))
         } catch {
             coreLog.fault("LocalIdentity.shared failed: \(String(describing: error), privacy: .public)")
-            // A device with no usable identity cannot connect; fail loudly rather than limp on.
-            fatalError("Sidewire could not create its device identity: \(error)")
+            return .failure(error)
         }
     }()
+
+    /// The app-wide singleton identity, generated once and reused across launches.
+    ///
+    /// `nil` when the Keychain would not cooperate — locked, access denied, or a damaged item.
+    /// Without an identity there is no TLS and no pairing, so callers genuinely cannot proceed;
+    /// they must surface an error. This used to be a `fatalError` inside the initialiser, which
+    /// turned an ordinary, often transient Keychain state into a hard crash on Display start —
+    /// with no message a user could act on.
+    public static var shared: LocalIdentity? { try? sharedResult.get() }
+
+    /// Why `shared` is `nil`, for diagnostics and user-facing copy. `nil` when it succeeded.
+    public static var sharedFailure: Error? {
+        if case .failure(let error) = sharedResult { return error }
+        return nil
+    }
 
     static let defaultKeyTag = "com.kinocoder.sidewire.identity.key"
     static let defaultCertLabel = "Sidewire Device Identity"

@@ -22,6 +22,10 @@ final class DisplayController: ObservableObject {
     private let powerAssertion = PowerAssertion()
     private var decoder: VideoDecoder?
     private var session: Session?
+    /// Accepted connections that have not yet authenticated. They are deliberately kept out of
+    /// `session` so they cannot drive any state — see `accept(_:)` and `promote(_:)`. Bounded by
+    /// `maxPendingSessions`.
+    private var pendingSessions: [Session] = []
     private var escMonitor: Any?
     private var wakeObserver: Any?
     /// Window/app-state observers backing `updateGrab()`. Re-armed whenever the presenter moves
@@ -203,14 +207,26 @@ final class DisplayController: ObservableObject {
     /// ("did", so a paired Source can enforce key pinning) and its Thunderbolt link-local IP
     /// ("tb", for a one-click cable connect) over Bonjour TXT.
     private func startListener() {
-        var txt: [String: String] = ["did": DeviceIdentity.deviceId]
+        // No identity ⇒ no TLS and no pairing, so there is nothing to listen with. Say so instead
+        // of crashing: a locked or access-denied Keychain is an ordinary, recoverable state.
+        guard let identity = LocalIdentity.shared, let deviceId = DeviceIdentity.deviceId else {
+            let reason = LocalIdentity.sharedFailure.map { String(describing: $0) } ?? "unknown"
+            Log.display.fault("cannot start listening: no device identity (\(reason, privacy: .public))")
+            statusText = String(localized: "Can't access the Keychain — Sidewire needs it to identify this Mac.")
+            return
+        }
+        var txt: [String: String] = ["did": deviceId]
         if let tb = InterfaceMonitor.localThunderboltIP() { txt["tb"] = tb }
-        listener.start(identity: LocalIdentity.shared, txt: txt)
+        listener.start(identity: identity, txt: txt)
     }
 
     func stop() {
         closeSession(reason: "user") // releases the grab first — see closeSession
         session = nil
+        // Un-authenticated connections are not reachable through `session`, so close them here or
+        // they would outlive the controller holding open sockets and heartbeat timers.
+        pendingSessions.forEach { $0.close(reason: "user") }
+        pendingSessions.removeAll()
         listener.stop()
         interfaceMonitor.stop()
         if let wakeObserver {
@@ -256,34 +272,52 @@ final class DisplayController: ObservableObject {
         session?.close(reason: reason)
     }
 
+    /// Cap on simultaneously-held connections that have not yet proven themselves. A legitimate
+    /// Source needs exactly one; the ceiling exists so a connect flood cannot pile up sessions,
+    /// sockets and heartbeat timers for free.
+    private static let maxPendingSessions = 4
+
     private func accept(_ transport: TCPTransport) {
         Log.event(.display, "accepting incoming connection")
-        // Menu-bar-only: with the main window closed, there's no view to present into, so video
-        // would decode into a void and input capture would arm invisibly. Surface the window
-        // now (enterImmersive retries until it mounts).
-        if presenter.window == nil {
-            Log.display.notice("accepting with no presenter window (menu-bar-only) → opening main window")
-            MainWindowOpener.show()
+
+        guard pendingSessions.count < Self.maxPendingSessions else {
+            Log.display.notice("refusing connection: \(self.pendingSessions.count) unauthenticated connections already pending")
+            transport.cancel()
+            return
         }
 
-        // Newest connection wins (Phase 0). Phase 1 adds proper multi-peer/reconnect logic.
-        // Via closeSession so a supersede mid-gesture releases what the outgoing session was
-        // holding — the old session's onClosed can never do it, since `self.session` is reassigned
-        // below before that callback's main-actor hop lands, so its identity guard rejects it.
-        closeSession(reason: SessionConstants.supersededReason)
-
+        // The listener could not have started without an identity, so this is belt-and-braces —
+        // but a nil here would mean advertising a device no peer could authenticate.
+        guard let deviceId = DeviceIdentity.deviceId else {
+            Log.display.fault("refusing connection: no device identity")
+            transport.cancel()
+            return
+        }
         let snapshot = currentDisplayInfo()
-        let hello = DeviceIdentity.makeHello(role: .display, sessionId: UUID().uuidString)
+        let hello = DeviceIdentity.makeHello(role: .display, deviceId: deviceId, sessionId: UUID().uuidString)
         let session = Session(transport: transport, role: .display, localHello: hello)
         // Pairing: a first-time Source must complete the CPace PAKE against the PIN shown here;
         // a Source we've already pinned skips it (Session checks the trust store).
         session.pairingConfig = PairingConfig(pin: pairingPIN, trustStore: KeychainTrustStore.shared,
                                               rateLimiter: rateLimiter)
-        self.session = session
-        firstVideoLogged = false
-        firstDecodedLogged = false
+        // Held aside, NOT installed as `self.session`. Until this peer authenticates it must not
+        // touch a thing: every callback below identity-guards on `self.session === session`, which
+        // is false for a pending session, so none of them can drive the UI, the decoder or the
+        // input grab. Promotion happens in `promote(_:)` once `onAuthenticated` fires.
+        pendingSessions.append(session)
 
         session.provideDisplayInfo = { snapshot }
+        // The authentication gate. Before this fires the peer is an anonymous stranger who has
+        // completed nothing but a TCP connect; after it, CPace has succeeded or an existing pin
+        // matched. Displacing the live session used to happen at accept() — i.e. on behalf of that
+        // stranger — which let anyone on the LAN tear down a running session in a loop with
+        // `while true; do nc <display-ip> 5005; done`, no PIN and no certificate required.
+        session.onAuthenticated = { [weak self, weak session] in
+            Task { @MainActor in
+                guard let self, let session else { return }
+                self.promote(session)
+            }
+        }
         session.onPaired = { peer in
             Task { @MainActor in
                 Log.display.info("paired with Source \(peer.deviceId)")
@@ -323,7 +357,14 @@ final class DisplayController: ObservableObject {
         }
         session.onClosed = { [weak self, weak session] reason in
             Task { @MainActor in
-                guard let self, let session, self.session === session else { return }
+                guard let self, let session else { return }
+                guard self.session === session else {
+                    // A pending session that died before authenticating (wrong PIN, a port
+                    // scanner, a dropped link). Release the slot; touch no UI state — it never
+                    // owned any.
+                    self.pendingSessions.removeAll { $0 === session }
+                    return
+                }
                 self.handleClosed(reason)
             }
         }
@@ -347,6 +388,38 @@ final class DisplayController: ObservableObject {
         }
 
         session.start()
+    }
+
+    /// Install an authenticated session as the live one, displacing whatever was streaming.
+    ///
+    /// This is the only place that supersedes an existing session, and it runs strictly after the
+    /// newcomer has proven itself. Everything that used to happen eagerly in `accept()` — opening
+    /// the main window, closing the incumbent, resetting the first-frame log flags — happens here
+    /// instead, so an unauthenticated peer cannot cause any of it.
+    private func promote(_ session: Session) {
+        // Ignore a promotion for a session that is no longer pending: it was already promoted, or
+        // it closed while `onAuthenticated` was in flight to the main actor.
+        guard pendingSessions.contains(where: { $0 === session }) else { return }
+        pendingSessions.removeAll { $0 === session }
+
+        // Menu-bar-only: with the main window closed there is no view to present into, so video
+        // would decode into a void and the input capture would arm invisibly. Surface the window
+        // now (enterImmersive retries until it mounts).
+        if presenter.window == nil {
+            Log.display.notice("promoting with no presenter window (menu-bar-only) → opening main window")
+            MainWindowOpener.show()
+        }
+
+        // Newest *authenticated* connection wins. Via closeSession so a supersede mid-gesture
+        // releases what the outgoing session was holding — the old session's onClosed can never do
+        // it, since `self.session` is reassigned below before that callback's main-actor hop
+        // lands, so its identity guard rejects it.
+        closeSession(reason: SessionConstants.supersededReason)
+
+        self.session = session
+        firstVideoLogged = false
+        firstDecodedLogged = false
+        Log.event(.display, "promoted an authenticated session")
     }
 
     private func applyPhase(_ phase: SessionPhase) {

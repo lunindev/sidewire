@@ -361,7 +361,14 @@ final class SourceController: ObservableObject {
     func connect(to peer: DiscoveredPeer, forceThunderbolt: Bool = false) {
         linkOrigin = .discovered
         let iface = selectedInterface
-        let identity = LocalIdentity.shared
+        // No identity ⇒ no TLS client certificate, so the handshake could never complete. Report
+        // it rather than crashing on a Keychain that is merely locked.
+        guard let identity = LocalIdentity.shared else {
+            let reason = LocalIdentity.sharedFailure.map { String(describing: $0) } ?? "unknown"
+            Log.source.fault("cannot connect: no device identity (\(reason, privacy: .public))")
+            statusText = String(localized: "Can't access the Keychain — Sidewire needs it to identify this Mac.")
+            return
+        }
         // If this peer is already paired, enforce public-key pinning against its advertised
         // device id (a changed key → "keyChanged"). Unpaired ⇒ nil (accept any key, pair via PIN).
         let expected = pinnedExpectation(for: peer.deviceId)
@@ -397,7 +404,14 @@ final class SourceController: ObservableObject {
     func connect(host: String, port: UInt16 = ProtocolConstants.fallbackPort) {
         linkOrigin = .manualAddress // maybeAutoConnect overrides this; the retry bound is everEstablished
         let iface = selectedInterface
-        let identity = LocalIdentity.shared
+        // No identity ⇒ no TLS client certificate, so the handshake could never complete. Report
+        // it rather than crashing on a Keychain that is merely locked.
+        guard let identity = LocalIdentity.shared else {
+            let reason = LocalIdentity.sharedFailure.map { String(describing: $0) } ?? "unknown"
+            Log.source.fault("cannot connect: no device identity (\(reason, privacy: .public))")
+            statusText = String(localized: "Can't access the Keychain — Sidewire needs it to identify this Mac.")
+            return
+        }
         // Manual IP has no advertised device id, so key pinning can't be pre-enforced here (the
         // peer's key is still verified against the trust store post-handshake by the Session).
         // Remember the last IP dialed by hand so the field is pre-filled next launch — the
@@ -518,7 +532,15 @@ final class SourceController: ObservableObject {
 
         // One stable HELLO (and sessionId) reused across reconnect attempts — idempotent
         // resume. Built here on the main actor (capabilities read NSScreen).
-        let hello = DeviceIdentity.makeHello(role: .source, sessionId: UUID().uuidString)
+        // startLink is only reached through connect(to:)/connect(host:), both of which have
+        // already established an identity — but re-checking is one line and keeps this function
+        // honest on its own terms rather than on its callers' behaviour.
+        guard let deviceId = DeviceIdentity.deviceId else {
+            Log.source.fault("cannot connect: no device identity")
+            statusText = String(localized: "Can't access the Keychain — Sidewire needs it to identify this Mac.")
+            return
+        }
+        let hello = DeviceIdentity.makeHello(role: .source, deviceId: deviceId, sessionId: UUID().uuidString)
         // Snapshot settings on the main actor; makeSession runs on the reconnector queue.
         let settings = AppSettings.shared
         activeQuality = QualitySnapshot(settings) // D3: what this link is using
