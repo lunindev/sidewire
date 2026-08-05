@@ -23,9 +23,18 @@ public protocol Transport: AnyObject {
     /// "Thunderbolt (bridge0)", "Wi-Fi") once the connection is established.
     var onInterface: ((String) -> Void)? { get set }
     /// Fired once, just before `.ready`, on a cert-based TLS transport: the peer's pinned-key
-    /// identity + the pairing channel binding. `nil`-firing (never called) for non-TLS fakes,
-    /// which makes the `Session` treat the link as already-trusted (no PIN proof) — the path
-    /// unit tests exercise. See `TLSPeerInfo` / docs/05.
+    /// identity + the pairing channel binding. See `TLSPeerInfo` / docs/05.
+    ///
+    /// Never called by non-TLS fakes. What the `Session` does then depends on whether it is a
+    /// pairing link, and the distinction is a security boundary:
+    ///
+    ///   • **No `pairingConfig`** — an in-process harness, never meant to authenticate anything.
+    ///     The link is treated as already-trusted and the handshake proceeds. This is the path
+    ///     most unit tests exercise.
+    ///   • **A `pairingConfig` but no `TLSPeerInfo`** — a link that is *supposed* to authenticate
+    ///     but has no verified peer identity to bind the PAKE to and nothing to pin. It **fails
+    ///     closed** with `BYE(auth)`. Treating this like the case above would hand out a fully
+    ///     authenticated session to an unverified peer.
     var onSecurity: ((TLSPeerInfo) -> Void)? { get set }
 
     func start()

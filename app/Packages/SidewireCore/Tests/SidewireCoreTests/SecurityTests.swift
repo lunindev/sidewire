@@ -270,4 +270,163 @@ final class SecurityTests: XCTestCase {
         XCTAssertGreaterThan(sourceTap.receivedCount(of: .bye), 0)
         listener.stop()
     }
+
+    // MARK: - The authentication gate (onAuthenticated)
+
+    /// `onAuthenticated` is what the Display uses to decide when an incoming connection may
+    /// displace the session already streaming. Everything in this section exists to keep that
+    /// decision behind a proof — a connection that has proven nothing must never fire it.
+
+    /// The DoS that motivated the gate: a peer that opens a connection and then does nothing.
+    /// Before the fix, merely being accepted was enough to tear down a live session, so
+    /// `while true; do nc <display-ip> 5005; done` from anywhere on the LAN was a denial of
+    /// service with no PIN and no certificate.
+    func testConnectionThatProvesNothingNeverAuthenticates() throws {
+        let displayID = try bag.make(), sourceID = try bag.make()
+        let displayTrust = InMemoryTrustStore()
+
+        final class Flag: @unchecked Sendable { var authenticated = false }
+        let flag = Flag()
+        let accepted = expectation(description: "display accepted the connection")
+        let (listener, port) = startDisplay(identity: displayID, trust: displayTrust, pin: "123456") { s, _ in
+            s.onAuthenticated = { flag.authenticated = true }
+            accepted.fulfill()
+        }
+
+        // A transport that completes TLS and then stays silent — it never leads with PAIR_MSG or
+        // HELLO, which is precisely what an attacker's bare connect looks like.
+        let mute = TCPTransport(host: "127.0.0.1", port: port, identity: sourceID)
+        mute.start()
+        wait(for: [accepted], timeout: 15)
+
+        // Give the Display ample time to do the wrong thing.
+        let settle = expectation(description: "settle")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { settle.fulfill() }
+        wait(for: [settle], timeout: 5)
+
+        XCTAssertFalse(flag.authenticated,
+                       "a peer that proved nothing must never authenticate — it would be able to supersede a live session")
+        XCTAssertNil(displayTrust.pinned(for: sourceID.deviceId), "and it must certainly not be pinned")
+        mute.cancel()
+        listener.stop()
+    }
+
+    /// A wrong PIN fails the PAKE, so the gate must stay shut.
+    func testWrongPINNeverAuthenticates() throws {
+        let displayID = try bag.make(), sourceID = try bag.make()
+        let displayTrust = InMemoryTrustStore()
+
+        final class Flag: @unchecked Sendable { var authenticated = false }
+        let flag = Flag()
+        let (listener, port) = startDisplay(identity: displayID, trust: displayTrust, pin: "111111") { s, _ in
+            s.onAuthenticated = { flag.authenticated = true }
+        }
+
+        let (source, _) = makeSource(port: port, identity: sourceID, pin: "999999", trust: InMemoryTrustStore())
+        let closed = expectation(description: "closed")
+        closed.assertForOverFulfill = false
+        source.onClosed = { _ in closed.fulfill() }
+        source.start()
+        wait(for: [closed], timeout: 15)
+
+        XCTAssertFalse(flag.authenticated, "a failed PIN proof must not authenticate the link")
+        listener.stop()
+    }
+
+    /// The happy path: the gate opens once CPace confirms — and not before the proof is exchanged.
+    func testAuthenticatesAfterASuccessfulProof() throws {
+        let displayID = try bag.make(), sourceID = try bag.make()
+        let displayTrust = InMemoryTrustStore(), sourceTrust = InMemoryTrustStore()
+
+        let authenticated = expectation(description: "display authenticated the source")
+        authenticated.assertForOverFulfill = false
+        let (listener, port) = startDisplay(identity: displayID, trust: displayTrust, pin: "123456") { s, _ in
+            s.onAuthenticated = { authenticated.fulfill() }
+        }
+
+        let (source, _) = makeSource(port: port, identity: sourceID, pin: "123456", trust: sourceTrust)
+        source.start()
+        wait(for: [authenticated], timeout: 15)
+
+        XCTAssertNotNil(displayTrust.pinned(for: sourceID.deviceId))
+        source.close(reason: "user")
+        listener.stop()
+    }
+
+    /// The reason this is a separate callback from `onPaired`: a returning, already-pinned peer
+    /// writes no new pin, so `onPaired` stays silent — but the link is authenticated and the
+    /// Display must still be allowed to promote it. If this regressed, a paired Mac reconnecting
+    /// would silently fail to take over the session.
+    func testPairedReconnectAuthenticatesEvenThoughNothingIsNewlyPinned() throws {
+        let displayID = try bag.make(), sourceID = try bag.make()
+        let displayTrust = InMemoryTrustStore(), sourceTrust = InMemoryTrustStore()
+        // Pre-pin both sides, so the reconnect skips CPace entirely.
+        displayTrust.pin(pin(for: sourceID, name: "S"))
+        sourceTrust.pin(pin(for: displayID, name: "D"))
+
+        final class Flags: @unchecked Sendable { var authenticated = false; var paired = false }
+        let flags = Flags()
+        let authenticated = expectation(description: "authenticated")
+        authenticated.assertForOverFulfill = false
+        let (listener, port) = startDisplay(identity: displayID, trust: displayTrust, pin: "123456") { s, _ in
+            s.onAuthenticated = { flags.authenticated = true; authenticated.fulfill() }
+            s.onPaired = { _ in flags.paired = true }
+        }
+
+        let (source, sourceTap) = makeSource(port: port, identity: sourceID, pin: "123456", trust: sourceTrust,
+                                             expectedPeerDeviceId: displayID.deviceId)
+        source.start()
+        wait(for: [authenticated], timeout: 15)
+
+        XCTAssertTrue(flags.authenticated)
+        XCTAssertFalse(flags.paired, "nothing was newly pinned, so onPaired must stay silent")
+        XCTAssertEqual(sourceTap.sentCount(of: .pairMsg), 0, "a paired reconnect exchanges no proof")
+        source.close(reason: "user")
+        listener.stop()
+    }
+
+    /// A pairing link whose transport never reported a TLS security context must FAIL CLOSED.
+    ///
+    /// `beginPairingOrHandshake` used to treat "no pairing config" and "no TLS peer info" as one
+    /// condition and proceed for both — skipping CPace *and* pinning, i.e. handing out a fully
+    /// authenticated session to a peer with no verified identity. Nothing reaches that state today
+    /// because `TCPTransport` refuses a connection without a peer identity, but the guard is one
+    /// refactor away from being load-bearing, so assert it directly.
+    ///
+    /// Note the *other* half of the split is still allowed and is exercised throughout these
+    /// suites: a session with NO pairing config at all is an in-process harness, not a pairing
+    /// link, and proceeds as before.
+    func testPairingLinkWithoutTLSContextFailsClosed() {
+        let transport = NoSecurityTransport()
+        let session = Session(transport: transport, role: .display,
+                              localHello: testHello(role: .display, name: "D"))
+        session.pairingConfig = PairingConfig(pin: "123456", trustStore: InMemoryTrustStore(), rateLimiter: nil)
+
+        final class RB: @unchecked Sendable { var reason: String?; var authenticated = false }
+        let rb = RB()
+        let closed = expectation(description: "closed")
+        closed.assertForOverFulfill = false
+        session.onAuthenticated = { rb.authenticated = true }
+        session.onClosed = { rb.reason = $0; closed.fulfill() }
+        session.start()
+        wait(for: [closed], timeout: 5)
+
+        XCTAssertEqual(rb.reason, SessionConstants.authFailureReason,
+                       "a pairing link with no TLS peer info must close with an auth failure")
+        XCTAssertFalse(rb.authenticated, "and must never report itself authenticated")
+    }
+}
+
+/// A transport that reaches `.ready` without ever reporting a `TLSPeerInfo` — the shape a non-TLS
+/// fake has. Used to prove that combining that with a pairing config fails closed.
+private final class NoSecurityTransport: Transport, @unchecked Sendable {
+    var onFrame: ((Frame) -> Void)?
+    var onState: ((TransportState) -> Void)?
+    var onInterface: ((String) -> Void)?
+    var onSecurity: ((TLSPeerInfo) -> Void)?   // deliberately never fired
+    private(set) var sent: [UInt8] = []
+
+    func start() { onState?(.ready) }
+    func cancel() { onState?(.cancelled) }
+    func send(rawType: UInt8, flags: UInt8, seq: UInt32, payload: Data) { sent.append(rawType) }
 }
