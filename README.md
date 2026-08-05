@@ -9,7 +9,7 @@ This repository is a small monorepo:
 
 ```
 app/        the product — native macOS app (SwiftUI, Universal 2) + a Rust Windows/Linux client
-landing/    the marketing site — Astro + TypeScript, static, containerised for GitLab CI
+landing/    the marketing site — Astro + TypeScript, static, served by nginx in a container
 scripts/    release tooling shared by both (version bump + changelog + tag)
 ```
 
@@ -56,10 +56,9 @@ then writes a section to [`CHANGELOG.md`](CHANGELOG.md) from your Conventional C
 tags `vX.Y.Z`.
 
 > **This flow has never been run.** There are no tags yet, so the first bump would write a changelog
-> section spanning the entire history, and [`.gitlab-ci.yml`](.gitlab-ci.yml) — which is gated on
-> tags and pinned to a self-hosted runner — has never fired. The native macOS app is not built by
-> any pipeline: it needs Apple signing/notarization and is built by hand with
-> `app/scripts/release.sh`. See [`TODO.md`](TODO.md).
+> section spanning the entire history. The release workflows
+> ([`.github/workflows/`](.github/workflows)) are written but have never been executed on a
+> runner, and no release has ever been cut. See [`TODO.md`](TODO.md).
 
 ## License
 

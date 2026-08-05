@@ -133,6 +133,42 @@ jobs:
             exit 1
           fi
 
+  # ── Minimum supported Rust version ──────────────────────────────────────────────────────────
+  # Cargo.toml declares rust-version = "1.90" and the README repeats it, but nothing has ever
+  # checked it — local toolchains are far newer. A `cargo check` on the exact MSRV is cheap and
+  # turns a claim into a fact. Kept separate from the `rust` job so an MSRV break is legible on its
+  # own and does not mask a real test failure.
+  msrv:
+    name: Rust MSRV (1.90)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg 7
+        run: brew install ffmpeg@7 pkg-config
+
+      - name: Export the ffmpeg environment
+        run: |
+          FFMPEG_DIR="$(brew --prefix ffmpeg@7)"
+          {
+            echo "FFMPEG_DIR=$FFMPEG_DIR"
+            echo "PKG_CONFIG_PATH=$FFMPEG_DIR/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "DYLD_FALLBACK_LIBRARY_PATH=$FFMPEG_DIR/lib:${DYLD_FALLBACK_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.90'
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/clients/sidewire-viewer
+          key: msrv
+
+      - name: Check
+        working-directory: app/clients/sidewire-viewer
+        run: cargo check --workspace --all-targets
+
   # ── The landing site ────────────────────────────────────────────────────────────────────────
   landing:
     name: Landing site

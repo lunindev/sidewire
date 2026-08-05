@@ -46,7 +46,7 @@ pnpm check          # astro check (TypeScript / template diagnostics)
 
 ## Container (what CI ships)
 
-The GitLab pipeline (`.gitlab-ci.yml` at the repo root) builds the `landing-prod` target on every
+The release workflow (`.github/workflows/release-landing.yml`) builds the `landing-prod` target on every
 git tag and pushes it to the registry:
 
 ```bash

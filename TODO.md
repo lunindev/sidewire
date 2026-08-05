@@ -90,9 +90,10 @@ These are things an outside reader hits in the first sixty seconds.
       There is not one image or badge in any README. For a product whose entire pitch is *"a real
       second desktop"*, showing it is worth more than several paragraphs.
 
-- [ ] **Decide what happens to `.gitlab-ci.yml`.**
+- [x] **Decide what happens to `.gitlab-ci.yml`.**
       It is inert on GitHub. Either port the landing build to GitHub Actions and delete it, or keep
       it and say in one line that it serves a GitLab mirror.
+      **Done — deleted.** It could never have worked on GitHub, and could not have worked on GitLab either: it was gated on tags the release tooling failed to push, and pinned to a self-hosted runner (`tags: - local`) that does not exist on shared infrastructure. Replaced by `.github/workflows/release-landing.yml`, which builds the same `landing-prod` target and pushes to GHCR on a tag. The container was kept rather than moving to Pages because the site's strict CSP and `Permissions-Policy` come from `nginx.conf`, and Pages cannot set response headers. All references repointed.
 
 ---
 
@@ -130,7 +131,7 @@ These are things an outside reader hits in the first sixty seconds.
       guides suggest). The secret must be a single line with no trailing newline.
       **Done.** Uses `--ed-key-file -` with `SPARKLE_ED_PRIVATE_KEY` when set, falling back to the login keychain.
 
-- [ ] **Write `.github/workflows/release-macos.yml`.**
+- [x] **Write `.github/workflows/release-macos.yml`.**
       Tag-triggered. Import the Developer ID `.p12` from a base64 secret into a temporary keychain —
       all four `security` calls are required, and omitting `set-key-partition-list` makes `codesign`
       return `errSecInternalComponent` because it tries to raise a GUI prompt. Then run `release.sh`
@@ -139,9 +140,11 @@ These are things an outside reader hits in the first sixty seconds.
       revocable independently of the Apple ID and survives password and 2FA changes.
       Secrets needed: `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`, `MACOS_KEYCHAIN_PASSWORD`,
       `NOTARY_ISSUER_ID`, `NOTARY_KEY_ID`, `NOTARY_KEY_P8_BASE64`, `SPARKLE_ED_PRIVATE_KEY`.
+      **Done.** Tag-triggered: imports the Developer ID `.p12` into a temporary keychain (all four `security` calls, including `set-key-partition-list`), stages the App Store Connect API key, runs `release.sh` with `SIDEWIRE_STRICT=1` and `SIDEWIRE_APPCAST=1`, re-verifies `stapler validate` + `spctl` independently, writes `SHA256SUMS`, publishes the release with `gh release create --verify-tag`, and deletes the keychain in an `always()` step. *Never executed* — use `workflow_dispatch` against a throwaway tag first.
 
-- [ ] **No GitHub-release publishing exists anywhere.** There is no `gh release`, no upload step —
+- [x] **No GitHub-release publishing exists anywhere.** There is no `gh release`, no upload step —
       "upload the DMG and appcast to the Release" is currently a human action in every document.
+      **Done.** `gh release create` in `release-macos.yml` uploads the DMG, `appcast.xml` and `SHA256SUMS`.
 
 ### Versions
 
@@ -227,7 +230,13 @@ These are things an outside reader hits in the first sixty seconds.
 
 ### The macOS app
 
-- [ ] **The app target has zero tests.** `app/project.yml` declares exactly one target. The 34 Swift
+- [ ] **The app target has zero tests.** *(Partial: the security logic behind the DoS fix is now
+      covered in `SidewireCoreTests` — five tests asserting that `onAuthenticated` fires only after
+      a proof, stays shut on a wrong PIN and on a connection that proves nothing, still fires on a
+      paired reconnect where nothing is newly pinned, and that a pairing link with no TLS context
+      fails closed. Each was mutation-tested: they fail against the pre-fix behaviour. What remains
+      uncovered is the SwiftUI/controller layer itself, which needs a test target and some
+      dependency injection.)* `app/project.yml` declares exactly one target. The 34 Swift
       files under `app/Sidewire/` — role controllers, virtual display, presenter, every SwiftUI view
       — have no coverage. The DoS above lives in precisely that untested layer. Add a test target.
 
@@ -242,6 +251,16 @@ These are things an outside reader hits in the first sixty seconds.
       `swift-tools-version:5.9` with no `swiftLanguageMode` and no `StrictConcurrency`, while the
       README says "developed on Xcode 26 / Swift 6". The build is warning-free *in Swift 5 mode* —
       no data-race checking has ever been applied to this fairly concurrent code.
+      **Measured, not migrated.** Built with `SWIFT_STRICT_CONCURRENCY=complete` on a clean tree:
+      `SidewireProtocol` **0** warnings, `SidewireCore` **14**, the app target **98**
+      concurrency-related (155 warnings in total), several of them explicitly *"this is an error in
+      the Swift 6 language mode"*. So this is genuine work, not a flag flip — the recurring shapes
+      are `reference to captured var 'self' in concurrently-executing code` (Session, Reconnector,
+      Discovery), main-actor properties touched from nonisolated contexts (InputCapture), and
+      non-Sendable access from `deinit` (AppModel). Deliberately not attempted while preparing a
+      release: it touches the concurrency-critical paths the product depends on. Do it as its own
+      change, package-first (Protocol is already clean, Core is 14 warnings away), then the app.
+      Until then the README should not claim Swift 6.
 
 - [x] **`swift test` in `SidewireCore` dirties the working tree.** It rewrites
       `app/Packages/SidewireCore/Package.resolved` to drop a stale `sparkle` pin that does not belong
@@ -249,10 +268,11 @@ These are things an outside reader hits in the first sixty seconds.
       spurious diff. Fix the checked-in file.
       **Done, and the original diagnosis was incomplete.** The file does not merely hold a stale pin — it oscillates: `swift test` resolves the package alone and drops Sparkle, `xcodebuild` resolves the whole project and writes it back, so *whichever* version is committed leaves someone with a spurious diff. It is a library's resolved file, which SwiftPM ignores in consumers, so it is now untracked. The app's real lock is the exact Sparkle pin.
 
-- [ ] **Review the `--vd-helper` re-exec path.** `app/Sidewire/App/main.swift` dispatches on a bare
+- [x] **Review the `--vd-helper` re-exec path.** `app/Sidewire/App/main.swift` dispatches on a bare
       `CommandLine.arguments.contains("--vd-helper")` with no ancestry check, and
       `VirtualDisplayManager` re-execs the app's own binary with it. The app is deliberately
       unsandboxed. That combination deserves a deliberate look.
+      **Reviewed — not a privilege boundary.** The helper runs as the same user with the same rights as the app, creates the same virtual display, and is driven over a private pipe; anyone able to invoke the binary with arguments can already run the app. There was a real *correctness* bug though: the dispatch used `arguments.contains("--vd-helper")`, which would also match a stray occurrence (a file path, a Launch Services argument) and silently start a headless helper where the user expected the app. Now checks the first argument specifically.
 
 - [ ] **Reconsider the bundle identifier.** `com.kinocoder.sidewire` matches neither the repo name
       nor any signing identity, and it is baked into TCC grants and keychain item tags — changing it
@@ -270,13 +290,14 @@ These are things an outside reader hits in the first sixty seconds.
       `av_interleaved_write_frame` ungated), so `format` must stay.
       **Done.** Verified with `otool -L`: seven libraries → three (`libavcodec`, `libavformat`, `libavutil`), tests still green. A CI gate now fails if the count grows again.
 
-- [ ] **Show the pairing PIN in the window.**
+- [x] **Show the pairing PIN in the window.**
       [`main.rs:242`](app/clients/sidewire-viewer/sidewire-viewer/src/main.rs) prints it only to
       stdout, and `packaging/sidewire-viewer.desktop` sets `Terminal=false` — so a user who installs
       the AppImage and launches it from the applications menu gets a window and no PIN, and the app
       is unusable. On Windows the mirror image: with no `#![windows_subsystem = "windows"]` a console
       pops up next to the video window, and adding the attribute hides the PIN exactly as on Linux.
       Render it as an overlay in the pre-connection idle state.
+      **Partially addressed.** The real fix (rendering the PIN in the winit window) is still open. As an honest stopgap the `.desktop` file now sets `Terminal=true`, so a menu-launched Linux install is at least usable instead of showing a window with no way to learn the PIN. Flip it back once the overlay exists.
 
 - [ ] **Nothing in `packaging/` produces an artifact.** Three files, all packaging steps are
       `echo "TODO"`, and `ci-release.yml` still uses pre-monorepo paths (`clients/sidewire-viewer`
@@ -290,8 +311,9 @@ These are things an outside reader hits in the first sixty seconds.
       `ldd` / `dumpbin /dependents` / `otool -L`, failing if any non-system library is missing from
       the bundle. Hand-maintained lists go stale on every ffmpeg bump.
 
-- [ ] **No MSRV enforcement.** `rust-version = "1.90"` is declared, there is no
+- [x] **No MSRV enforcement.** `rust-version = "1.90"` is declared, there is no
       `rust-toolchain.toml`, and local rustc is 1.97.1 — so the claim has never been tested.
+      **Done.** A separate `msrv` CI job runs `cargo check` on exactly 1.90, so the declared MSRV is verified rather than asserted. Kept out of the main `rust` job so a break is legible on its own. *Whether 1.90 actually compiles this tree is still unknown* — no local toolchain that old exists here, which is the entire point of the job.
 
 - [ ] **Cross-compilation was never attempted.** The "not shippable" verdict rests on `packaging/`
       being empty, not on a failed build. Build natively per OS; `cross`/`cargo-zigbuild` are

@@ -8,7 +8,11 @@ Comment=Use this PC as a wireless/wired extended display for a Mac (Sidewire Dis
 # _sidewire._tcp over mDNS, and opens the video window once a Mac Source connects.
 Exec=sidewire-viewer
 Icon=sidewire-viewer
-Terminal=false
+# Terminal=true is a deliberate stopgap, not an oversight. The 6-digit pairing PIN is currently
+# printed to stdout only, so with Terminal=false a user launching this from the applications menu
+# gets a video window and no way to learn the PIN — the app is simply unusable that way. Once the
+# PIN is rendered in the window itself (TODO.md, P2), flip this back to false.
+Terminal=true
 Categories=Utility;Network;RemoteAccess;
 Keywords=display;screen;remote;mac;sidewire;extend;
 StartupNotify=true

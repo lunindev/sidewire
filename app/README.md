@@ -56,7 +56,11 @@ native app now lives under `app/` in the monorepo (the landing site is in `../la
 
 ### 1. The macOS app (runs on both your M4 Max and the Intel i9)
 
-Requirements: macOS 14+, Xcode 16+ (developed on Xcode 26 / Swift 6), [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+Requirements: macOS 14+, Xcode 16+ (developed on Xcode 26), [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+
+> The code is built in **Swift 5 language mode** (`SWIFT_VERSION = 5.0`). A Swift 6 migration has
+> not been done — under `SWIFT_STRICT_CONCURRENCY=complete` the app target still reports 98
+> concurrency warnings, several of which are errors in Swift 6 mode. See [`TODO.md`](../TODO.md).
 
 ```bash
 brew install xcodegen                 # once, if needed
