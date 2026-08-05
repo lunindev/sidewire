@@ -3,7 +3,7 @@
 # Sidewire — generate + EdDSA-sign the Sparkle appcast.  *** OWNER-RUN ***
 #
 # This needs the EdDSA PRIVATE update key, which lives only in the owner's login keychain, so it
-# is NOT run by CI (unless the key is provided as a secret — see .github/workflows/release.yml).
+# is NOT run by CI (there is no CI yet; a release workflow is planned — see TODO.md).
 # A leaked update key lets an attacker ship a malicious "update", so guard it like a signing key.
 #
 # One-time, before the first release (you, once):

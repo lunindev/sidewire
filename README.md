@@ -16,7 +16,23 @@ scripts/    release tooling shared by both (version bump + changelog + tag)
 - **[app/README.md](app/README.md)** — everything about the native app: architecture, how to build
   the macOS app and the Rust client, distribution/notarization, and Sparkle auto‑update.
 - **[landing/README.md](landing/README.md)** — the landing site: develop, build, and the container
-  image CI publishes.
+  image the pipeline publishes.
+- **[TODO.md](TODO.md)** — the honest, prioritised list of what is left before this can be released.
+
+## Status — pre-release
+
+**Code-complete and test-covered, but not yet run on physical hardware, and not yet releasable.**
+
+- **Verified:** 40 + 39 Swift tests, 80 Rust tests, and a byte-exact protocol conformance suite
+  ([`app/protocol-vectors/`](app/protocol-vectors/)) that the Swift and Rust implementations
+  reproduce independently.
+- **Not verified:** no build has run on two physical Macs, live Rust↔Swift interop has never been
+  exercised, and no Windows or Linux binary has ever been produced.
+- **Not ready:** there is no CI, no tagged release, no notarized build, and the checked-in signing
+  configuration does not resolve on a fresh clone. [`TODO.md`](TODO.md) tracks all of it.
+
+Requirements: macOS 14+ on both Macs, plus Xcode 16+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+to build from source.
 
 ## Versioning & releases
 
@@ -37,11 +53,13 @@ Each bump updates, in lockstep:
   `app/scripts/release.sh` reads as the single source of truth for the DMG + Sparkle appcast,
 
 then writes a section to [`CHANGELOG.md`](CHANGELOG.md) from your Conventional Commits, commits, and
-tags `vX.Y.Z`. Pushing that tag (`git push --follow-tags`) triggers GitLab CI, which builds the
-landing container image and publishes it to the registry (see [`.gitlab-ci.yml`](.gitlab-ci.yml)).
+tags `vX.Y.Z`.
 
-> The native macOS app is **not** built by GitLab — it needs Apple signing/notarization and is built
-> by GitHub Actions ([`.github/workflows/`](.github/workflows)) and `app/scripts/release.sh`.
+> **This flow has never been run.** There are no tags yet, so the first bump would write a changelog
+> section spanning the entire history, and [`.gitlab-ci.yml`](.gitlab-ci.yml) — which is gated on
+> tags and pinned to a self-hosted runner — has never fired. The native macOS app is not built by
+> any pipeline: it needs Apple signing/notarization and is built by hand with
+> `app/scripts/release.sh`. See [`TODO.md`](TODO.md).
 
 ## License
 

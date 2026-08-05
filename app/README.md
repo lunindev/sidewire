@@ -189,7 +189,7 @@ Sidewire updates itself with [Sparkle 2](https://sparkle-project.org) — an **E
 ./scripts/generate-appcast.sh     # EdDSA-signs dist/*.dmg → dist/appcast.xml (needs your key)
 ```
 
-Then upload `appcast.xml` + the DMG to the GitHub Release. CI ([`.github/workflows/`](../.github/workflows/)): `ci.yml` builds + runs both test suites on every push/PR; `release.yml` is a documented, secret-gated sketch of the full signed/notarized/appcast release.
+Then upload `appcast.xml` + the DMG to the GitHub Release. **There is no CI yet** — `.github/workflows/` does not exist; both the build/test workflow and the signed-release workflow are still to be written (see [`TODO.md`](../TODO.md)). Every step above is manual today.
 
 ## License
 

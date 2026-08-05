@@ -50,9 +50,10 @@ Notes:
 
 ## CI (GitHub Actions)
 
-> **Implemented (Phase 9).** Two workflows under [`.github/workflows/`](../../.github/workflows/):
-> - **`ci.yml`** — build + test on every push/PR (`macos-14`): `brew install xcodegen`, run **both** package suites (`Packages/SidewireProtocol` = 40 tests, `Packages/SidewireCore` = 39 tests), `xcodegen generate`, then a Debug `xcodebuild` with signing **disabled** (`CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`) — the runner has no Apple cert, so this only proves the code compiles, Sparkle links, and its XPC services embed. This one is real and runnable.
-> - **`release.yml`** — a **documented sketch** (`workflow_dispatch`, **never run**) for the signed path: import the Developer ID `.p12` from a base64 secret into a temp keychain, `store-credentials` for notarytool, run `scripts/release.sh`, generate + EdDSA-sign the appcast, and publish the DMG + `appcast.xml` to a GitHub Release. It is a starting point that needs the owner's secrets — see the header comment in the file for the full secret list.
+> **Not set up yet — `.github/workflows/` does not exist.** This section is the *design* for two
+> workflows, not a description of something that runs. See [`TODO.md`](../../TODO.md) (P0).
+> - **`ci.yml`** (planned) — build + test on every push/PR (`macos-14`): `brew install xcodegen`, run **both** package suites (`Packages/SidewireProtocol` = 40 tests, `Packages/SidewireCore` = 39 tests), `xcodegen generate`, then a Debug `xcodebuild` with signing **disabled** (`CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`) — the runner has no Apple cert, so this only proves the code compiles, Sparkle links, and its XPC services embed.
+> - **`release.yml`** (planned) — the signed path: import the Developer ID `.p12` from a base64 secret into a temp keychain, authenticate `notarytool` with an App Store Connect API key, run `scripts/release.sh` in strict mode, generate + EdDSA-sign the appcast, and publish the DMG + `appcast.xml` to a GitHub Release.
 
 - Store the Developer ID `.p12` base64-encoded in a repo secret; on CI, create a temporary keychain, import, build, sign, notarize, staple. Store the EdDSA update key as a separate secret (or sign releases manually).
 - Artifacts: the stapled DMG + the Sparkle appcast entry, published to GitHub Releases.

@@ -3,7 +3,11 @@
 # template: this repo ships a single web artifact (the landing), so only build:landing remains.
 #
 # The native macOS app (app/) is NOT built here — it needs Apple signing / notarization and
-# is built by GitHub Actions (app CI) and scripts/release.sh. GitLab only handles the web side.
+# is built manually with app/scripts/release.sh. GitLab only handles the web side.
+#
+# NOTE: this pipeline has never run. It is gated on `only: tags` and the repo has no tags, and the
+# single job is pinned to a self-hosted runner (`tags: - local`) that does not exist on GitLab.com.
+# See TODO.md before relying on it.
 #
 # Releases are cut with `pnpm version:patch|minor|major`, which bumps every version in lockstep
 # and creates the `vX.Y.Z` tag that triggers this pipeline.
