@@ -29,7 +29,7 @@
 	<!-- OWNER: replace OWNER with the real GitHub org/user hosting the repo. The appcast is
 	     published as a Release asset (see scripts/generate-appcast.sh + release.sh). -->
 	<key>SUFeedURL</key>
-	<string>https://github.com/OWNER/sidewire/releases/latest/download/appcast.xml</string>
+	<string>https://github.com/lunindev/sidewire/releases/latest/download/appcast.xml</string>
 	<!-- OWNER, ONE-TIME: run Sparkle's `generate_keys` once (from the resolved Sparkle SPM
 	     artifact's bin/), keep the PRIVATE key in your login keychain, and paste the printed
 	     PUBLIC key here (replace the placeholder). Until it is a real key, Sparkle FAILS

@@ -76,6 +76,26 @@ jobs:
             *) echo "✗ expected x86_64 and arm64, got: $ARCHS"; exit 1 ;;
           esac
 
+      # An ad-hoc signature has no Team ID, and the hardened runtime turns on Library Validation,
+      # which requires every loaded non-platform library to share the process's Team ID. Combine
+      # them and dyld refuses to map the embedded Sparkle.framework: the build succeeds and the app
+      # dies at launch. That shipped once. Assert the invariant rather than the symptom — launching
+      # a SwiftUI app on a headless runner is not reliable enough to test directly.
+      - name: Ad-hoc signing and hardened runtime must not be combined
+        working-directory: app
+        run: |
+          set -euo pipefail
+          APP=build/ci-dd/Build/Products/Release/Sidewire.app
+          FLAGS=$(codesign -dv "$APP" 2>&1 | sed -n 's/.*flags=\([^ ]*\).*/\1/p')
+          echo "codesign flags: $FLAGS"
+          if echo "$FLAGS" | grep -q adhoc && echo "$FLAGS" | grep -q runtime; then
+            echo "✗ ad-hoc + hardened runtime: dyld will refuse to load Sparkle.framework and the"
+            echo "  app will crash at launch. Turn ENABLE_HARDENED_RUNTIME off, or sign with a real"
+            echo "  identity (which is what scripts/release.sh does for distribution)."
+            exit 1
+          fi
+          echo "✓ signing and runtime hardening are compatible"
+
   # ── The Rust Windows/Linux client ───────────────────────────────────────────────────────────
   # macOS only for now. ubuntu-latest ships ffmpeg 6.x (libavcodec 60) and this crate targets 7.x,
   # so a Linux job needs an ffmpeg 7 build of its own — see TODO.md (P2).

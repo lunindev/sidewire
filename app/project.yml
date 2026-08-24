@@ -36,11 +36,19 @@ settings:
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGNING_REQUIRED: "NO"
     CODE_SIGNING_ALLOWED: "YES"
-    # G1 — hardened runtime in dev builds too, so hardened-only failures (notably the
-    # --vd-helper self-re-exec) surface here rather than first in a shipped build. release.sh
-    # sets this explicitly as well (harmless duplication). Dev signing (Apple Development cert)
-    # + hardened runtime runs locally without notarization.
-    ENABLE_HARDENED_RUNTIME: "YES"
+    # Hardened runtime is OFF in the checked-in default, and must stay off while the default
+    # signing above is ad-hoc. The two are incompatible: the hardened runtime turns on Library
+    # Validation, which requires every loaded non-platform library to carry the same Team ID as
+    # the process. An ad-hoc signature has no Team ID at all, so dyld refuses to map the embedded
+    # Sparkle.framework and the app dies at launch with
+    #   "Library not loaded: @rpath/Sparkle.framework/… have different Team IDs".
+    # It was previously YES, which worked only because the build was also pinned to a real signing
+    # identity that re-signed Sparkle under the same team.
+    #
+    # Distribution is unaffected: scripts/release.sh passes ENABLE_HARDENED_RUNTIME=YES alongside
+    # the Developer ID identity, which is the combination notarization requires and the only one
+    # where it is meaningful.
+    ENABLE_HARDENED_RUNTIME: "NO"
     # F1 — String Catalog. Have the compiler emit localizable strings so Xcode's automatic
     # extraction merges them into Sidewire/Resources/Localizable.xcstrings at build time
     # (Text("…") literals and the String(localized:) status strings). English-only at v1.
