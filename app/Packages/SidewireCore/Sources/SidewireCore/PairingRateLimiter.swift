@@ -6,7 +6,7 @@ import Foundation
 /// attempts for a lockout window; repeated lockouts double the window (capped); a correct PIN
 /// resets everything.
 ///
-/// In-memory only (a restart clears it — acceptable per docs/09 §Phase 7). One instance per
+/// In-memory only (a restart clears it — acceptable per docs/00 §D11). One instance per
 /// Display; consulted by the accepting `Session` at proof time.
 public final class PairingRateLimiter: @unchecked Sendable {
     private let lock = NSLock()

@@ -1,6 +1,6 @@
 # 05 — Security & Pairing (protocol v2)
 
-Implemented in Phase 7a (cert-TLS 1.3 + trust store) and Phase 7c (**CPace PAKE** for pairing, replacing the 7a HMAC PIN proof). Read [00 D6](00-review-and-decisions.md), [09 §D11](09-next-stage.md), and [09 open-question 5](09-next-stage.md) for the decisions. The threat this closes is specific and serious: because the Display forwards input that the Source injects with `CGEvent`, **an unauthenticated peer on the LAN gets remote *control* of the primary Mac**, not just a view of it. So this is not "encrypt the video" — it's "don't hand a stranger my keyboard."
+Implemented in Phase 7a (cert-TLS 1.3 + trust store) and Phase 7c (**CPace PAKE** for pairing, replacing the 7a HMAC PIN proof). Read [00 D6](00-decisions.md), [00 §D11](00-decisions.md) for the decisions. The threat this closes is specific and serious: because the Display forwards input that the Source injects with `CGEvent`, **an unauthenticated peer on the LAN gets remote *control* of the primary Mac**, not just a view of it. So this is not "encrypt the video" — it's "don't hand a stranger my keyboard."
 
 This document is **normative for the wire** and precise enough to implement a non-Mac (Rust) client. Everything here is portable — no Apple-specific crypto is on the wire; the Apple-specific parts (Keychain, `SecIdentity`, Network.framework) are implementation notes for the Mac side only.
 

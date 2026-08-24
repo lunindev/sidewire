@@ -120,7 +120,7 @@ final class ReliabilityTests: XCTestCase {
         reconnector.stop()
     }
 
-    /// v2 flip (docs/10 E5): an UNKNOWN close reason is now FATAL — the Reconnector surfaces it
+    /// v2 flip: an UNKNOWN close reason is now FATAL — the Reconnector surfaces it
     /// and must NOT re-dial (a foreign/newer peer's unrecognized BYE shouldn't loop forever).
     func testReconnectorTreatsUnknownReasonAsFatal() {
         let hello = Hello(role: .source, deviceId: "src", deviceName: "S",

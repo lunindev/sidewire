@@ -138,8 +138,8 @@ Sidewire makes exactly one network request that is not to your other Mac: Sparkl
 which is opt-in and off by default. No accounts, no analytics, no telemetry.
 
 The full design lives in [`app/docs/`](app/docs/README.md) — read
-[00-review-and-decisions.md](app/docs/00-review-and-decisions.md) first, and
-[11-status-and-gaps.md](app/docs/11-status-and-gaps.md) for what is actually verified.
+[00-decisions.md](app/docs/00-decisions.md) first, and
+[08-status-and-gaps.md](app/docs/08-status-and-gaps.md) for what is actually verified.
 
 ---
 
@@ -165,4 +165,14 @@ vulnerability. Third-party attribution is in
 
 ## License
 
-[MIT](LICENSE)
+[GNU General Public License v3.0 or later](LICENSE).
+
+You may use, study, modify and redistribute Sidewire freely, and it comes with no warranty of any
+kind. The one obligation the GPL adds: if you distribute it, or anything derived from it, you must
+make the corresponding source available under the same licence. Using or modifying it privately
+carries no such requirement.
+
+The choice is also practical. The Rust client links FFmpeg, and the readily available FFmpeg builds
+are themselves GPL — so any distributed binary would be governed by the GPL regardless. Matching the
+project licence to that reality keeps the source and the binaries under one consistent set of
+terms.

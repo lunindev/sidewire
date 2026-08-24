@@ -237,7 +237,7 @@ echo "✅ Done: $DMG"
 # The signed DMG now needs an EdDSA-signed appcast entry so existing installs can update to it.
 # That signing needs the private update key (owner's login keychain), so it is NOT done here by
 # default. Opt in with SIDEWIRE_APPCAST=1 (on a machine that has the key); otherwise we just
-# print the one command to run. See scripts/generate-appcast.sh + docs/08.
+# print the one command to run. See scripts/generate-appcast.sh + docs/07.
 echo
 echo "▸ Sparkle auto-update — generate + sign the appcast entry:"
 if [ "${SIDEWIRE_APPCAST:-0}" = "1" ]; then
@@ -246,6 +246,6 @@ else
   cat <<EOF
     ./scripts/generate-appcast.sh          # signs $DMG → $OUT/appcast.xml (needs your EdDSA key)
   Then upload appcast.xml + the DMG to a GitHub Release (the SUFeedURL points at
-  releases/latest/download/appcast.xml). Sparkle is the app's only phone-home — see docs/08.
+  releases/latest/download/appcast.xml). Sparkle is the app's only phone-home — see docs/07.
 EOF
 fi

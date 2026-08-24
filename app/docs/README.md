@@ -1,36 +1,44 @@
-# Sidewire — Specification
+# Sidewire — design specification
 
-**Sidewire** turns a spare Mac into a real *extended* display for your primary Mac, over a direct Thunderbolt cable or over Wi-Fi. One universal app; you pick **Source** or **Display** at launch.
+This directory is the design source of truth: what the protocol is, how the reliability layer is
+supposed to behave, and why each significant decision was taken. It describes the *design*, not the
+current build status.
 
-This directory is the implementation specification. It is the source of truth for the rebuild of the app previously called *MacDisplay*. It was produced from a research pass (competitive landscape, macOS capture/virtual-display tech, transport & reconnection, video pipeline, reliability, distribution, UX) plus a 2026 verification pass, then an independent critical review that made the final decisions recorded here.
-
-> **Status:** implemented. Phases 0–5 are all built (Developer ID signing + hardened runtime + a scripted notarized-DMG pipeline; notarization itself is a one-time credential step the owner runs). These documents remain the design source of truth / rationale; for the current shipped state, the build & run instructions, and the notarization steps, see the top-level [README](../README.md).
->
-> **Next stage (decided 2026-07-12):** see [09-next-stage.md](09-next-stage.md) — decisions D9–D14 (Developer-ID-only distribution, a native **Rust** Windows/Linux Display client, TLS 1.3 migration, direct Wi-Fi dropped) and the Phase 6–9 roadmap — and [10-fix-backlog.md](10-fix-backlog.md), the file-referenced bug/UX backlog for Phase 6. **Anyone picking up work should start with those two documents.**
+**For what actually works today, and what has never been run,** see
+[08-status-and-gaps.md](08-status-and-gaps.md). **For the work still outstanding,** see
+[TODO.md](../../TODO.md) at the repository root.
 
 ## How to read this
 
-Read in order. Each document assumes you've read the ones before it.
+Roughly in order — each document assumes the ones before it.
 
-| # | Document | What it fixes / defines |
-|---|----------|-------------------------|
-| 00 | [Review & Decisions](00-review-and-decisions.md) | Critical review of the prior plan; every final decision + rationale (ADR-style); what changed and why. **Read this first.** |
-| 01 | [Architecture](01-architecture.md) | Targets, Swift packages, module layout, process model, concurrency model, data flow, directory structure. |
-| 02 | [Wire Protocol v1](02-protocol.md) | Framing, handshake, capability negotiation, full message catalog with byte layouts, heartbeat, LTR-ack, IDR-request, session resume, versioning rules. |
-| 03 | [Reliability](03-reliability.md) | The three liveness detectors, the connection state machine (states/transitions/timers), watchdogs, the failure-mode table, sleep/wake, virtual-display lifecycle. **This is the core of the product.** |
-| 04 | [Media Pipeline](04-media-pipeline.md) | Capture (SCK 420v), encode (HEVC-LL + LTR + H.264 fallback + adaptive bitrate), decode (+`requiresFlushToResumeDecoding`), present (ASBDL/DisplayImmediately), virtual display (helper subprocess, mode-list guardrails), input capture/inject, sender energy budget. |
-| 05 | [Security & Pairing](05-security-and-pairing.md) | TLS 1.3, PIN pairing (PIN never on the wire), Keychain trust store, input-injection gating, threat model. |
-| 06 | [UX & Onboarding](06-ux-and-onboarding.md) | Role picker, permission onboarding (Screen Recording / Accessibility / Local Network + the relaunch trap), menu-bar surface, immersive receiver, HUD, reconnection storytelling. |
-| 07 | [Roadmap & Phases](07-roadmap-and-phases.md) | Phases 0–5 with goals, task checklists, **acceptance criteria**, and verification steps on the real M4 Max ↔ i9 pair. **Implement in this order.** |
-| 08 | [Build & Distribution](08-build-and-distribution.md) | Universal 2 build, Developer ID signing, notarization, stapling, Sparkle auto-update, CI. |
-| 09 | [Next Stage: Decisions & Roadmap v2](09-next-stage.md) | Post-implementation decisions D9–D14 (distribution channel, Rust Windows/Linux client, TLS 1.3, no direct Wi-Fi, localization) + Phases 6–9. |
-| 10 | [Fix Backlog](10-fix-backlog.md) | Verified, file-referenced backlog: correctness bugs, resilience gaps, onboarding/help, missing settings, protocol debt. Phase 6 work list. |
-| 11 | [Status & known gaps](11-status-and-gaps.md) | **Start here for current state.** What is implemented, what is actually verified, what has never been run on hardware, the real-hardware checklist, the credential-gated release steps, and deferred work. Authoritative where it disagrees with docs 00–10. |
+| # | Document | What it defines |
+|---|----------|-----------------|
+| 00 | [Design decisions](00-decisions.md) | Every significant decision with its rationale and consequences (D1–D14), ADR-style. **Start here** if you want to know *why*. |
+| 01 | [Architecture](01-architecture.md) | Targets, Swift packages, module layout, process and concurrency model, data flow. |
+| 02 | [Wire protocol](02-protocol.md) | **Normative.** Framing, handshake, capability negotiation, the full message catalog with byte layouts, heartbeat, versioning rules. |
+| 03 | [Reliability](03-reliability.md) | The liveness detectors, the connection state machine, watchdogs, the failure-mode table, sleep/wake, virtual-display lifecycle. |
+| 04 | [Media pipeline](04-media-pipeline.md) | Capture, encode (HEVC + H.264 fallback + adaptive bitrate), decode, present, the virtual display, input capture and injection. |
+| 05 | [Security & pairing](05-security-and-pairing.md) | **Normative.** Certificate TLS 1.3, the CPace PAKE, the trust store, input-injection gating, threat model. |
+| 06 | [UX & onboarding](06-ux-and-onboarding.md) | Role picker, permission onboarding and the relaunch trap, menu-bar surface, immersive Display, reconnection storytelling. |
+| 07 | [Build & distribution](07-build-and-distribution.md) | Universal 2 build, Developer ID signing, notarization and stapling, Sparkle auto-update. |
+| 08 | [Status & known gaps](08-status-and-gaps.md) | What is implemented, what is *verified*, and what has never run on hardware. Authoritative where it disagrees with the documents above. |
+
+Documents 02 and 05 are normative: the Rust client is checked against them, and against the
+machine-readable vectors in [`../protocol-vectors/`](../protocol-vectors/). Do not edit those
+vectors or the Swift reference to make a test pass.
 
 ## The one-paragraph summary
 
-Keep the proven core (private `CGVirtualDisplay` + ScreenCaptureKit + VideoToolbox HEVC) — it is the only way to make macOS treat the stream as a real extended monitor, and it is still current in 2026. Rebuild *around* it: collapse the two apps into one universal, non-sandboxed, Developer-ID-notarized SwiftUI app with a role picker; replace the fragile 13-byte TCP header with a versioned handshake protocol; and make the product's actual value — **reconnection and freeze-recovery that survives a cable pull, a sleep/wake, and a half-open socket** — a first-class subsystem built on an application-level heartbeat, `NWPathMonitor`, tuned TCP keepalive with a finite `connectionDropTime`, and a receiver no-frame watchdog decoupled from video cadence. Scope is **Mac ↔ Mac only**; the protocol stays versioned (cheap) but no cross-platform, QUIC, or mobile work is in this plan.
+Keep the proven core — the private `CGVirtualDisplay` API plus ScreenCaptureKit and VideoToolbox —
+because it is the only way to make macOS treat the stream as a genuine extended monitor. Build
+around it: one universal, non-sandboxed SwiftUI app with a role picker; a versioned handshake
+protocol rather than a fragile fixed header; and the product's actual value — **reconnection and
+freeze-recovery that survives a cable pull, a sleep/wake cycle and a half-open socket** — as a
+first-class subsystem rather than scattered error handlers.
 
 ## Canonical constants
 
-All timers, sizes, and identifiers referenced across these docs are defined once in [03-reliability.md § Constants](03-reliability.md#constants) and [02-protocol.md § Constants](02-protocol.md#constants). Do not redefine them per-module; import from a single `SidewireConstants` source.
+Every timer, size and identifier used across these documents is defined once, in
+[03-reliability.md § Constants](03-reliability.md#constants) and
+[02-protocol.md § Constants](02-protocol.md#constants). Do not redefine them per module.

@@ -8,24 +8,21 @@ A spare **Windows or Linux** PC can be a Display too, via the native **Rust clie
 [`clients/sidewire-viewer/`](clients/sidewire-viewer/) — it speaks the identical wire protocol and pairs
 with a Mac Source. (The Source is always a Mac: creating a virtual display is macOS-specific.)
 
-> This is a ground-up rebuild of the earlier two-app *MacDisplay* prototype. The full design and phased plan live in [`docs/`](docs/README.md) — start with [docs/00-review-and-decisions.md](docs/00-review-and-decisions.md). **What is done, what is actually verified, and what is left are in [docs/11-status-and-gaps.md](docs/11-status-and-gaps.md).**
+> A ground-up rebuild of an earlier two-app prototype. The design specification lives in
+> [`docs/`](docs/README.md); start with [docs/00-decisions.md](docs/00-decisions.md) for the
+> rationale behind the architecture.
 
 ## Status
 
-**Pre-release — code-complete and test-covered, but not yet run on physical hardware.** All phases **0–9** are implemented and committed, and the Rust Windows/Linux client is implemented (M1–M4). What is *verified*: 40 + 39 Swift tests, 80 Rust tests, and a byte-exact conformance suite ([`protocol-vectors/`](protocol-vectors/)) that both implementations reproduce independently. What is *not* verified: no build has run on two physical Macs, live Rust↔Swift interop has never been exercised, and no Windows or Linux artifact has been produced. Full detail in [docs/11-status-and-gaps.md](docs/11-status-and-gaps.md). Phases 0–5 (macOS core), in [docs/07-roadmap-and-phases.md](docs/07-roadmap-and-phases.md):
+**Pre-release.** Code-complete and covered by tests, never run on two physical Macs, and not
+released in any form. The honest breakdown of what is implemented versus what is actually verified
+is in [docs/08-status-and-gaps.md](docs/08-status-and-gaps.md); the outstanding work is in
+[TODO.md](../TODO.md).
 
-- **Phase 0** — one universal app + versioned protocol; end-to-end pipeline.
-- **Phase 1** — reliability: application-level heartbeat, self-healing reconnect with backoff, no-frame & encoder-stall watchdogs, sleep/wake recovery.
-- **Phase 2** — RTT-driven adaptive bitrate; latency/stats.
-- **Phase 3** — encryption + 6-digit PIN pairing + input-injection gate *(migrated in Phase 7 to certificate **TLS 1.3** + a **CPace** PAKE — see below)*.
-- **Phase 4** — permission onboarding (+ relaunch), immersive receiver, resolution presets.
-- **Phase 5** — Developer ID signing + hardened runtime + notarized-DMG pipeline (`scripts/release.sh`; see [Distribution & notarization](#distribution--notarization)).
+What is here: the full Source/Display pipeline, protocol v2 (certificate TLS 1.3 + a CPace PAKE),
+reliability and reconnect, RTT-driven adaptive bitrate, permission onboarding, Settings, Sparkle
+auto-update, and a native Rust client for Windows and Linux.
 
-Additional polish landed on top: **instant local cursor** (the pointer no longer round-trips through the video), a **static-screen flicker fix** (keep-alive is gapless and the receiver's no-frame watchdog is gated on heartbeat liveness), **rotatable PIN**, **one-click Thunderbolt connect** (the Display advertises its cable IP over Bonjour), a **Settings pane** (codec / resolution / fps / bitrate), **auto-connect to the last Mac**, **menu-bar-only mode**, a **first-run welcome**, and **H.264** alongside HEVC.
-
-The distribution build is signed + hardened but **not yet notarized** — notarization is a one-time credential step you run yourself (below).
-
-**Next stage** (decided 2026-07-12): fix backlog → protocol v2 + TLS 1.3 → a native **Rust** Windows/Linux Display client → distribution hardening. Phases 6–9 are done: Phase 6/7 (incl. the **CPace** pairing PAKE), **Phase 8 — the native Rust Display client (M1–M4, in [`clients/sidewire-viewer/`](clients/sidewire-viewer/): pair → decode H.264/HEVC → wgpu render → HID input → heartbeat → fullscreen → mDNS)**, and **Phase 9 — Sparkle 2 auto-update + CI** (this doc's [Auto-update](#auto-update-sparkle-2) section). **Not yet done:** nothing has run on two physical Macs, live Rust↔Swift interop is unproven, and the notarization credential + Sparkle EdDSA key are one-time steps that need an Apple Developer account. **Current state is tracked in [docs/11-status-and-gaps.md](docs/11-status-and-gaps.md).** See also [docs/09-next-stage.md](docs/09-next-stage.md) (decisions + roadmap) and [docs/10-fix-backlog.md](docs/10-fix-backlog.md).
 
 ## Project layout
 
@@ -174,7 +171,7 @@ The everyday build above is enough to run Sidewire on **your own Macs**. To hand
 ./scripts/release.sh        # → dist/Sidewire-<version>.dmg, signed + notarized + stapled
 ```
 
-> The distribution build is signed with a **different** identity (Developer ID) than the dev build (Apple Development), so on first launch it re-requests Screen Recording / Accessibility (fresh TCC grants) — expected for the distributable version. Because Mac App Store review rejects the private display API, App Store distribution is not possible; Developer ID + notarization is the correct channel (see [docs/08](docs/08-build-and-distribution.md)).
+> The distribution build is signed with a **different** identity (Developer ID) than the dev build (Apple Development), so on first launch it re-requests Screen Recording / Accessibility (fresh TCC grants) — expected for the distributable version. Because Mac App Store review rejects the private display API, App Store distribution is not possible; Developer ID + notarization is the correct channel (see [docs/07](docs/07-build-and-distribution.md)).
 
 ## Auto-update (Sparkle 2)
 
@@ -197,4 +194,4 @@ Then upload `appcast.xml` + the DMG to the GitHub Release. **There is no CI yet*
 
 ## License
 
-[MIT](../LICENSE)
+[GPL-3.0-or-later](../LICENSE)

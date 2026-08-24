@@ -1,7 +1,7 @@
 # Sidewire — Rust Display client (Windows/Linux)
 
-Native cross-platform **Display** client for Sidewire (Phase 8, [docs/09 §Phase 8](../../docs/09-next-stage.md),
-[docs/11-status-and-gaps.md](../../docs/11-status-and-gaps.md)). The Rust client is **always the Display** — it listens,
+Native cross-platform **Display** client for Sidewire (Phase 8, [docs/00 §D10](../../docs/00-decisions.md),
+[docs/08-status-and-gaps.md](../../docs/08-status-and-gaps.md)). The Rust client is **always the Display** — it listens,
 is the **CPace responder**, decodes/presents the incoming stream, and sends input back. The Mac is
 always the **Source** (dialer, CPace initiator, virtual-display owner).
 
@@ -120,12 +120,11 @@ crate reproduces them byte-for-byte; **do not edit** the vectors or the Swift re
   before the process ends (the Source sees a clean goodbye instead of waiting out its 2.5 s watchdog).
 - **Packaging scaffolding** — [`packaging/`](packaging/): a per-OS recipe [`README.md`](packaging/README.md)
   (ffmpeg 7.x dynamic-lib bundling vs static link; wgpu's GPU-driver requirement; Windows `.zip`/MSI,
-  Linux AppImage/`.deb`), a Linux [`sidewire-viewer.desktop`](packaging/sidewire-viewer.desktop), and a
-  GitHub Actions [`ci-release.yml`](packaging/ci-release.yml) cross-build sketch. **Scaffolding only —
-  see below.**
+  Linux AppImage/`.deb`) and a Linux [`sidewire-viewer.desktop`](packaging/sidewire-viewer.desktop).
+  **Scaffolding only — see below.**
 
 ### M4 deferred / honest scope
-- **Packaging is documentation + a CI sketch, NOT built artifacts.** No Windows `.zip`/MSI or Linux
+- **Packaging is documentation only, NOT built artifacts.** No Windows `.zip`/MSI or Linux
   AppImage/`.deb` has been produced or run — the cross toolchains and target-OS ffmpeg/wgpu libs are
   out of reach on this macOS box. A real build must stand up Windows/Linux runners, install ffmpeg 7.x,
   `cargo build --release`, and bundle the *actual* linked libs (read off `ldd`/`dumpbin`, don't trust

@@ -1,68 +1,12 @@
-# 00 — Review & Decisions
+# 00 — Design decisions
 
-This document is an independent critical review of the earlier rebuild plan, plus the final decisions that govern the rest of the spec. Where a decision differs from the earlier plan, the difference and its reason are called out explicitly. Decisions are written ADR-style: **Decision → Why → Alternatives rejected → Consequences.**
+The architectural decisions behind Sidewire and, more importantly, *why* — so that a change which
+looks obviously better in isolation can be weighed against the reason it was not taken.
 
-Two constraints from the owner shape everything below:
-
-1. **Scope is Mac ↔ Mac only, now.** Windows and mobile are explicitly *not* in this plan. This is the single biggest change from the earlier plan and it removes a large amount of speculative complexity.
-2. **Personal-first, but publishable.** The owner has an Apple Developer ID and will sign & notarize. The app should be shippable to the public later without rearchitecting, but no feature is added *solely* to serve a hypothetical public/other-platform future.
-
----
-
-## Part A — Verdict on the earlier plan
-
-The earlier plan was, on the whole, correct and well-researched. Its core thesis — *keep the capture/virtual-display/encode core, and put all the new engineering into reliability, security, and polish* — is right and is confirmed by the 2026 verification pass. The following holds up and is **adopted unchanged**:
-
-- Keep `CGVirtualDisplay` + ScreenCaptureKit + VideoToolbox HEVC. Verified still the only viable path in 2026; no public replacement exists; notarization does not flag it.
-- One universal, non-sandboxed, Developer-ID-notarized SwiftUI app; role chosen at launch.
-- Stay in **Swift**. (With cross-platform dropped, there is now *zero* argument for a Rust/C++ core — see D1.)
-- **TCP + TLS** transport for v1; HEVC-low-latency with **H.264 fallback**; AV1 is out (no hardware encoder on M4).
-- Application-level **heartbeat** + `NWPathMonitor` + tuned keepalive as the fix for the cable-pull hang.
-- Receiver **no-frame watchdog decoupled from video cadence** (a static screen legitimately produces zero frames).
-- **Menu-bar-first** UI with an immersive fullscreen receiver.
-- Security (TLS + PIN pairing + key pinning) is a real prerequisite for public release, because the reverse input channel grants remote *control*, not just viewing.
-
-Where the earlier plan was **over-scoped, under-specified, or slightly wrong**, this review corrects it. Those corrections are Part B.
+Recorded as they were made. Where a later decision supersedes an earlier one, the earlier entry says
+so rather than being edited away.
 
 ---
-
-## Part B — Corrections and sharpenings (what this review changes)
-
-### C1 — Cut cross-platform, QUIC-now, and mobile from the plan entirely
-The earlier plan carried a lot of "Windows-readiness": a language-neutral protocol spec as "the durable asset," QUIC as a near-term transport, a WebRTC/mobile profile designed in early. With scope now Mac-only, all of that is speculative weight.
-
-- **Kept (cheap):** the protocol is *versioned* and uses length-prefixed, type-tagged messages with reserved ranges so it can evolve. That's just good hygiene and costs nothing.
-- **Dropped (expensive, no near-term payoff):** the formal cross-platform spec document, QUIC transport, the WebRTC/WASM profile, any IddCx/Windows design. If a Windows peer is ever funded, the versioned protocol is enough to reimplement against; we do not pre-build for it.
-
-### C2 — The virtual-display helper subprocess is *required*, not just defense-in-depth
-The earlier plan treated the XPC/helper subprocess as crash-isolation insurance. The verification pass found something stronger: **Lumen (a shipping 2026 app) had to create the virtual display in a `vd_helper` subprocess because `CGVirtualDisplay` fails to register properly when created inside a "dirty" host process** — TCC/WindowServer registration wants a clean process context. So the helper is a reliability *requirement*, not a nicety.
-
-Sequencing decision: implement in-process first in Phase 0 (fastest path to a working unified app, matches today's code), and move creation into a bundled helper subprocess in **Phase 1**, behind a clean async boundary designed from day one so the move is mechanical. See [04 § Virtual Display](04-media-pipeline.md#virtual-display).
-
-### C3 — Specify the LTR acknowledgment loop concretely
-The earlier plan mentioned LTR (long-term reference frames) but left it vague. The verification pass confirmed this is *the* resilience mechanism and that the naive alternative (forcing a keyframe to recover) is a documented trap (`max_ref_frames=1` → every frame becomes an IDR → multi-× bitrate inflation). This spec makes LTR a **protocol-level** feature: the sender tags LTR frames with a token; the receiver echoes acknowledged tokens; on loss the sender emits an LTR-P against a known-good frame instead of a full IDR. See [02 § Control messages](02-protocol.md#control-messages) and [04 § Encoder](04-media-pipeline.md#encoder).
-
-### C4 — Elevate two easy-to-miss correctness fields
-Both are cheap to add and cause catastrophic, hard-to-debug failures if missed:
-
-- **`connectionDropTime ≈ 5 s`** on `NWProtocolTCP.Options`. This is the send-side retransmit timeout. Without it, a `send()` to a peer whose cable was pulled retries *forever* — this is a direct contributor to the current hang. It is the single most important networking field for "peer vanished mid-stream," because a video stream is almost always mid-send.
-- **`requiresFlushToResumeDecoding`** on the receiver's renderer (macOS 15+). After any decode interruption the renderer refuses to decode again until you `flush()`. Miss it and a single glitch freezes the video *permanently*. Wire it into the decoder recovery ladder.
-
-### C5 — Right-size the present path and congestion control
-The earlier plan leaned toward a Metal/`CAMetalLayer` present path and a full GCC-style congestion controller. Both are premature for v1:
-
-- **Present:** ship `AVSampleBufferDisplayLayer` with `kCMSampleAttachmentKey_DisplayImmediately` (simple, already in use, "good" latency). The Metal path shaves ~1 frame of hidden buffering but is a measurable optimization, not a v1 requirement. It moves to Phase 2, gated on actually measuring that the extra frame matters.
-- **Congestion control:** for a Thunderbolt-primary, lossless-link app, a full delay-gradient GCC controller is overkill for v1. Start with a simple controller driven by RTT trend + send-queue depth + receiver-reported loss, adjusting `AverageBitRate` and `MaxAllowedFrameQP`. Full GCC is a Phase 2 refinement if Wi-Fi demands it.
-
-### C6 — Binary-pack input events (the earlier plan kept JSON)
-The current code JSON-encodes every input event, including `mouseMoved` storms. That is wasteful CPU/allocation on the hot path and on the sender we're trying to keep light. This spec defines a **fixed 32-byte binary layout** for input events. See [02 § INPUT](02-protocol.md#input).
-
-### C7 — Name the #1 product risk honestly
-Everything rests on a private API with a *live, unresolved 2026 regression*: on macOS 26 (Tahoe), HiDPI virtual displays can drop to ~20 fps. Mitigations are designed in (non-HiDPI fallback mode, a mode that captures the virtual display without mirroring, mandatory test-on-Tahoe before any release). This risk is tracked in [03 § Failure modes](03-reliability.md#failure-modes) and [07 § Risks](07-roadmap-and-phases.md#risk-register). It is not a reason to abandon the approach — there is no alternative — but it must be visible.
-
----
-
-## Part C — The decisions
 
 ### D1 — One universal Swift app; no Rust/C++ core
 **Decision.** A single Xcode project producing one non-sandboxed, hardened-runtime, Universal 2 (arm64 + x86_64) SwiftUI app targeting macOS 14+. Role (Source / Display) chosen at launch and remembered. All logic in Swift; protocol/session logic extracted into local Swift packages for testability.
@@ -71,7 +15,7 @@ Everything rests on a private API with a *live, unresolved 2026 regression*: on 
 
 **Alternatives rejected.** Rust/C++ shared core (no payoff without a second platform; still needs a Swift shim for the private display API). Electron/Tauri (webview decode-to-canvas latency and per-webview codec bugs — disqualifying for low-latency video). Keeping two apps (fails the unification goal, doubles maintenance).
 
-**Consequences.** No Mac App Store (private API + input injection). Distribution is Developer ID + notarization only (the owner has the cert). See [08](08-build-and-distribution.md).
+**Consequences.** No Mac App Store (private API + input injection). Distribution is Developer ID + notarization only (the owner has the cert). See [08](07-build-and-distribution.md).
 
 ### D2 — Keep `CGVirtualDisplay`, isolate it, guardrail it
 **Decision.** Create the extended display via the private `CGVirtualDisplay` family, wrapped behind a thin Swift bridge instantiated with `NSClassFromString` + runtime nil-checks + OS-version gating. Create it **in a bundled helper subprocess** (Phase 1) for reliable registration and crash isolation. Keep `CGVirtualDisplayMode` lists **small** and default to **60 Hz** to avoid the WindowServer mode-list assertion crash. Provide a graceful mirror-only / clear-error fallback if the symbols ever vanish.
@@ -128,7 +72,7 @@ Everything rests on a private API with a *live, unresolved 2026 regression*: on 
 **Consequences.** `LSUIElement = YES`. Onboarding must detect the granted-but-needs-relaunch state and drive a clean relaunch. See [06](06-ux-and-onboarding.md).
 
 ### D8 — Name: **Sidewire**
-**Decision.** The product is **Sidewire**. Rename targets/bundle IDs/schemes in Phase 0. Suggested bundle identifier root: `com.sidewire` (final identifier fixed once, then never changed — TCC grants key on it; see [08](08-build-and-distribution.md)).
+**Decision.** The product is **Sidewire**. Rename targets/bundle IDs/schemes in Phase 0. Suggested bundle identifier root: `com.sidewire` (final identifier fixed once, then never changed — TCC grants key on it; see [08](07-build-and-distribution.md)).
 
 **Why.** Chosen by the owner. Positions directly against the gap ("a Mac-to-Mac Sidecar") and the "wire" evokes the direct-Thunderbolt path; not locked to "Mac."
 
@@ -136,6 +80,54 @@ Everything rests on a private API with a *live, unresolved 2026 regression*: on 
 
 ---
 
-## Part D — What "done" and "works" mean
+*The decisions below were taken after the first implementation was working, and cover distribution,
+the second client and the v2 security migration.*
 
-The owner asked, reasonably, *"will this actually work?"* The honest answer: the hard parts are already proven (the current app streams end-to-end today; the core APIs are verified current for 2026). The rebuild's risk is **not** "can we stream a screen" — that's solved — it's "can we make it recover cleanly and feel trustworthy." That risk is retired empirically, per phase, against the real M4 Max ↔ i9 pair, using the acceptance criteria in [07](07-roadmap-and-phases.md). Every phase ends with a concrete, physically-verifiable check (e.g. *"pull the Thunderbolt cable mid-stream; the Display shows 'reconnecting' within 1.5 s and fully restores within 3 s of replugging, with no hang and no phantom display left behind"*). Nothing is declared done on the basis of code review alone.
+### D9 — Distribution: Developer ID only; the product is never feature-cut for a store
+
+The Mac App Store is permanently closed to the full product: `CGVirtualDisplay` is a private API (automatic Guideline 2.5.1 rejection) and `CGEventPost` input injection cannot work under the mandatory App Sandbox (confirmed by Apple DTS guidance). Every comparable product (Duet Display, Luna Display, BetterDisplay, DisplayLink) ships its Mac engine outside MAS.
+
+**Decided:** ship full-featured via Developer ID + notarized DMG (the existing `scripts/release.sh` pipeline). **Rejected:** a feature-degraded MAS build (mirror-only, no virtual display, no input injection) — not worth building. **Possible later, not planned:** putting a *client/viewer* app (iPad, or a Mac viewer) on the App Store for discoverability, the Duet/Luna pattern — clients need no private APIs.
+
+### D10 — Windows/Linux Display client: native, in Rust
+
+A Windows/Linux machine will act as the **Display** role only (render the incoming stream fullscreen, send back mouse/keyboard). The Source role stays Mac-only (virtual display creation is macOS-specific).
+
+**Decided:** one native cross-platform viewer in **Rust**. Owner explicitly wants native performance; Electron is explicitly rejected.
+
+Stack sketch (validate during implementation):
+- **Window/render:** `winit` + `wgpu` (or SDL2) — borderless fullscreen, NV12 → RGB in a trivial shader, decoded frames kept on the GPU where the decoder allows.
+- **Decode:** FFmpeg with hardware acceleration (`D3D11VA`/`DXVA2` on Windows, `VAAPI` on Linux), software fallback. Candidate crates: `ffmpeg-next`, or RustDesk's `hwcodec`. Architecture to imitate (not copy — GPL): moonlight-qt's renderer-selection ladder (try hw decoders in preference order → software).
+- **TLS:** ~~the `openssl` crate~~ **`rustls`** (on the `ring` provider). *[Updated Phase 8 M1, 2026-07-12.]* The original openssl/PSK reasoning here is **stale**: it predated the Phase 7 security migration. v2 is **certificate-based TLS 1.3 + a CPace PAKE** ([05](05-security-and-pairing.md)), **not** TLS-PSK, so the "rustls lacks external-PSK" objection no longer applies. rustls with a custom accept-any cert verifier (that still verifies the handshake signature — proof-of-possession — while skipping only CA/chain trust, since pinning is app-layer) presenting a self-signed P-256 leaf is the clean path; it exposes the peer leaf certs needed for the SPKI channel binding. This is what M1 shipped and validated (`clients/sidewire-viewer/`, Rust↔Rust loopback over real TLS 1.3). No openssl crate; the only `openssl` used is the CLI, as an SPKI-fingerprint cross-check in a test. *(Live Rust↔Swift TLS interop still to be confirmed on real hardware — see [08-status-and-gaps.md](08-status-and-gaps.md).)*
+- **Input:** in-window `winit` events only (no global hooks needed for a display client); translate to the wire input format per the D11/Phase 7 mapping spec.
+- **Discovery:** mDNS via a Rust crate (e.g. `mdns-sd`) browsing `_sidewire._tcp`; the manual-IP:5005 path is the guaranteed fallback (works with zero discovery infra).
+- **Packaging:** plain zip/MSI on Windows; AppImage + .deb on Linux.
+
+**Rejected alternatives** (recorded so they aren't re-litigated): browser/WebCodecs viewer (zero-install and one codebase, but a latency ceiling, no OS-level key capture, and it would force a second WebSocket transport — owner chose native performance; may be revisited someday for iPad/ChromeOS reach); Electron (bundles Chromium for nothing); Flutter (external-texture plumbing outweighs UI benefits for a bare viewer); Qt/C++ (packaging burden + GPL contamination risk from moonlight-qt as the obvious reference); two per-OS native codebases (double maintenance).
+
+What ports easily vs not: the video stream is already portable (clean Annex-B H.264/HEVC, parameter sets in-band at every IDR, no B-frames, joinable at any keyframe — any FFmpeg-class decoder eats it as-is); `Packages/SidewireProtocol` is Apple-free and its unit tests are ready-made golden vectors. The porting cost is concentrated in the TLS-PSK transport and the input-event semantics — which is exactly what Phase 7 fixes *before* the client is written.
+
+### D11 — Security migration before any second client: TLS 1.3 + trust store
+
+Current state (fine for two trusted Macs, unacceptable for a public product): TLS **1.2** pinned with plain-PSK `TLS_PSK_WITH_AES_128_GCM_SHA256` (`Packages/SidewireCore/Sources/SidewireCore/TLSPSK.swift:33-35`), key = HKDF of a 6-digit PIN → no forward secrecy, offline-brute-forceable from a passive capture in minutes, online-brute-forceable (no rate limiting, no lockout, no trust store).
+
+**Decided (owner approved):** migrate to **TLS 1.3** before the Rust client ships. Minimum: external PSK with `psk_dhe_ke` (forward secrecy; interoperates with OpenSSL). Keep the 6-digit PIN as the *pairing bootstrap only*; after first pairing, store a strong random per-peer key (Keychain trust store on the Mac side, per docs/05's original design) and reconnect with that — plus "Forget this Mac", PIN attempt rate-limiting, and a user-visible "wrong PIN" error (see backlog A2). SPAKE2/PAKE remains the better end-state if a Swift implementation is practical; do not block on it.
+
+Because nothing has shipped (see top of doc), do this as a clean **protocol v2** — no dual-stack compatibility code.
+
+### D12 — Direct Wi-Fi (AirDrop-style, router-less): dropped
+
+Research verdict: Mac↔Mac over AWDL (`includePeerToPeer`) is feasible but best-effort only — AWDL duty-cycling causes ~50–100 ms periodic stalls and the OS "realtime mode" that fixes it has **no public API** (Apple DTS confirmed). Wi-Fi Aware exists only on iOS/iPadOS 26, not macOS. AWDL interop from Windows/Linux is a dead end (OWL is unshippable).
+
+**Decided:** not pursuing it. Supported transports are the existing ones: **infrastructure LAN (Ethernet / Wi-Fi) and the Thunderbolt/USB-C bridge**. The current code already matches this (`TCPTransport.swift:56` deliberately refuses `includePeerToPeer` on outbound connections). If a user has no router, the documented recipe is macOS Internet Sharing (Mac-hosted hotspot) — infrastructure mode, existing stack works unchanged; worth a help-page mention, no code.
+
+### D13 — Localization: String Catalog scaffolding now, English-only copy first
+
+Whether v1 ships more than one locale is undecided. **Default chosen:** adopt an `.xcstrings` String Catalog *now* while the copy volume is small (and convert the interpolated status strings that can't be extracted — see backlog F), ship v1 with English copy only, and add further locales later if desired — the catalog makes that a translation task, not an engineering task. *(OPEN question: ship additional locales at v1 or later.)*
+
+### D14 — Architecture: no restructuring
+
+Verdict from the code analysis: the layering is sound and multi-platform-ready — `SidewireProtocol` (pure Swift, Apple-free) / `SidewireCore` (Apple-coupled but commodity semantics: TCP + TLS-PSK + mDNS) / app media & UI. All planned work is **additive** (protocol v2, security, Rust client, backlog fixes). Do not rewrite the core.
+
+---
+

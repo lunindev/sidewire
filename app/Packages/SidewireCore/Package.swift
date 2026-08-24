@@ -9,7 +9,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../SidewireProtocol"),
-        // Phase 7a security migration (docs/05, docs/09 §D11): P-256 device identity + a
+        // Phase 7a security migration (docs/05, docs/00 §D11): P-256 device identity + a
         // minimal self-signed X.509 cert for certificate-based TLS 1.3. swift-certificates is
         // Apple's official X.509 package; it can sign a cert with a keychain-resident SecKey
         // (SecKeyWrapper), which is how we mint a SecIdentity without exporting the private key.

@@ -5,7 +5,7 @@
 > macOS dev box where the Windows/Linux cross toolchains and the target-OS ffmpeg/wgpu libraries are
 > out of reach, so **no Windows `.zip`/MSI or Linux AppImage/`.deb` artifact has actually been
 > produced or run**. Treat the commands below as a first draft to validate on real Windows 11 and
-> Ubuntu LTS runners (see [`ci-release.yml`](ci-release.yml)); expect to adjust paths and library
+> Ubuntu LTS runners; expect to adjust paths and library
 > names once a real build surfaces the specifics.
 
 The app is a single self-contained binary (`sidewire-viewer`) plus its **runtime shared libraries**.
@@ -104,7 +104,7 @@ polish item — the `.desktop` references `sidewire-viewer` by icon name).
 | Piece | State |
 |---|---|
 | `.desktop` file | **Written**, valid, ready to install. |
-| CI workflow sketch | **Written** ([`ci-release.yml`](ci-release.yml)); needs testing on real GitHub runners. |
+| CI workflow | **Not written.** This repository has no CI. |
 | Recipes above | **Documented**, unverified on-target. |
 | Windows `.zip` / MSI | **Not built.** Needs a Windows runner + ffmpeg 7.x libs; confirm the exact DLL set via `dumpbin`. |
 | Linux AppImage / `.deb` | **Not built.** Needs an Ubuntu runner + ffmpeg 7.x dev libs; confirm sonames via `ldd` and `.deb` dep names on-target. |

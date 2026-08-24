@@ -73,7 +73,7 @@ cargo run --release -- --file some_clip.h264   # decode→window smoke test, no 
 
 > Homebrew's `ffmpeg@7` is built `--enable-gpl --enable-version3`, i.e. GPL-3.0-or-later. It is fine
 > for local development, but a redistributable binary must link an LGPL-only ffmpeg build — see
-> [08-build-and-distribution.md](08-build-and-distribution.md).
+> [07-build-and-distribution.md](07-build-and-distribution.md).
 
 ## The real-hardware checklist
 
@@ -100,7 +100,7 @@ closed and refuses every update — which is the safe default.
 **Notarization** — only needed to hand the app to machines you do not control. Set
 `SIDEWIRE_SIGN_IDENTITY` and `SIDEWIRE_TEAM_ID`, store notary credentials once, then run
 [`scripts/release.sh`](../scripts/release.sh). See
-[08-build-and-distribution.md](08-build-and-distribution.md) for the full pipeline.
+[07-build-and-distribution.md](07-build-and-distribution.md) for the full pipeline.
 
 **Publishing an update** — after `release.sh` produces a notarized DMG,
 [`scripts/generate-appcast.sh`](../scripts/generate-appcast.sh) EdDSA-signs it into `dist/appcast.xml`.
@@ -111,8 +111,8 @@ Upload both to the GitHub Release.
 - Hardware decode in the Rust client (see the `DecodeBackend` seam).
 - The `CGVirtualDisplay` helper subprocess is currently disabled in `VirtualDisplayManager.swift`;
   either fix the ~3 s activation-timeout regression and re-enable it, or accept in-process creation
-  (open question 4 in [09-next-stage.md](09-next-stage.md)).
+  (see `VirtualDisplayManager.swift`).
 - Localization: the String Catalog ships English-only. Further locales are a translation task rather
   than an engineering one.
-- [07-roadmap-and-phases.md](07-roadmap-and-phases.md) still describes the phases as originally
-  planned; this file and [09-next-stage.md](09-next-stage.md) are authoritative for current state.
+- This file and [00-decisions.md](00-decisions.md) are authoritative for current state; the
+  remaining specs describe the design, not what shipped.

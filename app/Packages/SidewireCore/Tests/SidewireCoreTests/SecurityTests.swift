@@ -3,7 +3,7 @@ import XCTest
 import SidewireProtocol
 
 /// End-to-end tests of the certificate-based TLS 1.3 + channel-bound PIN proof + trust store
-/// over the REAL Network.framework stack on 127.0.0.1 (docs/05, docs/09 §D11). Throwaway P-256
+/// over the REAL Network.framework stack on 127.0.0.1 (docs/05, docs/00 §D11). Throwaway P-256
 /// identities are minted per test and their Keychain items removed in tearDown.
 final class SecurityTests: XCTestCase {
 

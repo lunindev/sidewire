@@ -1,6 +1,6 @@
 # 03 — Reliability
 
-This is the subsystem that justifies the app's existence. It lives mostly in `SidewireCore` (the `Session` actor and the reconnect engine), with two media-side watchdogs in the app target. Read [00 D5](00-review-and-decisions.md) for the decision and [01 § Concurrency](01-architecture.md#concurrency-model-swift-concurrency) for how it's isolated.
+This is the subsystem that justifies the app's existence. It lives mostly in `SidewireCore` (the `Session` actor and the reconnect engine), with two media-side watchdogs in the app target. Read [00 D5](00-decisions.md) for the decision and [01 § Concurrency](01-architecture.md#concurrency-model-swift-concurrency) for how it's isolated.
 
 The guiding principle: **never rely on TCP to tell you a peer died, and never infer liveness from video frames.** A static screen produces zero frames legitimately; a pulled cable's `send()` blocks or retries for minutes. Liveness comes from an explicit heartbeat plus interface monitoring; video is only a *quality* signal.
 
@@ -143,7 +143,7 @@ Session/timing constants (in `SidewireCore`). Protocol constants are in [02 § C
 
 ## Failure modes {#failure-modes}
 
-The complete table this subsystem must satisfy. Each row is an acceptance target for Phase 1 ([07](07-roadmap-and-phases.md)).
+The complete table this subsystem must satisfy. Each row is an acceptance target for Phase 1.
 
 | # | Failure | Detect | Recover |
 |---|---------|--------|---------|

@@ -5,7 +5,7 @@ import X509
 import SwiftASN1
 
 /// This device's long-lived cryptographic identity for certificate-based TLS 1.3 (docs/05,
-/// docs/09 §D11). A persistent P-256 key pair + a minimal self-signed X.509 certificate,
+/// docs/00 §D11). A persistent P-256 key pair + a minimal self-signed X.509 certificate,
 /// stored in the Keychain, from which we mint a `SecIdentity` → `sec_identity_t` for
 /// Network.framework's `sec_protocol_options_set_local_identity`.
 ///

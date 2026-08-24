@@ -1,6 +1,6 @@
 //! Latency instrumentation for the decode→present path.
 //!
-//! **Honest scope (docs/02 § VIDEO, docs/11):** true cross-machine *glass-to-glass* latency cannot
+//! **Honest scope (docs/02 § VIDEO):** true cross-machine *glass-to-glass* latency cannot
 //! be measured here. The wire PTS epoch is the Source's arbitrary monotonic capture clock — it has
 //! no defined relation to this machine's clock and no wall-clock anchor — and there is no live Mac
 //! Source yet. What M2 *can* measure are **local** deltas on the receive→decode→present pipeline

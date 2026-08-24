@@ -1,6 +1,6 @@
 # Third-party licences
 
-Sidewire itself is MIT (see [`LICENSE`](LICENSE)). This file is the attribution record for
+Sidewire itself is GPL-3.0-or-later (see [`LICENSE`](LICENSE)). This file is the attribution record for
 everything Sidewire *does not* own but builds on, links against, or redistributes: the Rust
 dependency tree of the `sidewire-viewer` client, the Swift packages the macOS app resolves through
 SwiftPM, and — separately and most importantly — the FFmpeg libraries the Rust client links
@@ -71,15 +71,14 @@ $ otool -L target/release/sidewire-viewer | grep ffmpeg@7
 
 Consequences, stated carefully:
 
-- **Publishing Sidewire's source under MIT creates no obligation.** The GPL is a distribution
-  licence for the combined work; no combined work is being distributed by publishing a repository
-  that merely instructs the reader to install FFmpeg themselves. The MIT claim in the crate
-  manifests and on the landing page is accurate *for the source*.
-- **Distributing a compiled `sidewire-viewer` linked against a GPL FFmpeg build is a different
-  act.** The binary is a combined work, and the GPL-3.0 terms would govern its distribution —
-  including the requirement to offer corresponding source for the whole under GPL-compatible terms.
-  MIT is GPL-compatible in one direction only: MIT code can be absorbed into a GPL work, not the
-  reverse. Shipping such a binary while describing the download as "MIT-licensed" would be wrong.
+- **This is no longer a conflict.** Sidewire is licensed GPL-3.0-or-later, which is exactly the
+  licence a binary linked against a GPL FFmpeg build must carry. Source and binaries are governed
+  by one consistent set of terms, and the earlier mismatch — MIT source against a GPL-only
+  distributable — is gone.
+- **The distribution obligation still applies, and it is ours to meet.** Shipping a compiled
+  `sidewire-viewer` means offering the corresponding source for the combined work under the GPL.
+  In practice that is satisfied by the public repository plus a written note of the exact FFmpeg
+  build configuration used, published alongside the release.
 
 ### The fix is cheap, and it is a build-configuration change, not a code change
 
@@ -405,7 +404,7 @@ Sparkle's `LICENSE` file verbatim in the app's acknowledgements satisfies every 
 
 Nothing currently prevents a new transitive dependency from introducing GPL, AGPL or an
 unrecognised licence. Add [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) to the Rust
-job in `.github/workflows/ci.yml` (the workflow is still to be written — see `TODO.md` P0) so the
+job in CI, if CI is ever added (see `TODO.md`), so the
 build fails on the pull request that introduces the problem rather than on release day:
 
 ```yaml

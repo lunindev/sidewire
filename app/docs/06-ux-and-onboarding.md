@@ -1,6 +1,6 @@
 # 06 — UX & Onboarding
 
-Read [00 D7](00-review-and-decisions.md). Style direction: a native macOS **system utility** — menu-bar-first, SF typography, no chrome for its own sake, feels like it ships with the OS. The whole point is that it disappears into the workflow and only surfaces when it needs the user.
+Read [00 D7](00-decisions.md). Style direction: a native macOS **system utility** — menu-bar-first, SF typography, no chrome for its own sake, feels like it ships with the OS. The whole point is that it disappears into the workflow and only surfaces when it needs the user.
 
 ## Surfaces
 

@@ -45,7 +45,7 @@ final class UpdaterController: ObservableObject {
             // `canCheckForUpdates` is KVO-observable (documented Sparkle-SwiftUI pattern).
             updater.publisher(for: \.canCheckForUpdates).assign(to: &$canCheckForUpdates)
         } else {
-            Log.app.notice("Sparkle auto-update disabled: SUPublicEDKey/SUFeedURL are still placeholders (owner-gated — see docs/12 §B.3)")
+            Log.app.notice("Sparkle auto-update disabled: SUPublicEDKey/SUFeedURL are still placeholders (owner-gated — see TODO.md §B.3)")
         }
     }
 
@@ -70,7 +70,7 @@ final class UpdaterController: ObservableObject {
     }
 
     /// Real config = a non-placeholder EdDSA public key AND a feed URL without the "OWNER"
-    /// placeholder (mirrors the two owner-gated fields in Info.plist / docs/12 §B.3).
+    /// placeholder (mirrors the two owner-gated fields in Info.plist / TODO.md).
     private static func updatesConfigured() -> Bool {
         let info = Bundle.main.infoDictionary
         let key = (info?["SUPublicEDKey"] as? String) ?? ""

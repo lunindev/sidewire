@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Sidewire landing — build the static Astro site, then serve it with nginx.
-# Build context is landing/ — see .github/workflows/release-landing.yml, which builds
-# `--target landing-prod` and pushes to GHCR on a vX.Y.Z tag.
+# Build context is landing/. Build the production image with:
+#   docker build --target landing-prod -f landing/Dockerfile -t sidewire-landing landing
 
 # ── build stage ──────────────────────────────────────────────────────────────
 FROM node:22-alpine AS build

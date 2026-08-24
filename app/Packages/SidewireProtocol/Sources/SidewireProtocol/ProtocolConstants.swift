@@ -4,7 +4,7 @@ import Foundation
 public enum ProtocolConstants {
     public static let magic = "SIDEWIRE"
     /// Protocol v2: certificate-based TLS 1.3 + channel-bound PIN proof replaces the v1
-    /// PIN-derived TLS-PSK transport (docs/05, docs/09 §D11). A breaking wire change — v1
+    /// PIN-derived TLS-PSK transport (docs/05, docs/00 §D11). A breaking wire change — v1
     /// peers are rejected at HELLO. Nothing shipped on v1, so there is no dual-stack.
     public static let major: UInt16 = 2
     public static let minor: UInt16 = 0

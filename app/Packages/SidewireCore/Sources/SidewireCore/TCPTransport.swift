@@ -12,7 +12,7 @@ let coreLog = Logger(subsystem: "com.kinocoder.sidewire", category: "net")
 /// `TCPListener` (Display). Framing is handled here via `FrameEncoder` / `FrameParser`.
 ///
 /// Encryption is non-optional: every real connection presents this device's identity and runs
-/// TLS 1.3 (there is no plaintext path anymore — docs/10 E8). After `.ready` the peer's leaf
+/// TLS 1.3 (there is no plaintext path anymore). After `.ready` the peer's leaf
 /// certificate is read from the TLS metadata to derive `TLSPeerInfo` (the pinned key, the
 /// self-authenticating peer `deviceId`, and the pairing channel binding), and — on the dialing
 /// side — to enforce public-key pinning against an expected peer ("keyChanged").

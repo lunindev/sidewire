@@ -46,7 +46,7 @@ pnpm check          # astro check (TypeScript / template diagnostics)
 
 ## Container (what CI ships)
 
-The release workflow (`.github/workflows/release-landing.yml`) builds the `landing-prod` target on every
+There is no pipeline; build the `landing-prod` target by hand on every
 git tag and pushes it to the registry:
 
 ```bash

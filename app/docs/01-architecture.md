@@ -1,6 +1,6 @@
 # 01 — Architecture
 
-One universal app, one binary, role chosen at launch. Three logical layers, mapped onto concrete Xcode/SwiftPM units. Read [00](00-review-and-decisions.md) first for the decisions this realizes.
+One universal app, one binary, role chosen at launch. Three logical layers, mapped onto concrete Xcode/SwiftPM units. Read [00](00-decisions.md) first for the decisions this realizes.
 
 ## Layers
 

@@ -115,9 +115,10 @@ cargo run --release -- --discover            # list nearby Sidewire Displays (di
 cargo run --release -- --handshake-only      # pair + reach CONFIG, then exit (no window)
 ```
 
-Note the licensing caveat in `TODO.md`: Homebrew's `ffmpeg@7` is built `--enable-gpl
---enable-version3` while every crate here declares MIT. That does not block source contributions, but
-it does block distributing a linked binary. Please do not attach built binaries to a PR.
+A note on FFmpeg: Homebrew's `ffmpeg@7` is built `--enable-gpl --enable-version3`. Since Sidewire
+is GPL-3.0-or-later this is consistent rather than a conflict, but please still do not attach built
+binaries to a pull request — distributing a binary carries source-availability obligations that a PR
+is the wrong place to satisfy.
 
 ### The landing site
 
@@ -234,5 +235,5 @@ From `TODO.md`, roughly in order of value:
 
 ## License
 
-By contributing you agree your contributions are licensed under the [MIT License](LICENSE), the same
-as the project.
+By contributing you agree your contributions are licensed under the
+[GNU General Public License v3.0 or later](LICENSE), the same as the project.

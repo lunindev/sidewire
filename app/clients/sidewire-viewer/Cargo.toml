@@ -1,8 +1,8 @@
 # Sidewire Rust Display client — Phase 8 (Windows/Linux viewer).
 #
 # The Rust client is always the DISPLAY role: TLS 1.3 listener, CPace responder.
-# The Mac is always the Source (dialer / CPace initiator). See docs/09-next-stage.md §Phase 8
-# and docs/11-status-and-gaps.md. The wire protocol + pairing crypto are the fixed conformance target
+# The Mac is always the Source (dialer / CPace initiator). See docs/00-decisions.md §D10
+# and docs/08-status-and-gaps.md. The wire protocol + pairing crypto are the fixed conformance target
 # in ../../protocol-vectors/ and docs/02 + docs/05 (do NOT modify those).
 [workspace]
 resolver = "2"
@@ -12,7 +12,7 @@ members = ["sidewire-proto", "sidewire-crypto", "sidewire-media", "sidewire-view
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.90"
-license = "MIT"
+license = "GPL-3.0-or-later"
 publish = false
 
 # One crypto backend across the tree: rustls + rcgen both on `ring` (no cmake/aws-lc needed).
