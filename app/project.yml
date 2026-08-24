@@ -16,7 +16,7 @@ settings:
     # Keep this full semver (x.y.z) and in lockstep with the package.json files — release.sh reads
     # it verbatim to name the DMG, so "1.0" produced Sidewire-1.0.dmg while everything else said
     # 1.0.0. scripts/release.mjs rewrites this line on every version bump.
-    MARKETING_VERSION: "1.0.0"
+    MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     # Universal 2 (arm64 + x86_64) so one build runs on the M4 Max source and Intel i9 display.
     ARCHS: "arm64 x86_64"

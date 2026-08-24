@@ -1,6 +1,6 @@
 {
   "name": "sidewire-monorepo",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Sidewire — give your main Mac a second screen. Monorepo root: the native macOS app lives in app/, the marketing site in landing/.",
   "scripts": {
